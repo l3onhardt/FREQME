@@ -1,4 +1,7 @@
 import unittest
+from tempfile import TemporaryDirectory
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from backend.api import radio
 
@@ -58,6 +61,24 @@ class RadioOnboardingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(settings["music_notes"]), 500)
         self.assertEqual(settings["current_mode"], "陪伴")
         self.assertEqual(self.fake_store.saved, [("42", settings)])
+
+
+    async def test_get_tts_serves_file_from_configured_data_dir(self):
+        with TemporaryDirectory() as temp_dir:
+            cache_dir = radio.Path(temp_dir) / "tts_cache"
+            cache_dir.mkdir()
+            wav_path = cache_dir / "abc.wav"
+            wav_path.write_bytes(b"RIFFtest")
+
+            with patch(
+                "backend.api.radio.get_settings",
+                return_value=SimpleNamespace(data_dir=temp_dir),
+                create=True,
+            ):
+                response = await radio.get_tts("abc")
+
+            self.assertEqual(radio.Path(response.path), wav_path)
+            self.assertEqual(response.media_type, "audio/wav")
 
 
 if __name__ == "__main__":

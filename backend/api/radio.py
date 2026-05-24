@@ -3,6 +3,8 @@ from pathlib import Path
 from fastapi import APIRouter
 from fastapi.responses import FileResponse
 
+from backend.core.config import get_settings
+
 router = APIRouter(prefix="/api/radio", tags=["radio"])
 
 netease = None
@@ -85,10 +87,18 @@ async def save_onboarding(uid: int, payload: dict):
 
 @router.get("/tts/{hash}")
 async def get_tts(hash: str):
-    path = f"data/tts_cache/{hash}.wav"
-    if Path(path).exists():
+    if not _is_safe_tts_hash(hash):
+        return {"error": "not found"}, 404
+
+    cache_dir = Path(get_settings().data_dir) / "tts_cache"
+    path = cache_dir / f"{hash}.wav"
+    if path.exists() and path.is_file():
         return FileResponse(path, media_type="audio/wav")
     return {"error": "not found"}, 404
+
+
+def _is_safe_tts_hash(value: str) -> bool:
+    return bool(value) and all(char in "0123456789abcdefABCDEF" for char in value)
 
 
 @router.get("/track/url")
