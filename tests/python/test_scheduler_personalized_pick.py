@@ -173,6 +173,19 @@ class SchedulerPersonalizedPickTests(unittest.IsolatedAsyncioTestCase):
             ["fallback-same"],
         )
 
+    async def test_similar_pool_does_not_pick_current_song_id_again(self):
+        netease = FakeNetease()
+        netease.similar = [
+            {"id": "current", "name": "Current Song", "ar": [{"name": "Same Artist"}]},
+            {"id": "fresh", "name": "Fresh Song", "ar": [{"name": "Fresh Artist"}]},
+        ]
+        scheduler = self.make_scheduler(netease=netease)
+
+        song = await scheduler.pick_next("current", profile={})
+
+        self.assertEqual(song["id"], "fresh")
+        self.assertEqual(song["selection_reason"]["type"], "discovery_similar")
+
 
 if __name__ == "__main__":
     unittest.main()

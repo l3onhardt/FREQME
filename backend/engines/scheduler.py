@@ -147,6 +147,8 @@ class StreamScheduler:
     ) -> dict | None:
         recent_db = await self.store.get_recent_tracks(200)
         recent = {str(song_id) for song_id in recent_db if song_id} | self._played_this_session
+        if current_song_id:
+            recent.add(str(current_song_id))
         recent_artists = self._recent_artist_names(profile)
 
         def _select(song: dict, reason_type: str, text: str) -> dict:
