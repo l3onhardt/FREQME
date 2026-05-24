@@ -41,7 +41,12 @@ class StreamScheduler:
     def _shuffle_fallback(self):
         self._fallback_queue = random.sample(FALLBACK_PLAYLIST, len(FALLBACK_PLAYLIST))
 
-    async def pick_next(self, current_song_id: str | None = None) -> dict | None:
+    async def pick_next(
+        self,
+        current_song_id: str | None = None,
+        profile: dict | None = None,
+        user_settings: dict | None = None,
+    ) -> dict | None:
         recent_db = await self.store.get_recent_tracks(200)
         recent = set(recent_db) | self._played_this_session
 

@@ -47,10 +47,20 @@ class TTSAdapter:
         self.cache_dir = Path(settings.data_dir) / "tts_cache"
         self.cache_dir.mkdir(parents=True, exist_ok=True)
 
-    def _hash(self, text: str, style: str) -> str:
+    def _hash(
+        self,
+        text: str,
+        style: str,
+        user_settings: dict | None = None,
+    ) -> str:
         return hashlib.md5(f"{text}|{style}|{self.voice}".encode()).hexdigest()
 
-    async def synthesize(self, text: str, style: str = "日常") -> bytes | None:
+    async def synthesize(
+        self,
+        text: str,
+        style: str = "日常",
+        user_settings: dict | None = None,
+    ) -> bytes | None:
         h = self._hash(text, style)
 
         # Check disk cache

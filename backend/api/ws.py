@@ -41,7 +41,11 @@ async def ws_handler(websocket: WebSocket):
         """Pick next song, generate segue, send to frontend."""
         nonlocal current_song_id
 
-        next_song = await scheduler.pick_next(prev_song_id)
+        next_song = await scheduler.pick_next(
+            prev_song_id,
+            profile=profile,
+            user_settings=user_settings,
+        )
         if not next_song:
             await websocket.send_json({
                 "type": "error",
@@ -55,10 +59,23 @@ async def ws_handler(websocket: WebSocket):
         try:
             prev_info = {"id": prev_song_id} if prev_song_id else {}
             segue = await dj_engine.generate_segue(
-                profile, scene, prev_info, next_song, compressor,
+                profile,
+                scene,
+                prev_info,
+                next_song,
+                compressor,
+                user_settings=user_settings,
             )
-            tts_audio = await tts.synthesize(segue, scene)
-            tts_hash_val = tts._hash(segue, scene) if tts_audio else ""
+            tts_audio = await tts.synthesize(
+                segue,
+                scene,
+                user_settings=user_settings,
+            )
+            tts_hash_val = (
+                tts._hash(segue, scene, user_settings=user_settings)
+                if tts_audio
+                else ""
+            )
         except Exception:
             pass
 
@@ -121,9 +138,21 @@ async def ws_handler(websocket: WebSocket):
                             "dj_style_suggestion": "温暖自然",
                         }
 
-                intro = await dj_engine.generate_intro(profile, scene)
-                tts_audio = await tts.synthesize(intro, scene)
-                tts_hash = tts._hash(intro, scene) if tts_audio else ""
+                intro = await dj_engine.generate_intro(
+                    profile,
+                    scene,
+                    user_settings=user_settings,
+                )
+                tts_audio = await tts.synthesize(
+                    intro,
+                    scene,
+                    user_settings=user_settings,
+                )
+                tts_hash = (
+                    tts._hash(intro, scene, user_settings=user_settings)
+                    if tts_audio
+                    else ""
+                )
 
                 try:
                     session_id = await store.create_session(str(uid))
@@ -140,7 +169,10 @@ async def ws_handler(websocket: WebSocket):
                 })
 
                 # Pick first track
-                song = await scheduler.pick_next()
+                song = await scheduler.pick_next(
+                    profile=profile,
+                    user_settings=user_settings,
+                )
                 if song:
                     url = await scheduler.get_song_url(song)
                     await send_track(song, url)
