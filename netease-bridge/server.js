@@ -98,7 +98,7 @@ app.get('/like/list', async (req, res) => {
 
 app.get('/login/status', async (req, res) => {
     const r = await login_status({ cookie });
-    res.json(r.body);
+    res.json(sanitizeLoginBody(r.body));
 });
 
 app.get('/login/refresh', async (req, res) => {
