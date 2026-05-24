@@ -1,4 +1,5 @@
 import random
+from dataclasses import dataclass, field
 
 from backend.adapters.netease import NeteaseAdapter
 from backend.memory.store import MemoryStore
@@ -30,18 +31,28 @@ FALLBACK_PLAYLIST = [
 ]
 
 
+@dataclass
+class SchedulerSessionState:
+    played_song_ids: set[str] = field(default_factory=set)
+    artist_names: list[str] = field(default_factory=list)
+    pick_count: int = 0
+
+
 class StreamScheduler:
     def __init__(self, netease: NeteaseAdapter, store: MemoryStore, bus: EventBus):
         self.netease = netease
         self.store = store
         self.bus = bus
         self._fallback_queue: list[dict] = []
-        self._played_this_session: set[str] = set()
-        self._artists_this_session: list[str] = []
-        self._pick_count = 0
 
     def _shuffle_fallback(self):
         self._fallback_queue = random.sample(FALLBACK_PLAYLIST, len(FALLBACK_PLAYLIST))
+
+    def new_session_state(self) -> SchedulerSessionState:
+        return SchedulerSessionState()
+
+    def _pool_list(self, value) -> list[dict]:
+        return value if isinstance(value, list) else []
 
     def _song_id(self, song: dict | None) -> str:
         if not isinstance(song, dict):
@@ -97,17 +108,21 @@ class StreamScheduler:
         }
         return selected
 
-    def _remember_played(self, song: dict) -> None:
+    def _remember_played(self, song: dict, state: SchedulerSessionState) -> None:
         sid = self._song_id(song)
         if sid:
-            self._played_this_session.add(sid)
+            state.played_song_ids.add(sid)
         artist = self._artist_name(song)
         if artist:
-            self._artists_this_session.append(artist)
-            self._artists_this_session = self._artists_this_session[-12:]
+            state.artist_names.append(artist)
+            state.artist_names = state.artist_names[-12:]
 
-    def _recent_artist_names(self, profile: dict | None = None) -> set[str]:
-        artists = set(self._artists_this_session[-6:])
+    def _recent_artist_names(
+        self,
+        profile: dict | None = None,
+        state: SchedulerSessionState | None = None,
+    ) -> set[str]:
+        artists = set((state.artist_names if state else [])[-6:])
         if isinstance(profile, dict):
             for track in (profile.get("recent_tracks") or [])[:10]:
                 artist = self._artist_name(track)
@@ -136,31 +151,40 @@ class StreamScheduler:
                 return song
         return good_songs[0]
 
-    def _anchor_due(self, current_song_id: str | None) -> bool:
-        return not current_song_id or self._pick_count % 4 == 0
+    def _anchor_due(
+        self,
+        current_song_id: str | None,
+        state: SchedulerSessionState,
+    ) -> bool:
+        return not current_song_id or state.pick_count % 4 == 0
 
     async def pick_next(
         self,
         current_song_id: str | None = None,
         profile: dict | None = None,
         user_settings: dict | None = None,
+        session_state: SchedulerSessionState | None = None,
     ) -> dict | None:
-        recent_db = await self.store.get_recent_tracks(200)
-        recent = {str(song_id) for song_id in recent_db if song_id} | self._played_this_session
+        state = session_state or self.new_session_state()
+        try:
+            recent_db = await self.store.get_recent_tracks(200)
+        except Exception:
+            recent_db = []
+        recent = {str(song_id) for song_id in recent_db if song_id} | state.played_song_ids
         if current_song_id:
             recent.add(str(current_song_id))
-        recent_artists = self._recent_artist_names(profile)
+        recent_artists = self._recent_artist_names(profile, state)
 
         def _select(song: dict, reason_type: str, text: str) -> dict:
             selected = self._with_reason(song, reason_type, text)
-            self._remember_played(selected)
-            self._pick_count += 1
+            self._remember_played(selected, state)
+            state.pick_count += 1
             return selected
 
-        if self._anchor_due(current_song_id) and isinstance(profile, dict):
+        if self._anchor_due(current_song_id, state) and isinstance(profile, dict):
             anchors = [
                 self._profile_track_to_song(track)
-                for track in (profile.get("anchor_tracks") or [])
+                for track in self._pool_list(profile.get("anchor_tracks"))
             ]
             anchor = self._choose_candidate(
                 [song for song in anchors if song],
@@ -168,11 +192,11 @@ class StreamScheduler:
                 recent_artists,
             )
             if anchor:
-                name = anchor.get("name") or "this familiar song"
+                name = anchor.get("name") or "这首熟悉的歌"
                 return _select(
                     anchor,
                     "familiar_anchor",
-                    f"{name} is one of your familiar anchors, so it can make the station feel close to home.",
+                    f"{name} 是一首熟悉的锚点歌，适合先把电台拉回亲近的感觉。",
                 )
 
         # 1. Similar songs based on current track
@@ -181,12 +205,12 @@ class StreamScheduler:
                 simi = await self.netease.simi_song(current_song_id)
             except Exception:
                 simi = []
-            song = self._choose_candidate((simi or [])[:8], recent, recent_artists)
+            song = self._choose_candidate(self._pool_list(simi)[:8], recent, recent_artists)
             if song:
                 return _select(
                     song,
                     "discovery_similar",
-                    "It keeps the feeling of the last song while opening a nearby path.",
+                    "顺着上一首的气质往外走一步，带来一点新鲜感。",
                 )
 
         # 2. NetEase daily recommendations (shuffle to avoid same first song)
@@ -194,6 +218,7 @@ class StreamScheduler:
             recommends = await self.netease.recommend_songs()
         except Exception:
             recommends = []
+        recommends = self._pool_list(recommends)
         if recommends:
             random.shuffle(recommends)
             song = self._choose_candidate(recommends[:15], recent, recent_artists)
@@ -201,7 +226,7 @@ class StreamScheduler:
                 return _select(
                     song,
                     "daily_personal",
-                    "It comes from your daily personal pool and fits today's listening shape.",
+                    "来自今天的私人日推，和此刻的听感比较贴近。",
                 )
 
         # 3. Personal FM
@@ -209,12 +234,12 @@ class StreamScheduler:
             fm = await self.netease.personal_fm()
         except Exception:
             fm = []
-        song = self._choose_candidate((fm or [])[:10], recent, recent_artists)
+        song = self._choose_candidate(self._pool_list(fm)[:10], recent, recent_artists)
         if song:
             return _select(
                 song,
                 "personal_fm",
-                "It comes from your personal FM stream for a fresh but still personal turn.",
+                "来自私人 FM，像是熟悉口味里的一个新转角。",
             )
 
         # 4. Fallback playlist (built-in, always available)
@@ -227,33 +252,34 @@ class StreamScheduler:
             return _select(
                 song,
                 "fallback",
-                "It is a reliable fallback pick while the personal pools are quiet.",
+                "个人歌池暂时安静，先用一首稳妥的歌把氛围接住。",
             )
 
         # 5. All fallback played, reshuffle and try again
         self._shuffle_fallback()
         song = self._choose_candidate(self._fallback_queue, recent, recent_artists)
         if song:
+            self._fallback_queue.remove(song)
             return _select(
                 song,
                 "fallback",
-                "It is a reliable fallback pick while the personal pools are quiet.",
+                "个人歌池暂时安静，先用一首稳妥的歌把氛围接住。",
             )
 
         # 6. Last resort: clear session memory and return first fallback
-        self._played_this_session.clear()
-        self._artists_this_session.clear()
+        state.played_song_ids.clear()
+        state.artist_names.clear()
         if self._fallback_queue:
             return _select(
                 self._fallback_queue[0],
                 "fallback",
-                "It is a reliable fallback pick while the personal pools are quiet.",
+                "个人歌池暂时安静，先用一首稳妥的歌把氛围接住。",
             )
         return (
             _select(
                 FALLBACK_PLAYLIST[0],
                 "fallback",
-                "It is a reliable fallback pick while the personal pools are quiet.",
+                "个人歌池暂时安静，先用一首稳妥的歌把氛围接住。",
             )
             if FALLBACK_PLAYLIST
             else None

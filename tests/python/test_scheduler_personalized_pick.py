@@ -8,6 +8,9 @@ class FakeNetease:
         self.similar = []
         self.daily = []
         self.fm = []
+        self.raw_similar = None
+        self.raw_daily = None
+        self.raw_fm = None
         self.raise_similar = False
         self.raise_daily = False
         self.raise_fm = False
@@ -16,16 +19,22 @@ class FakeNetease:
     async def simi_song(self, song_id):
         if self.raise_similar:
             raise RuntimeError("similar unavailable")
+        if self.raw_similar is not None:
+            return self.raw_similar
         return list(self.similar)
 
     async def recommend_songs(self):
         if self.raise_daily:
             raise RuntimeError("daily unavailable")
+        if self.raw_daily is not None:
+            return self.raw_daily
         return list(self.daily)
 
     async def personal_fm(self):
         if self.raise_fm:
             raise RuntimeError("fm unavailable")
+        if self.raw_fm is not None:
+            return self.raw_fm
         return list(self.fm)
 
     async def song_url(self, song_id):
@@ -38,6 +47,11 @@ class FakeStore:
 
     async def get_recent_tracks(self, limit=100):
         return self.recent[:limit]
+
+
+class RaisingRecentStore(FakeStore):
+    async def get_recent_tracks(self, limit=100):
+        raise RuntimeError("recent unavailable")
 
 
 class SchedulerPersonalizedPickTests(unittest.IsolatedAsyncioTestCase):
@@ -67,13 +81,14 @@ class SchedulerPersonalizedPickTests(unittest.IsolatedAsyncioTestCase):
             {"id": "similar-1", "name": "Similar One", "ar": [{"name": "New Artist"}]}
         ]
         scheduler = self.make_scheduler(netease=netease, store=FakeStore(recent=["anchor-db"]))
-        scheduler._played_this_session.add("anchor-session")
+        state = scheduler.new_session_state()
+        state.played_song_ids.add("anchor-session")
         profile = self.profile_with_anchors(
             {"id": "anchor-db", "name": "DB Anchor", "artist": "Known Artist"},
             {"id": "anchor-session", "name": "Session Anchor", "artist": "Known Artist"},
         )
 
-        song = await scheduler.pick_next("current-1", profile=profile)
+        song = await scheduler.pick_next("current-1", profile=profile, session_state=state)
 
         self.assertEqual(song["id"], "similar-1")
         self.assertEqual(song["selection_reason"]["type"], "discovery_similar")
@@ -162,9 +177,10 @@ class SchedulerPersonalizedPickTests(unittest.IsolatedAsyncioTestCase):
                 "ar": [{"name": "Fresh Artist"}],
             },
         ]
-        scheduler._artists_this_session.append("Recent Artist")
+        state = scheduler.new_session_state()
+        state.artist_names.append("Recent Artist")
 
-        song = await scheduler.pick_next("current", profile={})
+        song = await scheduler.pick_next("current", profile={}, session_state=state)
 
         self.assertEqual(song["id"], "fallback-fresh")
         self.assertEqual(song["selection_reason"]["type"], "fallback")
@@ -185,6 +201,47 @@ class SchedulerPersonalizedPickTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(song["id"], "fresh")
         self.assertEqual(song["selection_reason"]["type"], "discovery_similar")
+
+    async def test_session_state_isolated_between_independent_sessions(self):
+        scheduler = self.make_scheduler()
+        session_a = scheduler.new_session_state()
+        session_b = scheduler.new_session_state()
+        profile = self.profile_with_anchors(
+            {"id": "anchor-1", "name": "Anchor One", "artist": "Anchor Artist"}
+        )
+
+        song_a = await scheduler.pick_next(profile=profile, session_state=session_a)
+        song_b = await scheduler.pick_next(profile=profile, session_state=session_b)
+
+        self.assertEqual(song_a["id"], "anchor-1")
+        self.assertEqual(song_b["id"], "anchor-1")
+
+    async def test_recent_track_lookup_failure_still_picks_fallback(self):
+        netease = FakeNetease()
+        scheduler = self.make_scheduler(netease=netease, store=RaisingRecentStore())
+        scheduler._fallback_queue = [
+            {"id": "fallback-ok", "name": "Fallback OK", "ar": [{"name": "Fallback Artist"}]}
+        ]
+
+        song = await scheduler.pick_next("current", profile={})
+
+        self.assertEqual(song["id"], "fallback-ok")
+        self.assertEqual(song["selection_reason"]["type"], "fallback")
+
+    async def test_non_list_netease_pools_are_ignored_without_crashing(self):
+        netease = FakeNetease()
+        netease.raw_similar = {"id": "not-a-list"}
+        netease.raw_daily = "not-a-list"
+        netease.raw_fm = {"data": []}
+        scheduler = self.make_scheduler(netease=netease)
+        scheduler._fallback_queue = [
+            {"id": "fallback-ok", "name": "Fallback OK", "ar": [{"name": "Fallback Artist"}]}
+        ]
+
+        song = await scheduler.pick_next("current", profile={})
+
+        self.assertEqual(song["id"], "fallback-ok")
+        self.assertEqual(song["selection_reason"]["type"], "fallback")
 
 
 if __name__ == "__main__":

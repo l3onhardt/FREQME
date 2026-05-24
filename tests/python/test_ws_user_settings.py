@@ -110,21 +110,29 @@ class FakeTTS:
 class FakeScheduler:
     def __init__(self):
         self.pick_next_calls = []
+        self.session_states = []
         self.songs = [
             {"id": "first", "name": "First Song", "ar": [{"name": "First Artist"}]},
             {"id": "second", "name": "Second Song", "ar": [{"name": "Second Artist"}]},
         ]
+
+    def new_session_state(self):
+        state = {"fake_scheduler_state": len(self.session_states) + 1}
+        self.session_states.append(state)
+        return state
 
     async def pick_next(
         self,
         current_song_id=None,
         profile=None,
         user_settings=None,
+        session_state=None,
     ):
         self.pick_next_calls.append({
             "current_song_id": current_song_id,
             "profile": profile,
             "user_settings": user_settings,
+            "session_state": session_state,
         })
         return self.songs.pop(0)
 
@@ -193,6 +201,15 @@ class WebSocketUserSettingsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(fake_scheduler.pick_next_calls[1]["current_song_id"], "first")
         self.assertEqual(fake_scheduler.pick_next_calls[1]["user_settings"], stored_settings)
         self.assertEqual(fake_scheduler.pick_next_calls[1]["profile"], fake_dj.intro_calls[0]["profile"])
+        self.assertEqual(len(fake_scheduler.session_states), 1)
+        self.assertIs(
+            fake_scheduler.pick_next_calls[0]["session_state"],
+            fake_scheduler.session_states[0],
+        )
+        self.assertIs(
+            fake_scheduler.pick_next_calls[1]["session_state"],
+            fake_scheduler.session_states[0],
+        )
         self.assertEqual(fake_dj.segue_calls[0]["user_settings"], stored_settings)
         self.assertEqual(fake_tts.synthesize_calls[1]["user_settings"], stored_settings)
         self.assertEqual(fake_tts.synthesize_calls[1]["voice_preset"], "bright_girl")

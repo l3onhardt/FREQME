@@ -23,6 +23,7 @@ async def ws_handler(websocket: WebSocket):
     current_song_id = None
     session_id = None
     logged_track_ids = set()
+    scheduler_state = scheduler.new_session_state() if scheduler else None
 
     def current_voice_preset() -> str:
         return user_settings.get("voice_preset", "warm_female")
@@ -56,6 +57,7 @@ async def ws_handler(websocket: WebSocket):
             prev_song_id,
             profile=profile,
             user_settings=user_settings,
+            session_state=scheduler_state,
         )
         if not next_song:
             await websocket.send_json({
@@ -107,6 +109,8 @@ async def ws_handler(websocket: WebSocket):
                 "next_track": _track_info(next_song),
                 "url": url,
             })
+            # The segue message dispatches the next track, so lock it in now
+            # and let the per-connection log guard prevent duplicate writes.
             await remember_current_song(next_song)
         else:
             # No segue generated, play directly
@@ -187,6 +191,7 @@ async def ws_handler(websocket: WebSocket):
                 song = await scheduler.pick_next(
                     profile=profile,
                     user_settings=user_settings,
+                    session_state=scheduler_state,
                 )
                 if song:
                     url = await scheduler.get_song_url(song)
