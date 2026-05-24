@@ -28,10 +28,15 @@ SCENE_GUIDANCE = {
     "清晨": "清晨时段，语气清爽，节奏适中，带一点醒来的轻盈感但不要兴奋。",
     "午后": "午后时段，语气放松，节奏舒展，有一点阳光感但不过分慵懒。",
     "日常": "日常陪伴，语气自然平稳，语速正常，像真实电台主播在顺畅串场。",
-    "娣卞": "深夜时段，语速稍慢，留白自然，氛围温暖安静。",
-    "娓呮櫒": "清晨时段，语气清爽，节奏适中，带一点醒来的轻盈感但不要兴奋。",
-    "鍗堝悗": "午后时段，语气放松，节奏舒展，有一点阳光感但不过分慵懒。",
-    "鏃ュ父": "日常陪伴，语气自然平稳，语速正常，像真实电台主播在顺畅串场。",
+}
+
+# Compatibility for scene values persisted or emitted before the UTF-8 cleanup.
+LEGACY_SCENE_ALIASES = {
+    "娣卞": "深夜",
+    "娓呮櫒": "清晨",
+    "鍗堝悗": "午后",
+    "鏃ゅ父": "日常",
+    "鏃ュ父": "日常",
 }
 
 
@@ -65,6 +70,11 @@ class TTSAdapter:
         configured = self.voice_config.get(preset_key, "")
         return configured or self.voice
 
+    def _normalize_scene(self, scene: str | None = None) -> str:
+        if not scene:
+            return "日常"
+        return LEGACY_SCENE_ALIASES.get(scene, scene)
+
     def _director_prompt(
         self,
         scene: str = "日常",
@@ -72,7 +82,8 @@ class TTSAdapter:
     ) -> str:
         preset_key = self._voice_preset_from_settings(voice_preset=voice_preset)
         preset = VOICE_PRESETS[preset_key]
-        scene_text = SCENE_GUIDANCE.get(scene, SCENE_GUIDANCE["日常"])
+        normalized_scene = self._normalize_scene(scene)
+        scene_text = SCENE_GUIDANCE.get(normalized_scene, SCENE_GUIDANCE["日常"])
         return (
             f"[角色]{preset['director']}"
             f"[场景]{scene_text}"
@@ -114,12 +125,13 @@ class TTSAdapter:
     async def synthesize(
         self,
         text: str,
-        style: str = "鏃ュ父",
+        style: str = "日常",
         voice_preset: str | None = None,
         user_settings: dict | None = None,
     ) -> bytes | None:
         preset_key = self._voice_preset_from_settings(user_settings, voice_preset)
-        h = self._hash(text, style, voice_preset=preset_key)
+        normalized_style = self._normalize_scene(style)
+        h = self._hash(text, normalized_style, voice_preset=preset_key)
 
         # Check disk cache
         cache_path = self.cache_dir / f"{h}.wav"
@@ -134,7 +146,7 @@ class TTSAdapter:
         if cached and Path(cached).exists():
             return Path(cached).read_bytes()
 
-        body = self.build_request_body(text, style, preset_key)
+        body = self.build_request_body(text, normalized_style, preset_key)
 
         # Try MiMo API
         try:

@@ -1,6 +1,8 @@
+import inspect
 import unittest
 from unittest.mock import patch
 
+from backend.adapters import tts
 from backend.adapters.tts import TTSAdapter
 
 
@@ -126,6 +128,33 @@ class TTSVoicePresetTests(unittest.TestCase):
 
         self.assertEqual(body["audio"]["voice"], "暖声女主播")
         self.assertEqual(resolved, "warm_male")
+
+    def test_synthesize_default_style_is_clean_daily_scene(self):
+        signature = inspect.signature(TTSAdapter.synthesize)
+
+        self.assertEqual(signature.parameters["style"].default, "日常")
+
+    def test_scene_guidance_contains_only_clean_scene_keys(self):
+        self.assertEqual(
+            set(tts.SCENE_GUIDANCE),
+            {"深夜", "清晨", "午后", "日常"},
+        )
+        for legacy_scene in tts.LEGACY_SCENE_ALIASES:
+            self.assertNotIn(legacy_scene, tts.SCENE_GUIDANCE)
+
+    def test_legacy_scene_aliases_normalize_before_director_prompt(self):
+        adapter = self.make_adapter()
+
+        self.assertEqual(adapter._normalize_scene("鏃ゅ父"), "日常")
+        self.assertEqual(adapter._normalize_scene("娣卞"), "深夜")
+
+        daily_prompt = adapter._director_prompt("日常", "warm_female")
+        legacy_daily_prompt = adapter._director_prompt("鏃ゅ父", "warm_female")
+        night_prompt = adapter._director_prompt("深夜", "warm_female")
+        legacy_night_prompt = adapter._director_prompt("娣卞", "warm_female")
+
+        self.assertEqual(legacy_daily_prompt, daily_prompt)
+        self.assertEqual(legacy_night_prompt, night_prompt)
 
 
 if __name__ == "__main__":
