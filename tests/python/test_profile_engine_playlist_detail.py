@@ -30,6 +30,10 @@ class FakeNetease:
                             "name": "The Scientist",
                             "artists": [{"name": "Coldplay"}],
                         },
+                        {
+                            "name": "Missing Playlist Id",
+                            "artists": [{"name": "Invalid Artist"}],
+                        },
                     ]
                 }
             },
@@ -62,6 +66,12 @@ class FakeNetease:
                         "id": 4002,
                         "name": "Blue",
                         "artists": [{"name": "Yung Kai"}],
+                    }
+                },
+                {
+                    "song": {
+                        "name": "Missing Recent Id",
+                        "artists": [{"name": "Invalid Artist"}],
                     }
                 },
             ]
@@ -167,6 +177,10 @@ class ProfileEnginePlaylistDetailTest(unittest.IsolatedAsyncioTestCase):
             ],
         )
         self.assertEqual(profile["liked_track_ids"], ["3001", "4002"])
+        self.assertNotIn("", [track["id"] for track in profile["anchor_tracks"]])
+        self.assertNotIn("", [track["id"] for track in profile["recent_tracks"]])
+        self.assertNotIn("Missing Playlist Id", llm.prompts[0])
+        self.assertNotIn("Missing Recent Id", llm.prompts[0])
 
         self.assertEqual(len(store.saved_profiles), 1)
         saved_uid, saved_profile = store.saved_profiles[0]
@@ -174,6 +188,8 @@ class ProfileEnginePlaylistDetailTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(saved_profile["anchor_tracks"], profile["anchor_tracks"])
         self.assertEqual(saved_profile["recent_tracks"], profile["recent_tracks"])
         self.assertEqual(saved_profile["liked_track_ids"], profile["liked_track_ids"])
+        self.assertNotIn("", [track["id"] for track in saved_profile["anchor_tracks"]])
+        self.assertNotIn("", [track["id"] for track in saved_profile["recent_tracks"]])
 
 
 if __name__ == "__main__":

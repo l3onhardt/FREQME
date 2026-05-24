@@ -39,7 +39,7 @@ class NeteaseAdapter:
         except Exception:
             return []
 
-    async def playlist_detail(self, playlist_id) -> dict:
+    async def playlist_detail(self, playlist_id: int | str) -> dict:
         try:
             r = await self.client.get(
                 f"{BASE}/playlist/detail", params={"id": playlist_id}, timeout=10.0

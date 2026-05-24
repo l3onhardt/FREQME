@@ -46,16 +46,20 @@ class ProfileEngine:
         liked = await self.netease.like_list(uid)
         user_settings = await self.store.get_user_settings(str(uid)) or {}
         music_notes = (user_settings.get("music_notes") or "").strip()[:500]
+        valid_playlist_tracks = [song for song in playlist_tracks if song.get("id")]
 
         song_list = "\n".join(
             f"- {track['name']} by {track['artist']}"
             for track in (
-                self._compact_track(song, "playlist") for song in playlist_tracks[:200]
+                self._compact_track(song, "playlist")
+                for song in valid_playlist_tracks[:200]
             )
         )
 
         week_data = records.get("weekData", []) if records else []
-        recent_song_items = [item.get("song", {}) for item in week_data[:50]]
+        recent_song_items = [
+            item.get("song", {}) for item in week_data[:50] if item.get("song", {}).get("id")
+        ]
         recent_listens = "\n".join(
             f"- {track['name']} by {track['artist']}"
             for track in (
@@ -124,7 +128,7 @@ class ProfileEngine:
             }
 
         profile["anchor_tracks"] = [
-            self._compact_track(song, "playlist") for song in playlist_tracks[:40]
+            self._compact_track(song, "playlist") for song in valid_playlist_tracks[:40]
         ]
         profile["recent_tracks"] = [
             self._compact_track(song, "recent") for song in recent_song_items[:30]
