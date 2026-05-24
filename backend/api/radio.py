@@ -46,6 +46,43 @@ async def get_profile(uid: int):
     return await store.get_profile(str(uid)) or {}
 
 
+@router.get("/onboarding/{uid}")
+async def get_onboarding(uid: int):
+    profile = await store.get_profile(str(uid)) or {}
+    settings = await store.get_user_settings(str(uid))
+    return {
+        "profile_ready": bool(profile),
+        "profile": profile,
+        "settings": settings,
+        "onboarded": bool(settings),
+    }
+
+
+@router.post("/onboarding/{uid}")
+async def save_onboarding(uid: int, payload: dict):
+    if not isinstance(payload, dict):
+        payload = {}
+
+    allowed_presets = {"warm_female", "warm_male", "bright_girl"}
+    voice_preset = payload.get("voice_preset") or "warm_female"
+    if voice_preset not in allowed_presets:
+        voice_preset = "warm_female"
+
+    allowed_modes = {"陪伴", "专注", "放松", "深夜情绪"}
+    current_mode = payload.get("current_mode") or "陪伴"
+    if current_mode not in allowed_modes:
+        current_mode = "陪伴"
+
+    settings_payload = {
+        "voice_preset": voice_preset,
+        "display_name": (payload.get("display_name") or "").strip()[:40],
+        "music_notes": (payload.get("music_notes") or "").strip()[:500],
+        "current_mode": current_mode,
+    }
+    await store.save_user_settings(str(uid), settings_payload)
+    return {"settings": settings_payload, "onboarded": True}
+
+
 @router.get("/tts/{hash}")
 async def get_tts(hash: str):
     path = f"data/tts_cache/{hash}.wav"

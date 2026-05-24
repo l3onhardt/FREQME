@@ -21,6 +21,51 @@
     </div>
   </div>
 
+  <!-- Onboarding Screen -->
+  <div id="onboarding-screen" class="screen">
+    <div class="onboarding-panel">
+      <div class="scene-label">调频</div>
+      <h1>先把这个电台调成你的频率</h1>
+      <p id="onboarding-status" class="subtitle">正在读取你的歌单和最近收听...</p>
+
+      <section class="onboarding-step active" data-step="voice">
+        <h2>你希望主播是什么声音？</h2>
+        <div class="choice-grid" id="voice-options">
+          <button class="choice-card selected" data-voice="warm_female">
+            <strong>夜航女声</strong>
+            <span>成熟、低暖、有磁性，像夜里陪你听歌的电台主播</span>
+          </button>
+          <button class="choice-card" data-voice="warm_male">
+            <strong>暖频男声</strong>
+            <span>温和、沉稳、不油腻，像低频里慢慢靠近的主持人</span>
+          </button>
+          <button class="choice-card" data-voice="bright_girl">
+            <strong>清甜少女声</strong>
+            <span>轻亮、亲近、仍然克制，带一点清晨电台的明净感</span>
+          </button>
+        </div>
+      </section>
+
+      <section class="onboarding-step" data-step="notes">
+        <h2>我怎么称呼你？</h2>
+        <input id="display-name-input" class="text-input" maxlength="40" placeholder="比如：小林">
+        <textarea id="music-notes-input" class="text-area" maxlength="500" placeholder="有什么歌单背景、最近状态、雷区或偏好可以补充"></textarea>
+      </section>
+
+      <section class="onboarding-step" data-step="mode">
+        <h2>现在想让电台怎么陪你？</h2>
+        <div class="choice-grid compact" id="mode-options">
+          <button class="choice-card selected" data-mode="陪伴">陪伴</button>
+          <button class="choice-card" data-mode="专注">专注</button>
+          <button class="choice-card" data-mode="放松">放松</button>
+          <button class="choice-card" data-mode="深夜情绪">深夜情绪</button>
+        </div>
+      </section>
+
+      <button id="onboarding-next-btn" class="btn-primary">继续</button>
+    </div>
+  </div>
+
   <!-- Player Screen -->
   <div id="player-screen" class="screen">
     <div class="player-bg" id="player-bg"></div>

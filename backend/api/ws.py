@@ -18,6 +18,7 @@ async def ws_handler(websocket: WebSocket):
     uid = None
     scene = "日常"
     profile = {}
+    user_settings = {}
     current_song_id = None
     session_id = None
 
@@ -103,6 +104,9 @@ async def ws_handler(websocket: WebSocket):
 
             if msg_type == "handshake":
                 uid = msg.get("uid")
+                settings_payload = msg.get("settings") or {}
+                stored_settings = await store.get_user_settings(str(uid)) if uid else None
+                user_settings = stored_settings or settings_payload or {}
                 scene = dj_engine.detect_scene(msg.get("utc_offset", 480))
                 try:
                     profile = await store.get_profile(str(uid))

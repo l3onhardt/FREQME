@@ -69,6 +69,111 @@ body {
   background: #d63850;
 }
 
+/* Onboarding Screen */
+.onboarding-panel {
+  width: min(880px, calc(100vw - 32px));
+  padding: 36px 24px;
+  text-align: center;
+}
+.onboarding-panel h1 {
+  margin-top: 12px;
+  font-size: clamp(28px, 5vw, 48px);
+  font-weight: 300;
+  line-height: 1.18;
+}
+.onboarding-step {
+  display: none;
+  margin: 24px auto 0;
+  width: 100%;
+}
+.onboarding-step.active {
+  display: block;
+}
+.onboarding-step h2 {
+  margin-bottom: 18px;
+  font-size: 20px;
+  font-weight: 400;
+  color: #f0f0f0;
+}
+.choice-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+}
+.choice-grid.compact {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+.choice-card {
+  min-height: 118px;
+  padding: 18px 16px;
+  border: 1px solid #2c2c3a;
+  border-radius: 8px;
+  background: rgba(20, 20, 32, 0.82);
+  color: #d8d8de;
+  cursor: pointer;
+  text-align: left;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+  transition: border-color 0.2s, background 0.2s, color 0.2s;
+}
+.choice-grid.compact .choice-card {
+  min-height: 64px;
+  text-align: center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.choice-card strong,
+.choice-card span {
+  display: block;
+}
+.choice-card strong {
+  margin-bottom: 8px;
+  color: #fff;
+  font-size: 17px;
+  font-weight: 500;
+}
+.choice-card span {
+  color: #a8a8b3;
+  font-size: 14px;
+}
+.choice-card:hover,
+.choice-card.selected {
+  border-color: #e94560;
+  background: rgba(233, 69, 96, 0.12);
+  color: #fff;
+}
+.text-input,
+.text-area {
+  display: block;
+  width: min(580px, 100%);
+  margin: 0 auto 14px;
+  border: 1px solid #2c2c3a;
+  border-radius: 8px;
+  background: rgba(20, 20, 32, 0.88);
+  color: #f3f3f5;
+  font: inherit;
+  outline: none;
+}
+.text-input {
+  height: 48px;
+  padding: 0 16px;
+}
+.text-area {
+  min-height: 130px;
+  resize: vertical;
+  padding: 14px 16px;
+  line-height: 1.7;
+}
+.text-input:focus,
+.text-area:focus {
+  border-color: #e94560;
+}
+.text-input::placeholder,
+.text-area::placeholder {
+  color: #666977;
+}
+
 /* Player Screen */
 .player-bg {
   position: absolute;
@@ -180,4 +285,31 @@ body {
   background: #e94560;
   animation: float 6s ease-in-out infinite;
   pointer-events: none;
+}
+
+@media (max-width: 720px) {
+  body {
+    overflow: auto;
+    min-height: 100vh;
+  }
+  .screen {
+    min-height: 100vh;
+  }
+  .screen.active {
+    align-items: flex-start;
+    padding: 28px 0;
+  }
+  .choice-grid,
+  .choice-grid.compact {
+    grid-template-columns: 1fr;
+  }
+  .choice-card,
+  .choice-grid.compact .choice-card {
+    min-height: auto;
+    text-align: left;
+    justify-content: flex-start;
+  }
+  .onboarding-panel {
+    padding: 20px 18px 36px;
+  }
 }
