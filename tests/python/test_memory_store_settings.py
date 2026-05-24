@@ -120,6 +120,46 @@ class MemoryStoreSettingsTest(unittest.TestCase):
 
             asyncio.run(run())
 
+    def test_init_db_migrates_legacy_track_log_without_uid(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            os.environ["RADIO_DB_PATH"] = str(Path(tmp) / "radio-test.db")
+
+            from backend.memory.models import connect_db, init_db
+
+            async def run():
+                async with connect_db() as db:
+                    await db.execute("""
+                        CREATE TABLE track_log (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            song_id TEXT NOT NULL,
+                            song_name TEXT NOT NULL,
+                            artist TEXT,
+                            source TEXT,
+                            feedback TEXT,
+                            played_at TEXT DEFAULT CURRENT_TIMESTAMP
+                        )
+                    """)
+                    await db.execute(
+                        "INSERT INTO track_log (song_id, song_name, artist, source) VALUES (?,?,?,?)",
+                        ("legacy-song", "Legacy Song", "Legacy Artist", "test"),
+                    )
+                    await db.commit()
+
+                await init_db()
+
+                async with connect_db() as db:
+                    async with db.execute("PRAGMA table_info(track_log)") as cursor:
+                        columns = {row[1] for row in await cursor.fetchall()}
+                    async with db.execute(
+                        "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_track_uid_played'"
+                    ) as cursor:
+                        index_row = await cursor.fetchone()
+
+                self.assertIn("uid", columns)
+                self.assertIsNotNone(index_row)
+
+            asyncio.run(run())
+
     def test_init_db_creates_default_parent_directory(self):
         os.environ.pop("RADIO_DB_PATH", None)
 

@@ -247,6 +247,27 @@ class WebSocketUserSettingsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(fake_websocket.sent[0]["type"], "error")
         self.assertIn("登录账号", fake_websocket.sent[0]["message"])
 
+    async def test_ws_rejects_handshake_when_active_login_is_missing(self):
+        async def login_status():
+            return {"data": {"profile": None}}
+
+        auth.netease = type("FakeAuthNetease", (), {"login_status": staticmethod(login_status)})()
+        fake_websocket = FakeWebSocket([
+            {"type": "handshake", "uid": "42", "settings": {}},
+        ])
+
+        ws.store = FakeStore({})
+        ws.dj_engine = FakeDJEngine()
+        ws.tts = FakeTTS()
+        ws.scheduler = FakeScheduler()
+        ws.compressor = FakeCompressor()
+        ws.profile_engine = None
+
+        await ws.ws_handler(fake_websocket)
+
+        self.assertEqual(fake_websocket.sent[0]["type"], "error")
+        self.assertIn("登录账号", fake_websocket.sent[0]["message"])
+
     async def test_track_info_reads_artist_from_supported_song_shapes(self):
         self.assertEqual(
             ws._track_info({

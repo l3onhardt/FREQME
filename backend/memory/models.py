@@ -56,10 +56,6 @@ async def init_db():
                 feedback TEXT,
                 played_at TEXT DEFAULT CURRENT_TIMESTAMP
             );
-            CREATE INDEX IF NOT EXISTS idx_track_played ON track_log(played_at);
-            CREATE INDEX IF NOT EXISTS idx_track_uid_played ON track_log(uid, played_at);
-            CREATE INDEX IF NOT EXISTS idx_track_song ON track_log(song_id);
-
             CREATE TABLE IF NOT EXISTS dj_script_log (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 topic TEXT,
@@ -92,6 +88,12 @@ async def init_db():
             );
         """)
         await _ensure_column(db, "track_log", "uid", "TEXT")
+        await db.executescript("""
+            CREATE INDEX IF NOT EXISTS idx_track_played ON track_log(played_at);
+            CREATE INDEX IF NOT EXISTS idx_track_uid_played ON track_log(uid, played_at);
+            CREATE INDEX IF NOT EXISTS idx_track_song ON track_log(song_id);
+            CREATE INDEX IF NOT EXISTS idx_session_start ON session_log(session_start);
+        """)
         await db.commit()
 
 

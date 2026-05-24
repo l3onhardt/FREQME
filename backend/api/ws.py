@@ -263,7 +263,7 @@ async def _uid_matches_active_login(uid) -> bool:
     try:
         status = await netease.login_status()
     except Exception:
-        return True
+        return False
     profile = auth._extract_profile(status) if isinstance(status, dict) else {}
     active_uid = profile.get("userId")
-    return not active_uid or str(active_uid) == str(uid)
+    return bool(active_uid) and str(active_uid) == str(uid)

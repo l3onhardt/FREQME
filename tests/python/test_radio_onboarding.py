@@ -97,6 +97,19 @@ class RadioOnboardingTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(response.status_code, 403)
 
+    async def test_get_onboarding_rejects_when_active_login_is_missing(self):
+        original_auth_netease = auth.netease
+
+        async def login_status():
+            return {"data": {"profile": None}}
+
+        auth.netease = SimpleNamespace(login_status=login_status)
+        self.addCleanup(lambda: setattr(auth, "netease", original_auth_netease))
+
+        response = await radio.get_onboarding(42)
+
+        self.assertEqual(response.status_code, 403)
+
     async def test_safe_tts_hash_requires_md5_length(self):
         self.assertTrue(radio._is_safe_tts_hash("a" * 32))
         self.assertFalse(radio._is_safe_tts_hash("a" * 31))
