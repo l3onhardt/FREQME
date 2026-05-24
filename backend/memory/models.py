@@ -48,6 +48,7 @@ async def init_db():
             );
             CREATE TABLE IF NOT EXISTS track_log (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                uid TEXT,
                 song_id TEXT NOT NULL,
                 song_name TEXT NOT NULL,
                 artist TEXT,
@@ -56,6 +57,7 @@ async def init_db():
                 played_at TEXT DEFAULT CURRENT_TIMESTAMP
             );
             CREATE INDEX IF NOT EXISTS idx_track_played ON track_log(played_at);
+            CREATE INDEX IF NOT EXISTS idx_track_uid_played ON track_log(uid, played_at);
             CREATE INDEX IF NOT EXISTS idx_track_song ON track_log(song_id);
 
             CREATE TABLE IF NOT EXISTS dj_script_log (
@@ -89,4 +91,12 @@ async def init_db():
                 tokens_used INTEGER DEFAULT 0
             );
         """)
+        await _ensure_column(db, "track_log", "uid", "TEXT")
         await db.commit()
+
+
+async def _ensure_column(db, table: str, column: str, definition: str) -> None:
+    async with db.execute(f"PRAGMA table_info({table})") as cursor:
+        columns = {row[1] for row in await cursor.fetchall()}
+    if column not in columns:
+        await db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")

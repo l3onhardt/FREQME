@@ -91,6 +91,35 @@ class MemoryStoreSettingsTest(unittest.TestCase):
 
             asyncio.run(run())
 
+    def test_recent_tracks_are_scoped_by_uid_with_legacy_fallback(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            os.environ["RADIO_DB_PATH"] = str(Path(tmp) / "radio-test.db")
+
+            from backend.memory.models import connect_db, init_db
+            from backend.memory.store import MemoryStore
+
+            async def run():
+                await init_db()
+                store = MemoryStore()
+
+                await store.log_track("user-a-song", "A Song", "A Artist", "test", uid="user-a")
+                await store.log_track("user-b-song", "B Song", "B Artist", "test", uid="user-b")
+
+                self.assertEqual(await store.get_recent_tracks(uid="user-a"), ["user-a-song"])
+                self.assertEqual(await store.get_recent_tracks(uid="user-b"), ["user-b-song"])
+
+                async with connect_db() as db:
+                    await db.execute(
+                        "INSERT INTO track_log (song_id, song_name, artist, source) VALUES (?,?,?,?)",
+                        ("legacy-song", "Legacy Song", "Legacy Artist", "test"),
+                    )
+                    await db.commit()
+
+                self.assertIn("legacy-song", await store.get_recent_tracks())
+                self.assertNotIn("legacy-song", await store.get_recent_tracks(uid="user-a"))
+
+            asyncio.run(run())
+
     def test_init_db_creates_default_parent_directory(self):
         os.environ.pop("RADIO_DB_PATH", None)
 

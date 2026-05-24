@@ -1,7 +1,7 @@
 import json
 import unittest
 
-from backend.api import ws
+from backend.api import auth, ws
 
 
 class FakeWebSocket:
@@ -38,8 +38,8 @@ class FakeStore:
     async def create_session(self, uid):
         return 7
 
-    async def log_track(self, track_id, name, artist, source):
-        self.logged_tracks.append((track_id, name, artist, source))
+    async def log_track(self, track_id, name, artist, source, uid=None):
+        self.logged_tracks.append((track_id, name, artist, source, uid))
 
 
 class FakeDJEngine:
@@ -127,12 +127,14 @@ class FakeScheduler:
         profile=None,
         user_settings=None,
         session_state=None,
+        uid=None,
     ):
         self.pick_next_calls.append({
             "current_song_id": current_song_id,
             "profile": profile,
             "user_settings": user_settings,
             "session_state": session_state,
+            "uid": uid,
         })
         return self.songs.pop(0)
 
@@ -157,12 +159,16 @@ class WebSocketUserSettingsTests(unittest.IsolatedAsyncioTestCase):
             "scheduler": ws.scheduler,
             "compressor": ws.compressor,
             "profile_engine": ws.profile_engine,
+            "auth_netease": auth.netease,
         }
         self.addCleanup(self._restore_ws_globals)
 
     def _restore_ws_globals(self):
         for name, value in self.originals.items():
-            setattr(ws, name, value)
+            if name == "auth_netease":
+                auth.netease = value
+            else:
+                setattr(ws, name, value)
 
     async def test_ws_session_passes_stored_user_settings_to_intro_first_song_and_skip(self):
         stored_settings = {
@@ -197,10 +203,13 @@ class WebSocketUserSettingsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(fake_tts.synthesize_calls[0]["user_settings"], stored_settings)
         self.assertEqual(fake_tts.synthesize_calls[0]["voice_preset"], "bright_girl")
         self.assertEqual(fake_scheduler.pick_next_calls[0]["user_settings"], stored_settings)
+        self.assertEqual(fake_scheduler.pick_next_calls[0]["uid"], "42")
         self.assertEqual(fake_scheduler.pick_next_calls[0]["profile"], fake_dj.intro_calls[0]["profile"])
         self.assertEqual(fake_scheduler.pick_next_calls[1]["current_song_id"], "first")
         self.assertEqual(fake_scheduler.pick_next_calls[1]["user_settings"], stored_settings)
+        self.assertEqual(fake_scheduler.pick_next_calls[1]["uid"], "42")
         self.assertEqual(fake_scheduler.pick_next_calls[1]["profile"], fake_dj.intro_calls[0]["profile"])
+        self.assertEqual(fake_store.logged_tracks[0][-1], "42")
         self.assertEqual(len(fake_scheduler.session_states), 1)
         self.assertIs(
             fake_scheduler.pick_next_calls[0]["session_state"],
@@ -216,6 +225,27 @@ class WebSocketUserSettingsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(fake_tts.hash_calls[1]["user_settings"], stored_settings)
         self.assertEqual(fake_tts.hash_calls[1]["voice_preset"], "bright_girl")
         self.assertNotEqual(fake_dj.intro_calls[0]["user_settings"], handshake_settings)
+
+    async def test_ws_rejects_handshake_uid_that_does_not_match_active_login(self):
+        async def login_status():
+            return {"data": {"profile": {"userId": 42}}}
+
+        auth.netease = type("FakeAuthNetease", (), {"login_status": staticmethod(login_status)})()
+        fake_websocket = FakeWebSocket([
+            {"type": "handshake", "uid": "7", "settings": {}},
+        ])
+
+        ws.store = FakeStore({})
+        ws.dj_engine = FakeDJEngine()
+        ws.tts = FakeTTS()
+        ws.scheduler = FakeScheduler()
+        ws.compressor = FakeCompressor()
+        ws.profile_engine = None
+
+        await ws.ws_handler(fake_websocket)
+
+        self.assertEqual(fake_websocket.sent[0]["type"], "error")
+        self.assertIn("登录账号", fake_websocket.sent[0]["message"])
 
     async def test_track_info_reads_artist_from_supported_song_shapes(self):
         self.assertEqual(

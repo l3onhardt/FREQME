@@ -2,6 +2,8 @@ import json
 
 from fastapi import WebSocket, WebSocketDisconnect
 
+from backend.api import auth
+
 netease = None
 llm = None
 tts = None
@@ -44,7 +46,13 @@ async def ws_handler(websocket: WebSocket):
         try:
             info = _track_info(song)
             if info["id"] not in logged_track_ids:
-                await store.log_track(info["id"], info["name"], info["artist"], "scheduler")
+                await store.log_track(
+                    info["id"],
+                    info["name"],
+                    info["artist"],
+                    "scheduler",
+                    uid=str(uid) if uid else None,
+                )
                 logged_track_ids.add(info["id"])
         except Exception:
             pass
@@ -58,6 +66,7 @@ async def ws_handler(websocket: WebSocket):
             profile=profile,
             user_settings=user_settings,
             session_state=scheduler_state,
+            uid=str(uid) if uid else None,
         )
         if not next_song:
             await websocket.send_json({
@@ -134,6 +143,12 @@ async def ws_handler(websocket: WebSocket):
 
             if msg_type == "handshake":
                 uid = msg.get("uid")
+                if not await _uid_matches_active_login(uid):
+                    await websocket.send_json({
+                        "type": "error",
+                        "message": "登录账号和当前电台用户不一致，请重新登录。",
+                    })
+                    return
                 settings_payload = msg.get("settings") or {}
                 stored_settings = await store.get_user_settings(str(uid)) if uid else None
                 user_settings = stored_settings or settings_payload or {}
@@ -192,6 +207,7 @@ async def ws_handler(websocket: WebSocket):
                     profile=profile,
                     user_settings=user_settings,
                     session_state=scheduler_state,
+                    uid=str(uid) if uid else None,
                 )
                 if song:
                     url = await scheduler.get_song_url(song)
@@ -238,3 +254,16 @@ def _artist_name(song: dict | None) -> str:
             if isinstance(name, str):
                 return name.strip()
     return ""
+
+
+async def _uid_matches_active_login(uid) -> bool:
+    netease = getattr(auth, "netease", None)
+    if not netease or not uid:
+        return True
+    try:
+        status = await netease.login_status()
+    except Exception:
+        return True
+    profile = auth._extract_profile(status) if isinstance(status, dict) else {}
+    active_uid = profile.get("userId")
+    return not active_uid or str(active_uid) == str(uid)

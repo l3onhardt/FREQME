@@ -18,7 +18,7 @@ export function saveCookie(filePath, cookie) {
   fs.writeFileSync(
     tmpPath,
     JSON.stringify({ cookie, updatedAt: new Date().toISOString() }, null, 2),
-    'utf8',
+    { encoding: 'utf8', mode: 0o600 },
   );
   fs.renameSync(tmpPath, filePath);
 }

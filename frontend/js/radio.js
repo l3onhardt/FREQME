@@ -139,7 +139,18 @@ async function fetchOnboarding(uidValue) {
 async function showOnboardingOrStart(profile) {
   document.getElementById('start-radio-btn').style.display = 'none';
 
-  const data = await fetchOnboarding(profile.userId);
+  let data;
+  try {
+    data = await fetchOnboarding(profile.userId);
+  } catch {
+    data = {
+      profile_ready: false,
+      profile: {},
+      settings: null,
+      onboarded: false,
+      fallback: true,
+    };
+  }
   if (data.onboarded && data.settings) {
     onboardingSettings = data.settings;
     document.getElementById('start-radio-btn').style.display = 'block';
@@ -148,18 +159,27 @@ async function showOnboardingOrStart(profile) {
 
   document.getElementById('login-screen').classList.remove('active');
   document.getElementById('onboarding-screen').classList.add('active');
-  document.getElementById('onboarding-status').textContent = data.profile_ready
+  if (data.fallback) {
+    document.getElementById('onboarding-status').textContent =
+      '暂时没读到你的调频记录，先用默认问题把电台调起来。';
+  } else {
+    document.getElementById('onboarding-status').textContent = data.profile_ready
     ? '歌单已经准备好，选好频率就能开播。'
     : '还在整理你的听歌资料，先选一个喜欢的电台频率。';
+  }
   resetOnboardingSteps();
 }
 
 async function bootAuth() {
   document.getElementById('qr-status').textContent = '正在检查登录状态...';
   try {
-    const statusResp = await fetch('/api/auth/status');
-    const statusData = await statusResp.json();
-    const profile = statusData.data?.profile || statusData.profile;
+    let statusData = await fetchAuthStatus();
+    let profile = statusData.data?.profile || statusData.profile;
+    if (!profile?.userId) {
+      await fetch('/api/auth/refresh', { method: 'POST' });
+      statusData = await fetchAuthStatus();
+      profile = statusData.data?.profile || statusData.profile;
+    }
     if (profile?.userId) {
       uid = profile.userId;
       document.getElementById('qr-status').textContent = `已登录: ${profile.nickname}`;
@@ -170,6 +190,11 @@ async function bootAuth() {
     // Fall through to QR login.
   }
   initLogin();
+}
+
+async function fetchAuthStatus() {
+  const statusResp = await fetch('/api/auth/status');
+  return statusResp.json();
 }
 
 function showPlayerAndConnect() {

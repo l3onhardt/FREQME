@@ -8,7 +8,7 @@ const radioPath = resolve('frontend/js/radio.js');
 
 function createElement(id = '') {
   const listeners = new Map();
-  return {
+  const element = {
     id,
     className: '',
     dataset: {},
@@ -33,9 +33,20 @@ function createElement(id = '') {
       return null;
     },
     classList: {
-      add() {},
-      remove() {},
-      toggle() {},
+      add(className) {
+        element.activeClasses.add(className);
+      },
+      remove(className) {
+        element.activeClasses.delete(className);
+      },
+      toggle(className, force) {
+        if (force === true || (force === undefined && !element.activeClasses.has(className))) {
+          element.activeClasses.add(className);
+          return true;
+        }
+        element.activeClasses.delete(className);
+        return false;
+      },
     },
     pause() {
       this.paused = true;
@@ -47,10 +58,12 @@ function createElement(id = '') {
     removeAttribute(attr) {
       delete this[attr];
     },
+    activeClasses: new Set(),
   };
+  return element;
 }
 
-function loadRadio() {
+function loadRadio({ fetchImpl } = {}) {
   const ids = [
     'audio-main',
     'audio-tts',
@@ -114,10 +127,10 @@ function loadRadio() {
         return [];
       },
     },
-    fetch: async () => ({
+    fetch: fetchImpl || (async () => ({
       ok: true,
       json: async () => ({}),
-    }),
+    })),
     location: {
       host: 'example.test',
       protocol: 'http:',
@@ -135,6 +148,19 @@ function loadRadio() {
   vm.runInContext(readFileSync(radioPath, 'utf8'), context, { filename: radioPath });
 
   return { elements, sockets, timers };
+}
+
+async function flushAsyncWork(rounds = 8) {
+  for (let i = 0; i < rounds; i++) {
+    await Promise.resolve();
+  }
+}
+
+async function waitFor(predicate, rounds = 20) {
+  for (let i = 0; i < rounds; i++) {
+    if (predicate()) return;
+    await Promise.resolve();
+  }
 }
 
 test('repeated start clicks reuse the live radio websocket', async () => {
@@ -159,4 +185,71 @@ test('closed radio websocket can reconnect after onclose', async () => {
 
   assert.equal(sockets.length, 2);
   assert.equal(sockets[1].readyState, sockets[1].constructor.CONNECTING);
+});
+
+test('bootAuth refreshes persisted login before falling back to QR', async () => {
+  const requests = [];
+  const { elements } = loadRadio({
+    fetchImpl: async (url) => {
+      requests.push(url);
+      if (url === '/api/auth/status' && requests.filter((x) => x === url).length === 1) {
+        return { ok: true, json: async () => ({ data: { profile: null } }) };
+      }
+      if (url === '/api/auth/refresh') {
+        return { ok: true, json: async () => ({ code: 200 }) };
+      }
+      if (url === '/api/auth/status') {
+        return {
+          ok: true,
+          json: async () => ({ data: { profile: { userId: 42, nickname: 'Saved' } } }),
+        };
+      }
+      if (url === '/api/radio/onboarding/42') {
+        return {
+          ok: true,
+          json: async () => ({ onboarded: true, settings: { voice_preset: 'warm_male' } }),
+        };
+      }
+      return { ok: true, json: async () => ({}) };
+    },
+  });
+
+  await waitFor(() => elements.get('start-radio-btn').style.display === 'block');
+
+  assert.equal(JSON.stringify(requests.slice(0, 4)), JSON.stringify([
+    '/api/auth/status',
+    '/api/auth/refresh',
+    '/api/auth/status',
+    '/api/radio/onboarding/42',
+  ]));
+  assert.equal(elements.get('start-radio-btn').style.display, 'block');
+});
+
+test('onboarding fetch failure shows default onboarding instead of QR fallback', async () => {
+  const requests = [];
+  const { elements } = loadRadio({
+    fetchImpl: async (url) => {
+      requests.push(url);
+      if (url === '/api/auth/status') {
+        return {
+          ok: true,
+          json: async () => ({ data: { profile: { userId: 42, nickname: 'Saved' } } }),
+        };
+      }
+      if (url === '/api/radio/onboarding/42') {
+        return { ok: false, json: async () => ({}) };
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    },
+  });
+
+  await waitFor(() => elements.get('onboarding-screen').activeClasses.has('active'));
+
+  assert.equal(
+    JSON.stringify(requests),
+    JSON.stringify(['/api/auth/status', '/api/radio/onboarding/42']),
+  );
+  assert.ok(elements.get('onboarding-screen').activeClasses.has('active'));
+  assert.ok(!elements.get('login-screen').activeClasses.has('active'));
+  assert.ok(elements.get('onboarding-status').textContent.length > 0);
 });

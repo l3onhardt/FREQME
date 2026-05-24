@@ -123,4 +123,5 @@ app.post('/logout', async (_req, res) => {
 app.get('/health', (req, res) => res.send('ok'));
 
 const port = process.env.PORT || 3000;
-app.listen(port, () => console.log(`netease-bridge ready on port ${port}`));
+const host = process.env.HOST || '127.0.0.1';
+app.listen(port, host, () => console.log(`netease-bridge ready on ${host}:${port}`));

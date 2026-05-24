@@ -164,10 +164,11 @@ class StreamScheduler:
         profile: dict | None = None,
         user_settings: dict | None = None,
         session_state: SchedulerSessionState | None = None,
+        uid: str | None = None,
     ) -> dict | None:
         state = session_state or self.new_session_state()
         try:
-            recent_db = await self.store.get_recent_tracks(200)
+            recent_db = await self.store.get_recent_tracks(200, uid=uid)
         except Exception:
             recent_db = []
         if not isinstance(recent_db, list):

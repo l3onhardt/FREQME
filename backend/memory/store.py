@@ -57,16 +57,33 @@ class MemoryStore:
                 row = await cursor.fetchone()
                 return json.loads(row[0]) if row else None
 
-    async def log_track(self, song_id: str, name: str, artist: str, source: str) -> None:
+    async def log_track(
+        self,
+        song_id: str,
+        name: str,
+        artist: str,
+        source: str,
+        uid: str | None = None,
+    ) -> None:
         async with connect_db() as db:
             await db.execute(
-                "INSERT INTO track_log (song_id, song_name, artist, source) VALUES (?,?,?,?)",
-                (song_id, name, artist, source)
+                "INSERT INTO track_log (uid, song_id, song_name, artist, source) VALUES (?,?,?,?,?)",
+                (str(uid) if uid else None, song_id, name, artist, source)
             )
             await db.commit()
 
-    async def get_recent_tracks(self, limit: int = 100) -> list[str]:
+    async def get_recent_tracks(
+        self,
+        limit: int = 100,
+        uid: str | None = None,
+    ) -> list[str]:
         async with connect_db() as db:
+            if uid:
+                async with db.execute(
+                    "SELECT song_id FROM track_log WHERE uid=? ORDER BY played_at DESC LIMIT ?",
+                    (str(uid), limit),
+                ) as cursor:
+                    return [row[0] for row in await cursor.fetchall()]
             async with db.execute(
                 "SELECT song_id FROM track_log ORDER BY played_at DESC LIMIT ?", (limit,)
             ) as cursor:

@@ -44,18 +44,20 @@ class FakeNetease:
 class FakeStore:
     def __init__(self, recent=None):
         self.recent = [str(song_id) for song_id in (recent or [])]
+        self.calls = []
 
-    async def get_recent_tracks(self, limit=100):
+    async def get_recent_tracks(self, limit=100, uid=None):
+        self.calls.append({"limit": limit, "uid": uid})
         return self.recent[:limit]
 
 
 class RaisingRecentStore(FakeStore):
-    async def get_recent_tracks(self, limit=100):
+    async def get_recent_tracks(self, limit=100, uid=None):
         raise RuntimeError("recent unavailable")
 
 
 class NonListRecentStore(FakeStore):
-    async def get_recent_tracks(self, limit=100):
+    async def get_recent_tracks(self, limit=100, uid=None):
         return {"fallback-ok": True}
 
 
@@ -85,7 +87,8 @@ class SchedulerPersonalizedPickTests(unittest.IsolatedAsyncioTestCase):
         netease.similar = [
             {"id": "similar-1", "name": "Similar One", "ar": [{"name": "New Artist"}]}
         ]
-        scheduler = self.make_scheduler(netease=netease, store=FakeStore(recent=["anchor-db"]))
+        store = FakeStore(recent=["anchor-db"])
+        scheduler = self.make_scheduler(netease=netease, store=store)
         state = scheduler.new_session_state()
         state.played_song_ids.add("anchor-session")
         profile = self.profile_with_anchors(
@@ -93,10 +96,16 @@ class SchedulerPersonalizedPickTests(unittest.IsolatedAsyncioTestCase):
             {"id": "anchor-session", "name": "Session Anchor", "artist": "Known Artist"},
         )
 
-        song = await scheduler.pick_next("current-1", profile=profile, session_state=state)
+        song = await scheduler.pick_next(
+            "current-1",
+            profile=profile,
+            session_state=state,
+            uid="42",
+        )
 
         self.assertEqual(song["id"], "similar-1")
         self.assertEqual(song["selection_reason"]["type"], "discovery_similar")
+        self.assertEqual(store.calls[0]["uid"], "42")
 
     async def test_discovery_pools_all_return_selection_reason_types(self):
         profile = self.profile_with_anchors(

@@ -3,7 +3,7 @@ from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from backend.api import radio
+from backend.api import auth, radio
 
 
 class FakeStore:
@@ -63,11 +63,52 @@ class RadioOnboardingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.fake_store.saved, [("42", settings)])
 
 
+    async def test_save_onboarding_rejects_uid_that_does_not_match_active_login(self):
+        original_auth_netease = auth.netease
+
+        async def login_status():
+            return {"data": {"profile": {"userId": 42}}}
+
+        auth.netease = SimpleNamespace(login_status=login_status)
+        self.addCleanup(lambda: setattr(auth, "netease", original_auth_netease))
+
+        response = await radio.save_onboarding(
+            7,
+            {
+                "voice_preset": "warm_male",
+                "display_name": "Other User",
+                "current_mode": "闄即",
+            },
+        )
+
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(self.fake_store.saved, [])
+
+    async def test_get_onboarding_rejects_uid_that_does_not_match_active_login(self):
+        original_auth_netease = auth.netease
+
+        async def login_status():
+            return {"data": {"profile": {"userId": 42}}}
+
+        auth.netease = SimpleNamespace(login_status=login_status)
+        self.addCleanup(lambda: setattr(auth, "netease", original_auth_netease))
+
+        response = await radio.get_onboarding(7)
+
+        self.assertEqual(response.status_code, 403)
+
+    async def test_safe_tts_hash_requires_md5_length(self):
+        self.assertTrue(radio._is_safe_tts_hash("a" * 32))
+        self.assertFalse(radio._is_safe_tts_hash("a" * 31))
+        self.assertFalse(radio._is_safe_tts_hash("a" * 33))
+        self.assertFalse(radio._is_safe_tts_hash("z" * 32))
+
     async def test_get_tts_serves_file_from_configured_data_dir(self):
         with TemporaryDirectory() as temp_dir:
             cache_dir = radio.Path(temp_dir) / "tts_cache"
             cache_dir.mkdir()
-            wav_path = cache_dir / "abc.wav"
+            hash_value = "a" * 32
+            wav_path = cache_dir / f"{hash_value}.wav"
             wav_path.write_bytes(b"RIFFtest")
 
             with patch(
@@ -75,7 +116,7 @@ class RadioOnboardingTests(unittest.IsolatedAsyncioTestCase):
                 return_value=SimpleNamespace(data_dir=temp_dir),
                 create=True,
             ):
-                response = await radio.get_tts("abc")
+                response = await radio.get_tts(hash_value)
 
             self.assertEqual(radio.Path(response.path), wav_path)
             self.assertEqual(response.media_type, "audio/wav")

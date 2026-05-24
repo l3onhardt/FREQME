@@ -19,6 +19,17 @@ test('saveCookie and loadCookie persist a cookie string', () => {
   assert.equal(loadCookie(file), 'MUSIC_U=abc; NMTID=xyz;');
 });
 
+test('saveCookie writes owner-only cookie file permissions where supported', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'netease-auth-'));
+  const file = path.join(dir, 'cookie.json');
+
+  saveCookie(file, 'MUSIC_U=abc;');
+
+  if (process.platform !== 'win32') {
+    assert.equal(fs.statSync(file).mode & 0o777, 0o600);
+  }
+});
+
 test('loadCookie returns empty string when file is missing or invalid', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'netease-auth-'));
 

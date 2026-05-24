@@ -1,9 +1,11 @@
 from pathlib import Path
 
 from fastapi import APIRouter
+from fastapi.responses import JSONResponse
 from fastapi.responses import FileResponse
 
 from backend.core.config import get_settings
+from backend.api import auth
 
 router = APIRouter(prefix="/api/radio", tags=["radio"])
 
@@ -50,6 +52,9 @@ async def get_profile(uid: int):
 
 @router.get("/onboarding/{uid}")
 async def get_onboarding(uid: int):
+    if not await _uid_matches_active_login(uid):
+        return JSONResponse({"error": "forbidden"}, status_code=403)
+
     profile = await store.get_profile(str(uid)) or {}
     settings = await store.get_user_settings(str(uid))
     return {
@@ -62,6 +67,9 @@ async def get_onboarding(uid: int):
 
 @router.post("/onboarding/{uid}")
 async def save_onboarding(uid: int, payload: dict):
+    if not await _uid_matches_active_login(uid):
+        return JSONResponse({"error": "forbidden"}, status_code=403)
+
     if not isinstance(payload, dict):
         payload = {}
 
@@ -98,7 +106,24 @@ async def get_tts(hash: str):
 
 
 def _is_safe_tts_hash(value: str) -> bool:
-    return bool(value) and all(char in "0123456789abcdefABCDEF" for char in value)
+    return (
+        bool(value)
+        and len(value) == 32
+        and all(char in "0123456789abcdefABCDEF" for char in value)
+    )
+
+
+async def _uid_matches_active_login(uid: int) -> bool:
+    netease = getattr(auth, "netease", None)
+    if not netease:
+        return True
+    try:
+        status = await netease.login_status()
+    except Exception:
+        return True
+    profile = auth._extract_profile(status) if isinstance(status, dict) else {}
+    active_uid = profile.get("userId")
+    return not active_uid or str(active_uid) == str(uid)
 
 
 @router.get("/track/url")

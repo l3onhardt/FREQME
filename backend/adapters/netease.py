@@ -3,7 +3,7 @@ import httpx
 from backend.core.config import get_settings
 
 settings = get_settings()
-BASE = f"http://localhost:{settings.netease_bridge_port}"
+BASE = f"http://127.0.0.1:{settings.netease_bridge_port}"
 
 
 class NeteaseAdapter:
