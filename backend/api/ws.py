@@ -19,30 +19,38 @@ async def ws_handler(websocket: WebSocket):
     scene = "日常"
     profile = {}
     user_settings = {}
+    current_song = None
     current_song_id = None
     session_id = None
+    logged_track_ids = set()
 
     def current_voice_preset() -> str:
         return user_settings.get("voice_preset", "warm_female")
 
     async def send_track(song: dict, url: str):
-        nonlocal current_song_id
+        nonlocal current_song, current_song_id
         await websocket.send_json({
             "type": "play_track",
             "track": _track_info(song),
             "url": url,
         })
+        await remember_current_song(song)
+
+    async def remember_current_song(song: dict):
+        nonlocal current_song, current_song_id
+        current_song = song
         current_song_id = str(song.get("id"))
-        # Log to DB
         try:
             info = _track_info(song)
-            await store.log_track(info["id"], info["name"], info["artist"], "scheduler")
+            if info["id"] not in logged_track_ids:
+                await store.log_track(info["id"], info["name"], info["artist"], "scheduler")
+                logged_track_ids.add(info["id"])
         except Exception:
             pass
 
     async def play_next_with_segue(prev_song_id: str | None = None):
         """Pick next song, generate segue, send to frontend."""
-        nonlocal current_song_id
+        nonlocal current_song, current_song_id
 
         next_song = await scheduler.pick_next(
             prev_song_id,
@@ -60,7 +68,7 @@ async def ws_handler(websocket: WebSocket):
         segue = None
         tts_hash_val = ""
         try:
-            prev_info = {"id": prev_song_id} if prev_song_id else {}
+            prev_info = current_song or ({"id": prev_song_id} if prev_song_id else {})
             segue = await dj_engine.generate_segue(
                 profile,
                 scene,
@@ -99,18 +107,10 @@ async def ws_handler(websocket: WebSocket):
                 "next_track": _track_info(next_song),
                 "url": url,
             })
+            await remember_current_song(next_song)
         else:
             # No segue generated, play directly
             await send_track(next_song, url)
-
-        current_song_id = str(next_song.get("id"))
-
-        # Log track to database (avoid repeats)
-        try:
-            info = _track_info(next_song)
-            await store.log_track(info["id"], info["name"], info["artist"], "scheduler")
-        except Exception:
-            pass
 
         # Log to memory
         if segue:
