@@ -1,5 +1,7 @@
 import inspect
 import unittest
+from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from backend.adapters import tts
@@ -17,7 +19,7 @@ class FakeSettings:
     data_dir = "./data"
 
 
-class TTSVoicePresetTests(unittest.TestCase):
+class TTSVoicePresetTests(unittest.IsolatedAsyncioTestCase):
     def make_adapter(self):
         with patch("backend.adapters.tts.settings", FakeSettings()):
             return TTSAdapter()
@@ -182,6 +184,58 @@ class TTSVoicePresetTests(unittest.TestCase):
 
         self.assertEqual(legacy_daily_prompt, daily_prompt)
         self.assertEqual(legacy_night_prompt, night_prompt)
+
+    async def test_edge_fallback_writes_canonical_cache_filename(self):
+        with TemporaryDirectory() as temp_dir:
+            class TempSettings(FakeSettings):
+                data_dir = temp_dir
+
+            async def get_tts_cache(hash_value):
+                return None
+
+            async def cache_tts(hash_value, path):
+                cached_paths.append(path)
+
+            class FakeMemoryStore:
+                async def get_tts_cache(self, hash_value):
+                    return await get_tts_cache(hash_value)
+
+                async def cache_tts(self, hash_value, path):
+                    return await cache_tts(hash_value, path)
+
+            class NoAudioResponse:
+                status_code = 200
+
+                def json(self):
+                    return {"choices": [{"message": {"audio": {}}}]}
+
+            async def fake_post(*args, **kwargs):
+                return NoAudioResponse()
+
+            def fake_run(command, timeout, capture_output):
+                media_path = tts.Path(command[command.index("--write-media") + 1])
+                media_path.write_bytes(b"edge-wav")
+                return SimpleNamespace(returncode=0)
+
+            cached_paths = []
+            with patch("backend.adapters.tts.settings", TempSettings()):
+                adapter = TTSAdapter()
+            adapter.client.post = fake_post
+
+            with patch("backend.memory.store.MemoryStore", FakeMemoryStore), patch(
+                "subprocess.run",
+                fake_run,
+            ):
+                audio = await adapter.synthesize("fallback text", "日常")
+
+            h = adapter._hash("fallback text", "日常", voice_preset="warm_female")
+            canonical_path = tts.Path(temp_dir) / "tts_cache" / f"{h}.wav"
+            edge_path = tts.Path(temp_dir) / "tts_cache" / f"{h}_edge.wav"
+
+            self.assertEqual(audio, b"edge-wav")
+            self.assertTrue(canonical_path.exists())
+            self.assertFalse(edge_path.exists())
+            self.assertEqual(cached_paths, [str(canonical_path)])
 
 
 if __name__ == "__main__":

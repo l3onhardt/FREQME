@@ -188,7 +188,6 @@ class TTSAdapter:
         try:
             import subprocess
 
-            tmp_path = self.cache_dir / f"{h}_edge.wav"
             subprocess.run(
                 [
                     "edge-tts",
@@ -197,14 +196,14 @@ class TTSAdapter:
                     "--text",
                     text,
                     "--write-media",
-                    str(tmp_path),
+                    str(cache_path),
                 ],
                 timeout=15,
                 capture_output=True,
             )
-            if tmp_path.exists():
-                audio = tmp_path.read_bytes()
-                await store.cache_tts(h, str(tmp_path))
+            if cache_path.exists():
+                audio = cache_path.read_bytes()
+                await store.cache_tts(h, str(cache_path))
                 return audio
         except Exception:
             pass
