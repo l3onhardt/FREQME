@@ -184,6 +184,35 @@ class MalformedPlaylistContainerNetease(FakeNetease):
         return []
 
 
+class MalformedPlaylistSummaryNetease(FakeNetease):
+    async def user_playlist(self, uid):
+        return [
+            None,
+            "not a playlist",
+            {"id": 701, "name": "Valid Summary"},
+        ]
+
+    async def playlist_detail(self, playlist_id):
+        self.detail_calls.append(playlist_id)
+        return {
+            "playlist": {
+                "tracks": [
+                    {
+                        "id": 7001,
+                        "name": "Valid Summary Song",
+                        "artists": [{"name": "Valid Artist"}],
+                    }
+                ]
+            }
+        }
+
+    async def user_record(self, uid):
+        return {"weekData": []}
+
+    async def like_list(self, uid):
+        return []
+
+
 class RaisingRecordNetease(FakeNetease):
     async def user_record(self, uid):
         raise RuntimeError("record unavailable")
@@ -317,6 +346,29 @@ class ProfileEnginePlaylistDetailTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(store.saved_profiles[0][1]["anchor_tracks"], profile["anchor_tracks"])
         self.assertIn("Still Works", llm.prompts[0])
+
+    async def test_malformed_playlist_summaries_are_skipped_and_later_playlists_still_save(self):
+        netease = MalformedPlaylistSummaryNetease()
+        llm = FakeLLM()
+        store = FakeStore()
+        engine = ProfileEngine(netease, llm, store)
+
+        profile = await engine.analyze(42)
+
+        self.assertEqual(netease.detail_calls, [701])
+        self.assertEqual(
+            profile["anchor_tracks"],
+            [
+                {
+                    "id": "7001",
+                    "name": "Valid Summary Song",
+                    "artist": "Valid Artist",
+                    "source": "playlist",
+                }
+            ],
+        )
+        self.assertEqual(store.saved_profiles[0][1]["anchor_tracks"], profile["anchor_tracks"])
+        self.assertIn("Valid Summary Song", llm.prompts[0])
 
     async def test_user_record_exception_leaves_recent_empty_and_still_saves_profile(self):
         store = FakeStore()

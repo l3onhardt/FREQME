@@ -45,6 +45,8 @@ class ProfileEngine:
     ) -> list[dict]:
         tracks = []
         for playlist in (playlists or [])[:max_playlists]:
+            if not isinstance(playlist, dict):
+                continue
             playlist_id = playlist.get("id")
             if not playlist_id:
                 continue
