@@ -121,6 +121,28 @@ async function initLogin() {
   }
 }
 
+async function showOnboardingOrStart(_profile) {
+  document.getElementById('start-radio-btn').style.display = 'block';
+}
+
+async function bootAuth() {
+  document.getElementById('qr-status').textContent = '正在检查登录状态...';
+  try {
+    const statusResp = await fetch('/api/auth/status');
+    const statusData = await statusResp.json();
+    const profile = statusData.data?.profile || statusData.profile;
+    if (profile?.userId) {
+      uid = profile.userId;
+      document.getElementById('qr-status').textContent = `已登录: ${profile.nickname}`;
+      await showOnboardingOrStart(profile);
+      return;
+    }
+  } catch {
+    // Fall through to QR login.
+  }
+  initLogin();
+}
+
 // ---- Start Radio ----
 document.getElementById('start-radio-btn').addEventListener('click', () => {
   document.getElementById('login-screen').classList.remove('active');
@@ -292,4 +314,4 @@ volumeSlider.addEventListener('input', (e) => {
 });
 
 // ---- Boot ----
-initLogin();
+bootAuth();

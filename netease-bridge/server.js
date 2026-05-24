@@ -1,5 +1,13 @@
 import NeteaseCloudMusicApi from 'NeteaseCloudMusicApi';
 import express from 'express';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import {
+    clearCookie,
+    loadCookie,
+    saveCookie,
+    sanitizeLoginBody,
+} from './auth-state.js';
 
 const {
     login_qr_key, login_qr_create, login_qr_check,
@@ -11,7 +19,9 @@ const {
 const app = express();
 app.use(express.json());
 
-let cookie = '';
+const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const cookiePath = process.env.NETEASE_COOKIE_PATH || path.join(projectRoot, 'data', 'netease-cookie.json');
+let cookie = loadCookie(cookiePath);
 
 // QR login endpoints
 app.get('/login/qr/key', async (req, res) => {
@@ -26,8 +36,11 @@ app.get('/login/qr/create', async (req, res) => {
 
 app.get('/login/qr/check', async (req, res) => {
     const r = await login_qr_check({ key: req.query.key });
-    if (r.body.code === 803) cookie = r.body.cookie;
-    res.json(r.body);
+    if (r.body.code === 803 && r.body.cookie) {
+        cookie = r.body.cookie;
+        saveCookie(cookiePath, cookie);
+    }
+    res.json(sanitizeLoginBody(r.body));
 });
 
 // Auth-required helper
@@ -82,8 +95,17 @@ app.get('/login/status', async (req, res) => {
 
 app.get('/login/refresh', async (req, res) => {
     const r = await login_refresh({ cookie });
-    if (r.body.cookie) cookie = r.body.cookie;
-    res.json(r.body);
+    if (r.body.cookie) {
+        cookie = r.body.cookie;
+        saveCookie(cookiePath, cookie);
+    }
+    res.json(sanitizeLoginBody(r.body));
+});
+
+app.post('/logout', async (_req, res) => {
+    cookie = '';
+    clearCookie(cookiePath);
+    res.json({ code: 200 });
 });
 
 app.get('/health', (req, res) => res.send('ok'));

@@ -66,6 +66,7 @@ async def lifespan(app: FastAPI):
 
     # Wire module globals
     auth.netease = netease_adapter
+    auth.store = store
     radio.netease = netease_adapter
     radio.llm = llm_router
     radio.tts = tts_adapter
