@@ -11,7 +11,7 @@ import {
 
 const {
     login_qr_key, login_qr_create, login_qr_check,
-    user_playlist, user_record, recommend_songs,
+    user_playlist, playlist_detail, user_record, recommend_songs,
     personal_fm, simi_song, song_url, search,
     login_refresh, login_status, like_list,
 } = NeteaseCloudMusicApi;
@@ -58,6 +58,11 @@ function withCookie(opts) {
 
 app.get('/user/playlist', async (req, res) => {
     const r = await user_playlist(withCookie({ uid: req.query.uid }));
+    res.json(r.body);
+});
+
+app.get('/playlist/detail', async (req, res) => {
+    const r = await playlist_detail(withCookie({ id: req.query.id }));
     res.json(r.body);
 });
 
