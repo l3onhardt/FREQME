@@ -6,6 +6,16 @@ from pathlib import Path
 
 
 class MemoryStoreSettingsTest(unittest.TestCase):
+    def setUp(self):
+        self._original_radio_db_path = os.environ.get("RADIO_DB_PATH")
+        self.addCleanup(self._restore_radio_db_path)
+
+    def _restore_radio_db_path(self):
+        if self._original_radio_db_path is None:
+            os.environ.pop("RADIO_DB_PATH", None)
+        else:
+            os.environ["RADIO_DB_PATH"] = self._original_radio_db_path
+
     def test_saves_and_loads_auth_account_and_user_settings(self):
         with tempfile.TemporaryDirectory() as tmp:
             os.environ["RADIO_DB_PATH"] = str(Path(tmp) / "radio-test.db")
@@ -39,6 +49,63 @@ class MemoryStoreSettingsTest(unittest.TestCase):
                 self.assertEqual(settings["current_mode"], "专注")
 
             asyncio.run(run())
+
+    def test_missing_account_and_settings_return_none(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            os.environ["RADIO_DB_PATH"] = str(Path(tmp) / "radio-test.db")
+
+            from backend.memory.models import init_db
+            from backend.memory.store import MemoryStore
+
+            async def run():
+                await init_db()
+                store = MemoryStore()
+
+                self.assertIsNone(await store.get_auth_account("missing"))
+                self.assertIsNone(await store.get_user_settings("missing"))
+
+            asyncio.run(run())
+
+    def test_auth_account_and_settings_upsert_replaces_existing_payload(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            os.environ["RADIO_DB_PATH"] = str(Path(tmp) / "radio-test.db")
+
+            from backend.memory.models import init_db
+            from backend.memory.store import MemoryStore
+
+            async def run():
+                await init_db()
+                store = MemoryStore()
+
+                await store.save_auth_account("42", {"nickname": "old"})
+                await store.save_auth_account("42", {"nickname": "new"})
+                await store.save_user_settings("42", {"voice_preset": "calm"})
+                await store.save_user_settings("42", {"voice_preset": "bright"})
+
+                self.assertEqual(
+                    await store.get_auth_account("42"), {"nickname": "new"}
+                )
+                self.assertEqual(
+                    await store.get_user_settings("42"), {"voice_preset": "bright"}
+                )
+
+            asyncio.run(run())
+
+    def test_init_db_creates_default_parent_directory(self):
+        os.environ.pop("RADIO_DB_PATH", None)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            original_cwd = os.getcwd()
+            try:
+                os.chdir(tmp)
+
+                from backend.memory.models import init_db
+
+                asyncio.run(init_db())
+
+                self.assertTrue((Path(tmp) / "data" / "radio.db").exists())
+            finally:
+                os.chdir(original_cwd)
 
 
 if __name__ == "__main__":

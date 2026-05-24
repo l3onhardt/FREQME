@@ -1,12 +1,31 @@
-import aiosqlite
 import json
 import os
+from pathlib import Path
 
-DB_PATH = os.getenv("RADIO_DB_PATH", "data/radio.db")
+import aiosqlite
+
+DEFAULT_DB_PATH = "data/radio.db"
+DB_PATH = DEFAULT_DB_PATH
+
+
+def get_db_path() -> str:
+    return os.getenv("RADIO_DB_PATH", DEFAULT_DB_PATH)
+
+
+def ensure_db_parent(path: str) -> None:
+    parent = Path(path).parent
+    if str(parent) and str(parent) != ".":
+        parent.mkdir(parents=True, exist_ok=True)
+
+
+def connect_db():
+    path = get_db_path()
+    ensure_db_parent(path)
+    return aiosqlite.connect(path)
 
 
 async def init_db():
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with connect_db() as db:
         await db.executescript("""
             CREATE TABLE IF NOT EXISTS user_profile (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
