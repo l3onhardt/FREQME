@@ -22,6 +22,9 @@ async def ws_handler(websocket: WebSocket):
     current_song_id = None
     session_id = None
 
+    def current_voice_preset() -> str:
+        return user_settings.get("voice_preset", "warm_female")
+
     async def send_track(song: dict, url: str):
         nonlocal current_song_id
         await websocket.send_json({
@@ -69,10 +72,16 @@ async def ws_handler(websocket: WebSocket):
             tts_audio = await tts.synthesize(
                 segue,
                 scene,
+                voice_preset=current_voice_preset(),
                 user_settings=user_settings,
             )
             tts_hash_val = (
-                tts._hash(segue, scene, user_settings=user_settings)
+                tts._hash(
+                    segue,
+                    scene,
+                    voice_preset=current_voice_preset(),
+                    user_settings=user_settings,
+                )
                 if tts_audio
                 else ""
             )
@@ -146,10 +155,16 @@ async def ws_handler(websocket: WebSocket):
                 tts_audio = await tts.synthesize(
                     intro,
                     scene,
+                    voice_preset=current_voice_preset(),
                     user_settings=user_settings,
                 )
                 tts_hash = (
-                    tts._hash(intro, scene, user_settings=user_settings)
+                    tts._hash(
+                        intro,
+                        scene,
+                        voice_preset=current_voice_preset(),
+                        user_settings=user_settings,
+                    )
                     if tts_audio
                     else ""
                 )

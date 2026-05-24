@@ -82,18 +82,26 @@ class FakeTTS:
         self.synthesize_calls = []
         self.hash_calls = []
 
-    async def synthesize(self, text, style="daily", user_settings=None):
+    async def synthesize(
+        self,
+        text,
+        style="daily",
+        voice_preset=None,
+        user_settings=None,
+    ):
         self.synthesize_calls.append({
             "text": text,
             "style": style,
+            "voice_preset": voice_preset,
             "user_settings": user_settings,
         })
         return b"audio"
 
-    def _hash(self, text, style, user_settings=None):
+    def _hash(self, text, style, voice_preset=None, user_settings=None):
         self.hash_calls.append({
             "text": text,
             "style": style,
+            "voice_preset": voice_preset,
             "user_settings": user_settings,
         })
         return f"hash-{text}"
@@ -179,6 +187,7 @@ class WebSocketUserSettingsTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(fake_websocket.accepted)
         self.assertEqual(fake_dj.intro_calls[0]["user_settings"], stored_settings)
         self.assertEqual(fake_tts.synthesize_calls[0]["user_settings"], stored_settings)
+        self.assertEqual(fake_tts.synthesize_calls[0]["voice_preset"], "bright_girl")
         self.assertEqual(fake_scheduler.pick_next_calls[0]["user_settings"], stored_settings)
         self.assertEqual(fake_scheduler.pick_next_calls[0]["profile"], fake_dj.intro_calls[0]["profile"])
         self.assertEqual(fake_scheduler.pick_next_calls[1]["current_song_id"], "first")
@@ -186,7 +195,9 @@ class WebSocketUserSettingsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(fake_scheduler.pick_next_calls[1]["profile"], fake_dj.intro_calls[0]["profile"])
         self.assertEqual(fake_dj.segue_calls[0]["user_settings"], stored_settings)
         self.assertEqual(fake_tts.synthesize_calls[1]["user_settings"], stored_settings)
+        self.assertEqual(fake_tts.synthesize_calls[1]["voice_preset"], "bright_girl")
         self.assertEqual(fake_tts.hash_calls[1]["user_settings"], stored_settings)
+        self.assertEqual(fake_tts.hash_calls[1]["voice_preset"], "bright_girl")
         self.assertNotEqual(fake_dj.intro_calls[0]["user_settings"], handshake_settings)
 
 

@@ -1,38 +1,37 @@
 import base64
 import hashlib
-import httpx
 from pathlib import Path
+
+import httpx
 
 from backend.core.config import get_settings
 
 settings = get_settings()
 
-# Style descriptions mapped to MiMo Director Mode user prompts
-STYLE_USER_PROMPTS = {
-    "深夜": (
-        "[角色]一个温柔的深夜电台主播，声音低沉而温暖[场景]凌晨两点，听众独自在房间[指导]"
-        "语气要轻柔，像在耳边低语，语速缓慢，带着些许慵懒和关怀，不要太过明亮"
-    ),
-    "清晨": (
-        "[角色]一个清新的晨间电台主播[场景]太阳刚升起，新的一天开始[指导]"
-        "声音清爽有朝气，语速适中，带着微笑的感觉，让人感到一天的希望"
-    ),
-    "午后": (
-        "[角色]一个慵懒的午后电台主播[场景]阳光透过窗户洒进来，悠闲的下午[指导]"
-        "语气随性慵懒，像朋友闲聊，语速稍慢，带着一点暖意"
-    ),
-    "日常": (
-        "[角色]一个温暖自然的电台主播[场景]普通的日常陪伴[指导]"
-        "语气自然轻松，像朋友在身边说话，语速正常，不要夸张也不要太平淡"
-    ),
+VOICE_PRESETS = {
+    "warm_female": {
+        "config_attr": "mimo_tts_voice_warm_female",
+        "director": "温暖、磁性、克制的中文电台女主播音色，声音贴近真实广播节目，亲切但不甜腻。",
+    },
+    "warm_male": {
+        "config_attr": "mimo_tts_voice_warm_male",
+        "director": "温和、低暖、沉稳的中文电台男主播音色，有陪伴感，表达自然，不油腻、不表演化。",
+    },
+    "bright_girl": {
+        "config_attr": "mimo_tts_voice_bright_girl",
+        "director": "年轻、明亮、干净的中文电台女主播音色，亲近而克制，保持真实主播感，避免角色扮演、刻意卖萌或过度可爱化口吻。",
+    },
 }
 
-# Style tags to prepend in assistant content for extra control
-STYLE_TAGS = {
-    "深夜": "(温柔)(慵懒)(气声)",
-    "清晨": "(活泼)(清亮)",
-    "午后": "(慵懒)(温柔)",
-    "日常": "(温柔)(自然)",
+SCENE_GUIDANCE = {
+    "深夜": "深夜时段，语速稍慢，留白自然，氛围温暖安静。",
+    "清晨": "清晨时段，语气清爽，节奏适中，带一点醒来的轻盈感但不要兴奋。",
+    "午后": "午后时段，语气放松，节奏舒展，有一点阳光感但不过分慵懒。",
+    "日常": "日常陪伴，语气自然平稳，语速正常，像真实电台主播在顺畅串场。",
+    "娣卞": "深夜时段，语速稍慢，留白自然，氛围温暖安静。",
+    "娓呮櫒": "清晨时段，语气清爽，节奏适中，带一点醒来的轻盈感但不要兴奋。",
+    "鍗堝悗": "午后时段，语气放松，节奏舒展，有一点阳光感但不过分慵懒。",
+    "鏃ュ父": "日常陪伴，语气自然平稳，语速正常，像真实电台主播在顺畅串场。",
 }
 
 
@@ -44,24 +43,83 @@ class TTSAdapter:
         self.api_key = settings.mimo_api_key
         self.model = settings.mimo_tts_model
         self.voice = settings.mimo_tts_voice
+        self.voice_config = {
+            key: getattr(settings, preset["config_attr"], "") or ""
+            for key, preset in VOICE_PRESETS.items()
+        }
         self.cache_dir = Path(settings.data_dir) / "tts_cache"
         self.cache_dir.mkdir(parents=True, exist_ok=True)
+
+    def _voice_preset_from_settings(
+        self,
+        user_settings: dict | None = None,
+        voice_preset: str | None = None,
+    ) -> str:
+        candidate = voice_preset
+        if not candidate and user_settings:
+            candidate = user_settings.get("voice_preset")
+        return candidate if candidate in VOICE_PRESETS else "warm_female"
+
+    def _resolve_voice(self, voice_preset: str | None = None) -> str:
+        preset_key = self._voice_preset_from_settings(voice_preset=voice_preset)
+        configured = self.voice_config.get(preset_key, "")
+        return configured or self.voice
+
+    def _director_prompt(
+        self,
+        scene: str = "日常",
+        voice_preset: str | None = None,
+    ) -> str:
+        preset_key = self._voice_preset_from_settings(voice_preset=voice_preset)
+        preset = VOICE_PRESETS[preset_key]
+        scene_text = SCENE_GUIDANCE.get(scene, SCENE_GUIDANCE["日常"])
+        return (
+            f"[角色]{preset['director']}"
+            f"[场景]{scene_text}"
+            "[指导]像真实电台主播一样说话，磁性、温暖、克制、自然。"
+            "只读正文含义，不要加入奇怪语气词、拟声词、括号情绪标签或夸张重音；"
+            "不要把语气做成刻意卖萌、舞台表演或广告腔。"
+        )
+
+    def build_request_body(
+        self,
+        text: str,
+        scene: str = "日常",
+        voice_preset: str | None = "warm_female",
+    ) -> dict:
+        preset_key = self._voice_preset_from_settings(voice_preset=voice_preset)
+        return {
+            "model": self.model,
+            "messages": [
+                {"role": "user", "content": self._director_prompt(scene, preset_key)},
+                {"role": "assistant", "content": text},
+            ],
+            "audio": {
+                "format": "wav",
+                "voice": self._resolve_voice(preset_key),
+            },
+        }
 
     def _hash(
         self,
         text: str,
         style: str,
+        voice_preset: str | None = None,
         user_settings: dict | None = None,
     ) -> str:
-        return hashlib.md5(f"{text}|{style}|{self.voice}".encode()).hexdigest()
+        preset_key = self._voice_preset_from_settings(user_settings, voice_preset)
+        voice = self._resolve_voice(preset_key)
+        return hashlib.md5(f"{text}|{style}|{preset_key}|{voice}".encode()).hexdigest()
 
     async def synthesize(
         self,
         text: str,
-        style: str = "日常",
+        style: str = "鏃ュ父",
+        voice_preset: str | None = None,
         user_settings: dict | None = None,
     ) -> bytes | None:
-        h = self._hash(text, style)
+        preset_key = self._voice_preset_from_settings(user_settings, voice_preset)
+        h = self._hash(text, style, voice_preset=preset_key)
 
         # Check disk cache
         cache_path = self.cache_dir / f"{h}.wav"
@@ -70,28 +128,13 @@ class TTSAdapter:
 
         # Check SQLite cache (lighter check first)
         from backend.memory.store import MemoryStore
+
         store = MemoryStore()
         cached = await store.get_tts_cache(h)
         if cached and Path(cached).exists():
             return Path(cached).read_bytes()
 
-        style_user = STYLE_USER_PROMPTS.get(style, STYLE_USER_PROMPTS["日常"])
-        style_tag = STYLE_TAGS.get(style, STYLE_TAGS["日常"])
-
-        # Build assistant content with style tag prefix
-        assistant_content = f"{style_tag}{text}"
-
-        body = {
-            "model": self.model,
-            "messages": [
-                {"role": "user", "content": style_user},
-                {"role": "assistant", "content": assistant_content},
-            ],
-            "audio": {
-                "format": "wav",
-                "voice": self.voice,
-            },
-        }
+        body = self.build_request_body(text, style, preset_key)
 
         # Try MiMo API
         try:
@@ -123,12 +166,17 @@ class TTSAdapter:
         # Fallback: Edge TTS
         try:
             import subprocess
-            import tempfile
+
             tmp_path = self.cache_dir / f"{h}_edge.wav"
             subprocess.run(
                 [
-                    "edge-tts", "--voice", "zh-CN-XiaoxiaoNeural",
-                    "--text", text, "--write-media", str(tmp_path),
+                    "edge-tts",
+                    "--voice",
+                    "zh-CN-XiaoxiaoNeural",
+                    "--text",
+                    text,
+                    "--write-media",
+                    str(tmp_path),
                 ],
                 timeout=15,
                 capture_output=True,

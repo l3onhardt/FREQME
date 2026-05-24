@@ -1,5 +1,6 @@
-from pydantic_settings import BaseSettings
 from functools import lru_cache
+
+from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
@@ -8,6 +9,9 @@ class Settings(BaseSettings):
     mimo_api_base: str = "https://api.xiaomimimo.com/v1"
     mimo_tts_model: str = "mimo-v2.5-tts"
     mimo_tts_voice: str = "冰糖"
+    mimo_tts_voice_warm_female: str = ""
+    mimo_tts_voice_warm_male: str = ""
+    mimo_tts_voice_bright_girl: str = ""
 
     # LLM
     llm_provider: str = "mimo"
