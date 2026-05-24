@@ -1,0 +1,9 @@
+{
+  "name": "netease-bridge",
+  "version": "1.0.0",
+  "type": "module",
+  "dependencies": {
+    "express": "^4.21.0",
+    "NeteaseCloudMusicApi": "^4.28.0"
+  }
+}

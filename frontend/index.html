@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>小米memo电台</title>
+<link rel="stylesheet" href="css/radio.css">
+</head>
+<body>
+<div id="app">
+  <!-- Login Screen -->
+  <div id="login-screen" class="screen active">
+    <div class="login-container">
+      <h1>🌙 欢迎回来</h1>
+      <p class="subtitle">扫码登录网易云，开启你的专属电台</p>
+      <div id="qr-container">
+        <img id="qr-img" src="" alt="QR Code">
+        <p id="qr-status">等待生成二维码...</p>
+      </div>
+      <button id="start-radio-btn" class="btn-primary" style="display:none">开始收听</button>
+    </div>
+  </div>
+
+  <!-- Player Screen -->
+  <div id="player-screen" class="screen">
+    <div class="player-bg" id="player-bg"></div>
+    <div class="player-overlay">
+      <div class="scene-label" id="scene-label">小米memo电台</div>
+      <div class="track-info" id="track-info">
+        <div class="track-name" id="track-name">--</div>
+        <div class="track-artist" id="track-artist">--</div>
+      </div>
+      <div class="dj-message" id="dj-message">
+        <p id="dj-text"></p>
+      </div>
+      <div class="player-controls">
+        <button id="btn-skip" class="ctrl-btn" title="下一首">⏭</button>
+        <button id="btn-play" class="ctrl-btn ctrl-main" title="暂停/播放">⏸</button>
+        <input type="range" id="volume-slider" min="0" max="100" value="80" title="音量">
+      </div>
+    </div>
+  </div>
+</div>
+
+<audio id="audio-main" preload="auto"></audio>
+<audio id="audio-tts" preload="auto"></audio>
+
+<script src="js/radio.js"></script>
+</body>
+</html>
