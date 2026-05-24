@@ -237,6 +237,42 @@ class TTSVoicePresetTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(edge_path.exists())
             self.assertEqual(cached_paths, [str(canonical_path)])
 
+    async def test_legacy_edge_cache_hit_creates_canonical_cache_file(self):
+        with TemporaryDirectory() as temp_dir:
+            class TempSettings(FakeSettings):
+                data_dir = temp_dir
+
+            with patch("backend.adapters.tts.settings", TempSettings()):
+                adapter = TTSAdapter()
+
+            h = adapter._hash(
+                "legacy cached text",
+                "日常",
+                voice_preset="warm_female",
+            )
+            cache_dir = tts.Path(temp_dir) / "tts_cache"
+            legacy_path = cache_dir / f"{h}_edge.wav"
+            canonical_path = cache_dir / f"{h}.wav"
+            legacy_path.write_bytes(b"legacy-edge-wav")
+
+            cached_paths = []
+
+            class FakeMemoryStore:
+                async def get_tts_cache(self, hash_value):
+                    self.assert_hash = hash_value
+                    return str(legacy_path)
+
+                async def cache_tts(self, hash_value, path):
+                    cached_paths.append((hash_value, path))
+
+            with patch("backend.memory.store.MemoryStore", FakeMemoryStore):
+                audio = await adapter.synthesize("legacy cached text", "日常")
+
+            self.assertEqual(audio, b"legacy-edge-wav")
+            self.assertTrue(canonical_path.exists())
+            self.assertEqual(canonical_path.read_bytes(), b"legacy-edge-wav")
+            self.assertEqual(cached_paths, [(h, str(canonical_path))])
+
 
 if __name__ == "__main__":
     unittest.main()

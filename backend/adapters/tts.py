@@ -147,8 +147,13 @@ class TTSAdapter:
 
         store = MemoryStore()
         cached = await store.get_tts_cache(h)
-        if cached and Path(cached).exists():
-            return Path(cached).read_bytes()
+        cached_path = Path(cached) if cached else None
+        if cached_path and cached_path.exists():
+            audio = cached_path.read_bytes()
+            if not cache_path.exists():
+                cache_path.write_bytes(audio)
+                await store.cache_tts(h, str(cache_path))
+            return audio
 
         body = self.build_request_body(
             text,
