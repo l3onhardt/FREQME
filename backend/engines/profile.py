@@ -12,9 +12,27 @@ class ProfileEngine:
         self.llm = llm
         self.store = store
 
+    async def _best_effort(self, awaitable, default):
+        try:
+            return await awaitable
+        except Exception:
+            return default
+
+    def _has_track_id(self, song) -> bool:
+        return isinstance(song, dict) and bool(song.get("id"))
+
     def _compact_track(self, song: dict, source: str = "") -> dict:
+        if not isinstance(song, dict):
+            song = {}
+
         artists = song.get("ar") or song.get("artists") or []
-        artist = artists[0].get("name", "") if artists else ""
+        if isinstance(artists, dict):
+            artists = [artists]
+        if not isinstance(artists, list):
+            artists = []
+
+        first_artist = artists[0] if artists else {}
+        artist = first_artist.get("name", "") if isinstance(first_artist, dict) else ""
         return {
             "id": str(song.get("id", "")),
             "name": song.get("name", "") or "",
@@ -40,13 +58,21 @@ class ProfileEngine:
         return tracks
 
     async def analyze(self, uid: int) -> dict:
-        playlists = await self.netease.user_playlist(uid)
+        playlists = await self._best_effort(self.netease.user_playlist(uid), [])
+        if not isinstance(playlists, list):
+            playlists = []
         playlist_tracks = await self._playlist_tracks(playlists)
-        records = await self.netease.user_record(uid)
-        liked = await self.netease.like_list(uid)
-        user_settings = await self.store.get_user_settings(str(uid)) or {}
+        records = await self._best_effort(self.netease.user_record(uid), {})
+        if not isinstance(records, dict):
+            records = {}
+        liked = await self._best_effort(self.netease.like_list(uid), [])
+        if not isinstance(liked, list):
+            liked = []
+        user_settings = await self._best_effort(self.store.get_user_settings(str(uid)), {})
+        if not isinstance(user_settings, dict):
+            user_settings = {}
         music_notes = (user_settings.get("music_notes") or "").strip()[:500]
-        valid_playlist_tracks = [song for song in playlist_tracks if song.get("id")]
+        valid_playlist_tracks = [song for song in playlist_tracks if self._has_track_id(song)]
 
         song_list = "\n".join(
             f"- {track['name']} by {track['artist']}"
@@ -57,8 +83,12 @@ class ProfileEngine:
         )
 
         week_data = records.get("weekData", []) if records else []
+        if not isinstance(week_data, list):
+            week_data = []
         recent_song_items = [
-            item.get("song", {}) for item in week_data[:50] if item.get("song", {}).get("id")
+            item.get("song", {})
+            for item in week_data[:50]
+            if isinstance(item, dict) and self._has_track_id(item.get("song"))
         ]
         recent_listens = "\n".join(
             f"- {track['name']} by {track['artist']}"

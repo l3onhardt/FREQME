@@ -122,6 +122,52 @@ class FakeStore:
         self.saved_profiles.append((uid, profile))
 
 
+class MalformedTrackNetease(FakeNetease):
+    async def user_playlist(self, uid):
+        return [{"id": 303, "name": "Malformed"}]
+
+    async def playlist_detail(self, playlist_id):
+        self.detail_calls.append(playlist_id)
+        return {
+            "playlist": {
+                "tracks": [
+                    None,
+                    {"id": "", "name": "Empty Id", "ar": [{"name": "Nobody"}]},
+                    {"id": 5001, "name": "Ar None", "ar": [None]},
+                    {"id": 5002, "name": "Ar String", "ar": ["A"]},
+                    {"id": 5003, "name": "Artists Dict", "artists": {"name": "Solo"}},
+                    {"id": 5004, "name": "Artists String", "artists": "Solo"},
+                ]
+            }
+        }
+
+    async def user_record(self, uid):
+        return {"weekData": []}
+
+    async def like_list(self, uid):
+        return []
+
+
+class RaisingRecordNetease(FakeNetease):
+    async def user_record(self, uid):
+        raise RuntimeError("record unavailable")
+
+
+class NonDictRecordNetease(FakeNetease):
+    async def user_record(self, uid):
+        return ["not", "a", "dict"]
+
+
+class RaisingLikeListNetease(FakeNetease):
+    async def like_list(self, uid):
+        raise RuntimeError("likes unavailable")
+
+
+class RaisingSettingsStore(FakeStore):
+    async def get_user_settings(self, uid):
+        raise RuntimeError("settings unavailable")
+
+
 class ProfileEnginePlaylistDetailTest(unittest.IsolatedAsyncioTestCase):
     async def test_analyze_uses_playlist_details_and_persists_music_anchors(self):
         netease = FakeNetease()
@@ -190,6 +236,66 @@ class ProfileEnginePlaylistDetailTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(saved_profile["liked_track_ids"], profile["liked_track_ids"])
         self.assertNotIn("", [track["id"] for track in saved_profile["anchor_tracks"]])
         self.assertNotIn("", [track["id"] for track in saved_profile["recent_tracks"]])
+
+    async def test_malformed_playlist_tracks_do_not_break_analysis_or_make_bad_anchors(self):
+        netease = MalformedTrackNetease()
+        llm = FakeLLM()
+        store = FakeStore()
+        engine = ProfileEngine(netease, llm, store)
+
+        profile = await engine.analyze(42)
+
+        self.assertEqual(netease.detail_calls, [303])
+        self.assertEqual(
+            profile["anchor_tracks"],
+            [
+                {"id": "5001", "name": "Ar None", "artist": "", "source": "playlist"},
+                {"id": "5002", "name": "Ar String", "artist": "", "source": "playlist"},
+                {"id": "5003", "name": "Artists Dict", "artist": "Solo", "source": "playlist"},
+                {"id": "5004", "name": "Artists String", "artist": "", "source": "playlist"},
+            ],
+        )
+        self.assertEqual(store.saved_profiles[0][1]["anchor_tracks"], profile["anchor_tracks"])
+        self.assertNotIn("", [track["id"] for track in profile["anchor_tracks"]])
+        self.assertNotIn("Empty Id", llm.prompts[0])
+
+    async def test_user_record_exception_leaves_recent_empty_and_still_saves_profile(self):
+        store = FakeStore()
+        engine = ProfileEngine(RaisingRecordNetease(), FakeLLM(), store)
+
+        profile = await engine.analyze(42)
+
+        self.assertEqual(profile["recent_tracks"], [])
+        self.assertEqual(store.saved_profiles[0][1]["recent_tracks"], [])
+
+    async def test_user_record_non_dict_leaves_recent_empty_and_still_saves_profile(self):
+        store = FakeStore()
+        engine = ProfileEngine(NonDictRecordNetease(), FakeLLM(), store)
+
+        profile = await engine.analyze(42)
+
+        self.assertEqual(profile["recent_tracks"], [])
+        self.assertEqual(store.saved_profiles[0][1]["recent_tracks"], [])
+
+    async def test_like_list_exception_leaves_liked_ids_empty_and_still_saves_profile(self):
+        store = FakeStore()
+        engine = ProfileEngine(RaisingLikeListNetease(), FakeLLM(), store)
+
+        profile = await engine.analyze(42)
+
+        self.assertEqual(profile["liked_track_ids"], [])
+        self.assertEqual(store.saved_profiles[0][1]["liked_track_ids"], [])
+
+    async def test_user_settings_exception_uses_empty_notes_and_still_saves_profile(self):
+        llm = FakeLLM()
+        store = RaisingSettingsStore()
+        engine = ProfileEngine(FakeNetease(), llm, store)
+
+        profile = await engine.analyze(42)
+
+        self.assertIn("anchor_tracks", profile)
+        self.assertEqual(len(store.saved_profiles), 1)
+        self.assertNotIn("最近想听", llm.prompts[0])
 
 
 if __name__ == "__main__":
