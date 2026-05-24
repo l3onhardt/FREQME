@@ -148,6 +148,42 @@ class MalformedTrackNetease(FakeNetease):
         return []
 
 
+class MalformedPlaylistContainerNetease(FakeNetease):
+    async def user_playlist(self, uid):
+        return [
+            {"id": 601, "name": "List Container"},
+            {"id": 602, "name": "None Container"},
+            {"id": 603, "name": "Bad Tracks"},
+            {"id": 604, "name": "Valid Container"},
+        ]
+
+    async def playlist_detail(self, playlist_id):
+        self.detail_calls.append(playlist_id)
+        details = {
+            601: {"playlist": []},
+            602: {"playlist": None},
+            603: {"playlist": {"tracks": {"id": 9999}}},
+            604: {
+                "playlist": {
+                    "tracks": [
+                        {
+                            "id": 6004,
+                            "name": "Still Works",
+                            "artists": [{"name": "Valid Artist"}],
+                        }
+                    ]
+                }
+            },
+        }
+        return details[playlist_id]
+
+    async def user_record(self, uid):
+        return {"weekData": []}
+
+    async def like_list(self, uid):
+        return []
+
+
 class RaisingRecordNetease(FakeNetease):
     async def user_record(self, uid):
         raise RuntimeError("record unavailable")
@@ -258,6 +294,29 @@ class ProfileEnginePlaylistDetailTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(store.saved_profiles[0][1]["anchor_tracks"], profile["anchor_tracks"])
         self.assertNotIn("", [track["id"] for track in profile["anchor_tracks"]])
         self.assertNotIn("Empty Id", llm.prompts[0])
+
+    async def test_malformed_playlist_containers_are_skipped_and_later_playlists_still_save(self):
+        netease = MalformedPlaylistContainerNetease()
+        llm = FakeLLM()
+        store = FakeStore()
+        engine = ProfileEngine(netease, llm, store)
+
+        profile = await engine.analyze(42)
+
+        self.assertEqual(netease.detail_calls, [601, 602, 603, 604])
+        self.assertEqual(
+            profile["anchor_tracks"],
+            [
+                {
+                    "id": "6004",
+                    "name": "Still Works",
+                    "artist": "Valid Artist",
+                    "source": "playlist",
+                }
+            ],
+        )
+        self.assertEqual(store.saved_profiles[0][1]["anchor_tracks"], profile["anchor_tracks"])
+        self.assertIn("Still Works", llm.prompts[0])
 
     async def test_user_record_exception_leaves_recent_empty_and_still_saves_profile(self):
         store = FakeStore()

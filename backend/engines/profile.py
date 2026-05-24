@@ -54,7 +54,12 @@ class ProfileEngine:
                 continue
 
             playlist_data = detail.get("playlist", {}) if isinstance(detail, dict) else {}
-            tracks.extend((playlist_data.get("tracks") or [])[:40])
+            if not isinstance(playlist_data, dict):
+                continue
+            playlist_tracks = playlist_data.get("tracks") or []
+            if not isinstance(playlist_tracks, list):
+                continue
+            tracks.extend(playlist_tracks[:40])
         return tracks
 
     async def analyze(self, uid: int) -> dict:
