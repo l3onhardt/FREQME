@@ -124,7 +124,7 @@ class StreamScheduler:
     ) -> set[str]:
         artists = set((state.artist_names if state else [])[-6:])
         if isinstance(profile, dict):
-            for track in (profile.get("recent_tracks") or [])[:10]:
+            for track in self._pool_list(profile.get("recent_tracks"))[:10]:
                 artist = self._artist_name(track)
                 if artist:
                     artists.add(artist)

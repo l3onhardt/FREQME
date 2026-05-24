@@ -243,6 +243,22 @@ class SchedulerPersonalizedPickTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(song["id"], "fallback-ok")
         self.assertEqual(song["selection_reason"]["type"], "fallback")
 
+    async def test_non_list_profile_recent_tracks_are_ignored_without_crashing(self):
+        netease = FakeNetease()
+        netease.raw_similar = {"id": "not-a-list"}
+        netease.raw_daily = "not-a-list"
+        netease.raw_fm = "not-a-list"
+        scheduler = self.make_scheduler(netease=netease)
+        scheduler._fallback_queue = [
+            {"id": "fallback-ok", "name": "Fallback OK", "ar": [{"name": "Fallback Artist"}]}
+        ]
+        profile = {"recent_tracks": {"id": "x", "artist": "A"}}
+
+        song = await scheduler.pick_next("current", profile=profile)
+
+        self.assertEqual(song["id"], "fallback-ok")
+        self.assertEqual(song["selection_reason"]["type"], "fallback")
+
 
 if __name__ == "__main__":
     unittest.main()
