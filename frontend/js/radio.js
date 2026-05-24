@@ -173,6 +173,9 @@ async function bootAuth() {
 }
 
 function showPlayerAndConnect() {
+  const startButton = document.getElementById('start-radio-btn');
+  startButton.disabled = true;
+  startButton.style.display = 'none';
   document.getElementById('login-screen').classList.remove('active');
   document.getElementById('onboarding-screen').classList.remove('active');
   document.getElementById('player-screen').classList.add('active');
@@ -268,6 +271,10 @@ document.getElementById('start-radio-btn').addEventListener('click', async () =>
 
 // ---- WebSocket ----
 function connectWebSocket() {
+  if (ws && (ws.readyState === WebSocket.CONNECTING || ws.readyState === WebSocket.OPEN)) {
+    return;
+  }
+
   const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
   ws = new WebSocket(`${protocol}//${location.host}/ws`);
 
