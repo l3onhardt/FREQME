@@ -1,7 +1,8 @@
 import aiosqlite
 import json
+import os
 
-DB_PATH = "data/radio.db"
+DB_PATH = os.getenv("RADIO_DB_PATH", "data/radio.db")
 
 
 async def init_db():
@@ -11,6 +12,18 @@ async def init_db():
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 uid TEXT UNIQUE NOT NULL,
                 profile_json TEXT NOT NULL,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE IF NOT EXISTS auth_account (
+                uid TEXT PRIMARY KEY,
+                account_json TEXT NOT NULL,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE IF NOT EXISTS user_settings (
+                uid TEXT PRIMARY KEY,
+                settings_json TEXT NOT NULL,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 updated_at TEXT DEFAULT CURRENT_TIMESTAMP
             );

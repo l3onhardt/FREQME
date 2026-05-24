@@ -24,6 +24,40 @@ class MemoryStore:
                 row = await cursor.fetchone()
                 return json.loads(row[0]) if row else None
 
+    async def save_auth_account(self, uid: str, account: dict) -> None:
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute(
+                "INSERT INTO auth_account (uid, account_json, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP) "
+                "ON CONFLICT(uid) DO UPDATE SET account_json=excluded.account_json, updated_at=CURRENT_TIMESTAMP",
+                (uid, json.dumps(account, ensure_ascii=False)),
+            )
+            await db.commit()
+
+    async def get_auth_account(self, uid: str) -> dict | None:
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute(
+                "SELECT account_json FROM auth_account WHERE uid=?", (uid,)
+            ) as cursor:
+                row = await cursor.fetchone()
+                return json.loads(row[0]) if row else None
+
+    async def save_user_settings(self, uid: str, settings: dict) -> None:
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute(
+                "INSERT INTO user_settings (uid, settings_json, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP) "
+                "ON CONFLICT(uid) DO UPDATE SET settings_json=excluded.settings_json, updated_at=CURRENT_TIMESTAMP",
+                (uid, json.dumps(settings, ensure_ascii=False)),
+            )
+            await db.commit()
+
+    async def get_user_settings(self, uid: str) -> dict | None:
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute(
+                "SELECT settings_json FROM user_settings WHERE uid=?", (uid,)
+            ) as cursor:
+                row = await cursor.fetchone()
+                return json.loads(row[0]) if row else None
+
     async def log_track(self, song_id: str, name: str, artist: str, source: str) -> None:
         async with aiosqlite.connect(DB_PATH) as db:
             await db.execute(
