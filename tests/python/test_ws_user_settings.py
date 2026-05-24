@@ -217,6 +217,24 @@ class WebSocketUserSettingsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(fake_tts.hash_calls[1]["voice_preset"], "bright_girl")
         self.assertNotEqual(fake_dj.intro_calls[0]["user_settings"], handshake_settings)
 
+    async def test_track_info_reads_artist_from_supported_song_shapes(self):
+        self.assertEqual(
+            ws._track_info({
+                "id": "artist-field",
+                "name": "Artist Field",
+                "artist": "Solo Artist",
+            })["artist"],
+            "Solo Artist",
+        )
+        self.assertEqual(
+            ws._track_info({
+                "id": "artists-list",
+                "name": "Artists List",
+                "artists": [{"name": "List Artist"}],
+            })["artist"],
+            "List Artist",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

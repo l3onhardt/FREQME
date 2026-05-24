@@ -54,6 +54,11 @@ class RaisingRecentStore(FakeStore):
         raise RuntimeError("recent unavailable")
 
 
+class NonListRecentStore(FakeStore):
+    async def get_recent_tracks(self, limit=100):
+        return {"fallback-ok": True}
+
+
 class SchedulerPersonalizedPickTests(unittest.IsolatedAsyncioTestCase):
     def make_scheduler(self, netease=None, store=None):
         return StreamScheduler(netease or FakeNetease(), store or FakeStore(), bus=None)
@@ -219,6 +224,18 @@ class SchedulerPersonalizedPickTests(unittest.IsolatedAsyncioTestCase):
     async def test_recent_track_lookup_failure_still_picks_fallback(self):
         netease = FakeNetease()
         scheduler = self.make_scheduler(netease=netease, store=RaisingRecentStore())
+        scheduler._fallback_queue = [
+            {"id": "fallback-ok", "name": "Fallback OK", "ar": [{"name": "Fallback Artist"}]}
+        ]
+
+        song = await scheduler.pick_next("current", profile={})
+
+        self.assertEqual(song["id"], "fallback-ok")
+        self.assertEqual(song["selection_reason"]["type"], "fallback")
+
+    async def test_non_list_recent_track_result_is_ignored_without_excluding_songs(self):
+        netease = FakeNetease()
+        scheduler = self.make_scheduler(netease=netease, store=NonListRecentStore())
         scheduler._fallback_queue = [
             {"id": "fallback-ok", "name": "Fallback OK", "ar": [{"name": "Fallback Artist"}]}
         ]

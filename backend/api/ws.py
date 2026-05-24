@@ -215,9 +215,26 @@ def _track_info(song: dict) -> dict:
     return {
         "id": str(song.get("id")),
         "name": song.get("name", ""),
-        "artist": (
-            song.get("ar", [{}])[0].get("name", "")
-            if song.get("ar")
-            else ""
-        ),
+        "artist": _artist_name(song),
     }
+
+
+def _artist_name(song: dict | None) -> str:
+    if not isinstance(song, dict):
+        return ""
+    artist = song.get("artist")
+    if isinstance(artist, str) and artist.strip():
+        return artist.strip()
+    for key in ("ar", "artists"):
+        artists = song.get(key)
+        if isinstance(artists, list) and artists:
+            first = artists[0]
+            if isinstance(first, dict):
+                name = first.get("name")
+                if isinstance(name, str):
+                    return name.strip()
+        elif isinstance(artists, dict):
+            name = artists.get("name")
+            if isinstance(name, str):
+                return name.strip()
+    return ""
