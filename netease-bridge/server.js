@@ -23,6 +23,15 @@ const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '
 const cookiePath = process.env.NETEASE_COOKIE_PATH || path.join(projectRoot, 'data', 'netease-cookie.json');
 let cookie = loadCookie(cookiePath);
 
+function persistCookieBestEffort(nextCookie) {
+    cookie = nextCookie;
+    try {
+        saveCookie(cookiePath, cookie);
+    } catch (error) {
+        console.warn(`failed to persist NetEase cookie: ${error?.message || error}`);
+    }
+}
+
 // QR login endpoints
 app.get('/login/qr/key', async (req, res) => {
     const r = await login_qr_key({});
@@ -37,8 +46,7 @@ app.get('/login/qr/create', async (req, res) => {
 app.get('/login/qr/check', async (req, res) => {
     const r = await login_qr_check({ key: req.query.key });
     if (r.body.code === 803 && r.body.cookie) {
-        cookie = r.body.cookie;
-        saveCookie(cookiePath, cookie);
+        persistCookieBestEffort(r.body.cookie);
     }
     res.json(sanitizeLoginBody(r.body));
 });
@@ -96,8 +104,7 @@ app.get('/login/status', async (req, res) => {
 app.get('/login/refresh', async (req, res) => {
     const r = await login_refresh({ cookie });
     if (r.body.cookie) {
-        cookie = r.body.cookie;
-        saveCookie(cookiePath, cookie);
+        persistCookieBestEffort(r.body.cookie);
     }
     res.json(sanitizeLoginBody(r.body));
 });

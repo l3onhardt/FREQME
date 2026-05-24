@@ -24,6 +24,9 @@ async def check_qr(key: str):
 @router.get("/status")
 async def login_status():
     status = await netease.login_status()
+    if not isinstance(status, dict):
+        return {"data": {"code": -1, "account": None, "profile": None}}
+
     profile = (
         status.get("data", {}).get("profile")
         or status.get("profile")

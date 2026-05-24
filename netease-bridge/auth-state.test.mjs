@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
+  clearCookie,
   loadCookie,
   saveCookie,
   sanitizeLoginBody,
@@ -28,6 +29,17 @@ test('loadCookie returns empty string when file is missing or invalid', () => {
   assert.equal(loadCookie(badFile), '');
 });
 
+test('clearCookie removes a persisted cookie file', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'netease-auth-'));
+  const file = path.join(dir, 'cookie.json');
+  saveCookie(file, 'MUSIC_U=abc;');
+
+  clearCookie(file);
+
+  assert.equal(fs.existsSync(file), false);
+  assert.equal(loadCookie(file), '');
+});
+
 test('sanitizeLoginBody removes cookie before response is sent to browser', () => {
   const body = {
     code: 803,
@@ -40,4 +52,22 @@ test('sanitizeLoginBody removes cookie before response is sent to browser', () =
   assert.equal(clean.cookie, undefined);
   assert.equal(clean.data.cookie, undefined);
   assert.equal(clean.data.profile.userId, 1);
+});
+
+test('sanitizeLoginBody does not require structuredClone', () => {
+  const originalStructuredClone = globalThis.structuredClone;
+  globalThis.structuredClone = undefined;
+  try {
+    const clean = sanitizeLoginBody({
+      code: 803,
+      cookie: 'SECRET',
+      data: { cookie: 'ALSO_SECRET', profile: { userId: 1 } },
+    });
+
+    assert.equal(clean.cookie, undefined);
+    assert.equal(clean.data.cookie, undefined);
+    assert.equal(clean.data.profile.userId, 1);
+  } finally {
+    globalThis.structuredClone = originalStructuredClone;
+  }
 });

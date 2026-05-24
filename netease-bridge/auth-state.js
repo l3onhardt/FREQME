@@ -33,9 +33,10 @@ export function clearCookie(filePath) {
 
 export function sanitizeLoginBody(body) {
   if (!body || typeof body !== 'object') return body;
-  const clean = structuredClone(body);
+  const clean = { ...body };
   delete clean.cookie;
   if (clean.data && typeof clean.data === 'object') {
+    clean.data = { ...clean.data };
     delete clean.data.cookie;
   }
   return clean;
