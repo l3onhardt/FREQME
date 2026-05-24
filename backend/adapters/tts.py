@@ -96,9 +96,10 @@ class TTSAdapter:
         self,
         text: str,
         scene: str = "日常",
-        voice_preset: str | None = "warm_female",
+        voice_preset: str | None = None,
+        user_settings: dict | None = None,
     ) -> dict:
-        preset_key = self._voice_preset_from_settings(voice_preset=voice_preset)
+        preset_key = self._voice_preset_from_settings(user_settings, voice_preset)
         return {
             "model": self.model,
             "messages": [
@@ -120,7 +121,10 @@ class TTSAdapter:
     ) -> str:
         preset_key = self._voice_preset_from_settings(user_settings, voice_preset)
         voice = self._resolve_voice(preset_key)
-        return hashlib.md5(f"{text}|{style}|{preset_key}|{voice}".encode()).hexdigest()
+        normalized_style = self._normalize_scene(style)
+        return hashlib.md5(
+            f"{text}|{normalized_style}|{preset_key}|{voice}".encode()
+        ).hexdigest()
 
     async def synthesize(
         self,
@@ -146,7 +150,12 @@ class TTSAdapter:
         if cached and Path(cached).exists():
             return Path(cached).read_bytes()
 
-        body = self.build_request_body(text, normalized_style, preset_key)
+        body = self.build_request_body(
+            text,
+            normalized_style,
+            voice_preset=preset_key,
+            user_settings=user_settings,
+        )
 
         # Try MiMo API
         try:

@@ -129,6 +129,33 @@ class TTSVoicePresetTests(unittest.TestCase):
         self.assertEqual(body["audio"]["voice"], "暖声女主播")
         self.assertEqual(resolved, "warm_male")
 
+    def test_build_request_body_resolves_voice_preset_from_user_settings(self):
+        adapter = self.make_adapter()
+
+        body = adapter.build_request_body(
+            "hi",
+            user_settings={"voice_preset": "warm_male"},
+        )
+
+        self.assertEqual(body["audio"]["voice"], "磁性男主播")
+
+    def test_hash_normalizes_legacy_scene_before_building_cache_key(self):
+        adapter = self.make_adapter()
+        legacy_scene, clean_scene = next(iter(tts.LEGACY_SCENE_ALIASES.items()))
+
+        legacy_hash = adapter._hash(
+            "同一段话",
+            legacy_scene,
+            voice_preset="warm_female",
+        )
+        clean_hash = adapter._hash(
+            "同一段话",
+            clean_scene,
+            voice_preset="warm_female",
+        )
+
+        self.assertEqual(legacy_hash, clean_hash)
+
     def test_synthesize_default_style_is_clean_daily_scene(self):
         signature = inspect.signature(TTSAdapter.synthesize)
 
