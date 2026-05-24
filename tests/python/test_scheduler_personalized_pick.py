@@ -147,6 +147,32 @@ class SchedulerPersonalizedPickTests(unittest.IsolatedAsyncioTestCase):
             "https://music.163.com/song/media/outer/url?id=song-1.mp3",
         )
 
+    async def test_fallback_pool_avoids_recent_artist_across_queue_candidates(self):
+        netease = FakeNetease()
+        scheduler = self.make_scheduler(netease=netease)
+        scheduler._fallback_queue = [
+            {
+                "id": "fallback-same",
+                "name": "Fallback Same Artist",
+                "ar": [{"name": "Recent Artist"}],
+            },
+            {
+                "id": "fallback-fresh",
+                "name": "Fallback Fresh Artist",
+                "ar": [{"name": "Fresh Artist"}],
+            },
+        ]
+        scheduler._artists_this_session.append("Recent Artist")
+
+        song = await scheduler.pick_next("current", profile={})
+
+        self.assertEqual(song["id"], "fallback-fresh")
+        self.assertEqual(song["selection_reason"]["type"], "fallback")
+        self.assertEqual(
+            [queued["id"] for queued in scheduler._fallback_queue],
+            ["fallback-same"],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

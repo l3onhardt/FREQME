@@ -219,15 +219,14 @@ class StreamScheduler:
         if not self._fallback_queue:
             self._shuffle_fallback()
 
-        while self._fallback_queue:
-            s = self._fallback_queue.pop(0)
-            song = self._choose_candidate([s], recent, recent_artists)
-            if song:
-                return _select(
-                    song,
-                    "fallback",
-                    "It is a reliable fallback pick while the personal pools are quiet.",
-                )
+        song = self._choose_candidate(self._fallback_queue, recent, recent_artists)
+        if song:
+            self._fallback_queue.remove(song)
+            return _select(
+                song,
+                "fallback",
+                "It is a reliable fallback pick while the personal pools are quiet.",
+            )
 
         # 5. All fallback played, reshuffle and try again
         self._shuffle_fallback()
