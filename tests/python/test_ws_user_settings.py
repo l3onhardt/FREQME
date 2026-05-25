@@ -310,6 +310,32 @@ class WebSocketUserSettingsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(session_start["intro_text"], "")
         self.assertFalse(session_start["tts_ready"])
 
+    async def test_ws_sends_intro_message_when_llm_intro_is_available(self):
+        fake_store = FakeStore({"voice_preset": "warm_male"})
+        fake_dj = FakeDJEngine()
+        fake_tts = FakeTTS()
+        fake_scheduler = FakeScheduler()
+        fake_websocket = FakeWebSocket([
+            {"type": "handshake", "uid": "42", "settings": {}},
+        ])
+
+        ws.store = fake_store
+        ws.dj_engine = fake_dj
+        ws.tts = fake_tts
+        ws.scheduler = fake_scheduler
+        ws.compressor = FakeCompressor()
+        ws.profile_engine = None
+
+        await ws.ws_handler(fake_websocket)
+
+        sent_types = [payload["type"] for payload in fake_websocket.sent]
+        self.assertIn("session_start", sent_types)
+        self.assertIn("play_track", sent_types)
+        self.assertIn("intro", sent_types)
+        intro = next(payload for payload in fake_websocket.sent if payload["type"] == "intro")
+        self.assertEqual(intro["text"], "intro")
+        self.assertTrue(intro["tts_ready"])
+
     async def test_ws_keeps_llm_segue_text_when_tts_for_segue_fails(self):
         fake_store = FakeStore({"voice_preset": "warm_male"})
         fake_dj = FakeDJEngine()

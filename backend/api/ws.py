@@ -68,6 +68,46 @@ async def ws_handler(websocket: WebSocket):
         })
         await remember_current_song(song)
 
+    async def prepare_intro():
+        intro_text = ""
+        tts_hash_val = ""
+        try:
+            intro_text = await asyncio.wait_for(
+                dj_engine.generate_intro(
+                    profile,
+                    scene,
+                    user_settings=user_settings,
+                ),
+                timeout=20.0,
+            )
+        except Exception:
+            return "", ""
+        if not intro_text:
+            return "", ""
+        try:
+            tts_audio = await asyncio.wait_for(
+                tts.synthesize(
+                    intro_text,
+                    scene,
+                    voice_preset=current_voice_preset(),
+                    user_settings=user_settings,
+                ),
+                timeout=12.0,
+            )
+            tts_hash_val = (
+                tts._hash(
+                    intro_text,
+                    scene,
+                    voice_preset=current_voice_preset(),
+                    user_settings=user_settings,
+                )
+                if tts_audio
+                else ""
+            )
+        except Exception:
+            tts_hash_val = ""
+        return intro_text, tts_hash_val
+
     async def fill_queue(max_items: int | None = None):
         added_count = 0
         while playback_queue.prewarm_needed() > 0:
@@ -210,42 +250,7 @@ async def ws_handler(websocket: WebSocket):
                             "dj_style_suggestion": "温暖自然",
                         }
 
-                intro = ""
-                tts_audio = None
-                tts_hash = ""
-                try:
-                    intro = await asyncio.wait_for(
-                        dj_engine.generate_intro(
-                            profile,
-                            scene,
-                            user_settings=user_settings,
-                        ),
-                        timeout=8.0,
-                    )
-                    if intro:
-                        tts_audio = await asyncio.wait_for(
-                            tts.synthesize(
-                                intro,
-                                scene,
-                                voice_preset=current_voice_preset(),
-                                user_settings=user_settings,
-                            ),
-                            timeout=8.0,
-                        )
-                        tts_hash = (
-                            tts._hash(
-                                intro,
-                                scene,
-                                voice_preset=current_voice_preset(),
-                                user_settings=user_settings,
-                            )
-                            if tts_audio
-                            else ""
-                        )
-                except Exception:
-                    intro = ""
-                    tts_audio = None
-                    tts_hash = ""
+                intro_task = asyncio.create_task(prepare_intro())
 
                 try:
                     session_id = await store.create_session(str(uid))
@@ -256,9 +261,9 @@ async def ws_handler(websocket: WebSocket):
                     "type": "session_start",
                     "profile": profile,
                     "scene": scene,
-                    "intro_text": intro,
-                    "tts_ready": bool(tts_audio),
-                    "tts_hash": tts_hash,
+                    "intro_text": "",
+                    "tts_ready": False,
+                    "tts_hash": "",
                 })
 
                 await fill_queue(max_items=1)
@@ -266,6 +271,18 @@ async def ws_handler(websocket: WebSocket):
                 if item:
                     await send_track(item.song, item.url)
                     await fill_queue(max_items=1)
+
+                try:
+                    intro, tts_hash = await intro_task
+                    if intro:
+                        await websocket.send_json({
+                            "type": "intro",
+                            "text": intro,
+                            "tts_ready": bool(tts_hash),
+                            "tts_hash": tts_hash,
+                        })
+                except Exception:
+                    pass
 
             elif msg_type == "track_ended":
                 await send_prepared_next(previous_event="played")

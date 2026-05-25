@@ -361,6 +361,15 @@ async function handleMessage(msg) {
       break;
     }
 
+    case 'intro': {
+      if (msg.tts_ready && msg.tts_hash) {
+        playTTS(msg.tts_hash, msg.text);
+      } else if (msg.text) {
+        document.getElementById('dj-text').textContent = msg.text;
+      }
+      break;
+    }
+
     case 'play_track': {
       // If TTS intro is still playing, wait for it to finish
       if (audioTTS._hasIntro && !audioTTS.ended && audioTTS.src && !audioTTS.paused) {

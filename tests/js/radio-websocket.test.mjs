@@ -276,3 +276,16 @@ test('text-only segue stays visible briefly before starting next track', async (
   assert.equal(audioMain.src, '/api/radio/audio/2');
   assert.equal(elements.get('track-name').textContent, 'Next');
 });
+
+test('intro message updates DJ text after playback has started', async () => {
+  const { context, elements } = loadRadio();
+
+  await context.handleMessage({
+    type: 'intro',
+    text: '今晚先把声音放低一点。',
+    tts_ready: false,
+    tts_hash: '',
+  });
+
+  assert.equal(elements.get('dj-text').textContent, '今晚先把声音放低一点。');
+});

@@ -5,6 +5,18 @@ from backend.memory.store import MemoryStore
 
 settings = get_settings()
 
+REJECTION_MARKERS = (
+    "request was rejected",
+    "considered high risk",
+    "content policy",
+    "safety policy",
+)
+
+
+def _is_provider_rejection(text: str) -> bool:
+    lowered = (text or "").strip().lower()
+    return any(marker in lowered for marker in REJECTION_MARKERS)
+
 
 def _mimo_chat(msgs: list[dict], maxt: int, api_key: str, base_url: str, model: str) -> str:
     """Use MiMo's OpenAI-compatible chat completions for text generation."""
@@ -129,6 +141,9 @@ class LLMRouter:
                 )
                 if response.status_code == 200:
                     result = cfg["parse"](response)
+                    if not result or _is_provider_rejection(result):
+                        last_error = RuntimeError(f"{provider} rejected generation")
+                        continue
                     usage = response.json().get("usage", {})
                     tokens = usage.get("total_tokens", max_tokens)
                     await self.store.add_tokens(tokens)

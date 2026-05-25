@@ -45,6 +45,6 @@ class DJPromptQualityTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("新雨 - 乙", prompt)
         self.assertIn("从慢速人声过渡到更轻的器乐", prompt)
         self.assertIn("只输出主播要说的话", prompt)
-        self.assertIn("不要说推荐", prompt)
+        self.assertIn("不要使用“推荐”", prompt)
         self.assertNotIn("鏄", prompt)
         self.assertNotIn("歿", prompt)

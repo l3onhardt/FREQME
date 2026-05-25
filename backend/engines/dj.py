@@ -37,14 +37,14 @@ class DJEngine:
     ) -> str:
         style = profile.get("dj_style_suggestion", "温暖自然")
         personality = profile.get("personality", {})
-        prompt = f"""现在是{scene}，用户刚打开一档私人 AI 音乐电台。
+        prompt = f"""现在是{scene}，用户刚打开一档私人音乐电台。
 
 用户画像：{personality}
 建议的 DJ 风格：{style}
 
 请生成一段开场白，朗读时长约 12 到 20 秒。
 只输出主播要说的话，不要标题、括号、解释或舞台提示。
-不要说“欢迎收听”，不要说“根据你的画像”，不要提算法。
+不要说“欢迎收听”，不要说“根据你的画像”，不要提系统或算法。
 语气要像真实电台主播自然开口，有画面感，但不要矫情。"""
         return await self.llm.chat(
             self._with_user_settings_hint(prompt, user_settings),
@@ -93,7 +93,7 @@ class DJEngine:
 请生成一段 1 到 2 句的串场，朗读时长约 8 到 15 秒。
 只输出主播要说的话，不要标题、括号、解释或舞台提示。
 必须自然连接“{current_name}”和“{next_name}”，可以点到两首歌的气质变化。
-不要说推荐，不要说喜欢，不要说接下来请听，不要暴露算法、用户画像或选曲依据。
+不要使用“推荐”“喜欢”“接下来请听”这些机械表达；不要提系统、画像或选曲规则。
 语气要像深夜电台里真实的人在接歌：具体、克制、贴近音乐。"""
         return await self.llm.chat(
             self._with_user_settings_hint(prompt, user_settings),
