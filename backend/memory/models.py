@@ -1,11 +1,31 @@
-import aiosqlite
 import json
+import os
+from pathlib import Path
 
-DB_PATH = "data/radio.db"
+import aiosqlite
+
+DEFAULT_DB_PATH = "data/radio.db"
+DB_PATH = DEFAULT_DB_PATH
+
+
+def get_db_path() -> str:
+    return os.getenv("RADIO_DB_PATH", DEFAULT_DB_PATH)
+
+
+def ensure_db_parent(path: str) -> None:
+    parent = Path(path).parent
+    if str(parent) and str(parent) != ".":
+        parent.mkdir(parents=True, exist_ok=True)
+
+
+def connect_db():
+    path = get_db_path()
+    ensure_db_parent(path)
+    return aiosqlite.connect(path)
 
 
 async def init_db():
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with connect_db() as db:
         await db.executescript("""
             CREATE TABLE IF NOT EXISTS user_profile (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -14,8 +34,21 @@ async def init_db():
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 updated_at TEXT DEFAULT CURRENT_TIMESTAMP
             );
+            CREATE TABLE IF NOT EXISTS auth_account (
+                uid TEXT PRIMARY KEY,
+                account_json TEXT NOT NULL,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE IF NOT EXISTS user_settings (
+                uid TEXT PRIMARY KEY,
+                settings_json TEXT NOT NULL,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+            );
             CREATE TABLE IF NOT EXISTS track_log (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                uid TEXT,
                 song_id TEXT NOT NULL,
                 song_name TEXT NOT NULL,
                 artist TEXT,
@@ -23,9 +56,6 @@ async def init_db():
                 feedback TEXT,
                 played_at TEXT DEFAULT CURRENT_TIMESTAMP
             );
-            CREATE INDEX IF NOT EXISTS idx_track_played ON track_log(played_at);
-            CREATE INDEX IF NOT EXISTS idx_track_song ON track_log(song_id);
-
             CREATE TABLE IF NOT EXISTS dj_script_log (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 topic TEXT,
@@ -57,4 +87,18 @@ async def init_db():
                 tokens_used INTEGER DEFAULT 0
             );
         """)
+        await _ensure_column(db, "track_log", "uid", "TEXT")
+        await db.executescript("""
+            CREATE INDEX IF NOT EXISTS idx_track_played ON track_log(played_at);
+            CREATE INDEX IF NOT EXISTS idx_track_uid_played ON track_log(uid, played_at);
+            CREATE INDEX IF NOT EXISTS idx_track_song ON track_log(song_id);
+            CREATE INDEX IF NOT EXISTS idx_session_start ON session_log(session_start);
+        """)
         await db.commit()
+
+
+async def _ensure_column(db, table: str, column: str, definition: str) -> None:
+    async with db.execute(f"PRAGMA table_info({table})") as cursor:
+        columns = {row[1] for row in await cursor.fetchall()}
+    if column not in columns:
+        await db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")

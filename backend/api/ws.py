@@ -2,6 +2,8 @@ import json
 
 from fastapi import WebSocket, WebSocketDisconnect
 
+from backend.api import auth
+
 netease = None
 llm = None
 tts = None
@@ -18,29 +20,54 @@ async def ws_handler(websocket: WebSocket):
     uid = None
     scene = "日常"
     profile = {}
+    user_settings = {}
+    current_song = None
     current_song_id = None
     session_id = None
+    logged_track_ids = set()
+    scheduler_state = scheduler.new_session_state() if scheduler else None
+
+    def current_voice_preset() -> str:
+        return user_settings.get("voice_preset", "warm_female")
 
     async def send_track(song: dict, url: str):
-        nonlocal current_song_id
+        nonlocal current_song, current_song_id
         await websocket.send_json({
             "type": "play_track",
             "track": _track_info(song),
             "url": url,
         })
+        await remember_current_song(song)
+
+    async def remember_current_song(song: dict):
+        nonlocal current_song, current_song_id
+        current_song = song
         current_song_id = str(song.get("id"))
-        # Log to DB
         try:
             info = _track_info(song)
-            await store.log_track(info["id"], info["name"], info["artist"], "scheduler")
+            if info["id"] not in logged_track_ids:
+                await store.log_track(
+                    info["id"],
+                    info["name"],
+                    info["artist"],
+                    "scheduler",
+                    uid=str(uid) if uid else None,
+                )
+                logged_track_ids.add(info["id"])
         except Exception:
             pass
 
     async def play_next_with_segue(prev_song_id: str | None = None):
         """Pick next song, generate segue, send to frontend."""
-        nonlocal current_song_id
+        nonlocal current_song, current_song_id
 
-        next_song = await scheduler.pick_next(prev_song_id)
+        next_song = await scheduler.pick_next(
+            prev_song_id,
+            profile=profile,
+            user_settings=user_settings,
+            session_state=scheduler_state,
+            uid=str(uid) if uid else None,
+        )
         if not next_song:
             await websocket.send_json({
                 "type": "error",
@@ -52,12 +79,31 @@ async def ws_handler(websocket: WebSocket):
         segue = None
         tts_hash_val = ""
         try:
-            prev_info = {"id": prev_song_id} if prev_song_id else {}
+            prev_info = current_song or ({"id": prev_song_id} if prev_song_id else {})
             segue = await dj_engine.generate_segue(
-                profile, scene, prev_info, next_song, compressor,
+                profile,
+                scene,
+                prev_info,
+                next_song,
+                compressor,
+                user_settings=user_settings,
             )
-            tts_audio = await tts.synthesize(segue, scene)
-            tts_hash_val = tts._hash(segue, scene) if tts_audio else ""
+            tts_audio = await tts.synthesize(
+                segue,
+                scene,
+                voice_preset=current_voice_preset(),
+                user_settings=user_settings,
+            )
+            tts_hash_val = (
+                tts._hash(
+                    segue,
+                    scene,
+                    voice_preset=current_voice_preset(),
+                    user_settings=user_settings,
+                )
+                if tts_audio
+                else ""
+            )
         except Exception:
             pass
 
@@ -72,18 +118,12 @@ async def ws_handler(websocket: WebSocket):
                 "next_track": _track_info(next_song),
                 "url": url,
             })
+            # The segue message dispatches the next track, so lock it in now
+            # and let the per-connection log guard prevent duplicate writes.
+            await remember_current_song(next_song)
         else:
             # No segue generated, play directly
             await send_track(next_song, url)
-
-        current_song_id = str(next_song.get("id"))
-
-        # Log track to database (avoid repeats)
-        try:
-            info = _track_info(next_song)
-            await store.log_track(info["id"], info["name"], info["artist"], "scheduler")
-        except Exception:
-            pass
 
         # Log to memory
         if segue:
@@ -103,6 +143,15 @@ async def ws_handler(websocket: WebSocket):
 
             if msg_type == "handshake":
                 uid = msg.get("uid")
+                if not await _uid_matches_active_login(uid):
+                    await websocket.send_json({
+                        "type": "error",
+                        "message": "登录账号和当前电台用户不一致，请重新登录。",
+                    })
+                    return
+                settings_payload = msg.get("settings") or {}
+                stored_settings = await store.get_user_settings(str(uid)) if uid else None
+                user_settings = stored_settings or settings_payload or {}
                 scene = dj_engine.detect_scene(msg.get("utc_offset", 480))
                 try:
                     profile = await store.get_profile(str(uid))
@@ -117,9 +166,27 @@ async def ws_handler(websocket: WebSocket):
                             "dj_style_suggestion": "温暖自然",
                         }
 
-                intro = await dj_engine.generate_intro(profile, scene)
-                tts_audio = await tts.synthesize(intro, scene)
-                tts_hash = tts._hash(intro, scene) if tts_audio else ""
+                intro = await dj_engine.generate_intro(
+                    profile,
+                    scene,
+                    user_settings=user_settings,
+                )
+                tts_audio = await tts.synthesize(
+                    intro,
+                    scene,
+                    voice_preset=current_voice_preset(),
+                    user_settings=user_settings,
+                )
+                tts_hash = (
+                    tts._hash(
+                        intro,
+                        scene,
+                        voice_preset=current_voice_preset(),
+                        user_settings=user_settings,
+                    )
+                    if tts_audio
+                    else ""
+                )
 
                 try:
                     session_id = await store.create_session(str(uid))
@@ -136,7 +203,12 @@ async def ws_handler(websocket: WebSocket):
                 })
 
                 # Pick first track
-                song = await scheduler.pick_next()
+                song = await scheduler.pick_next(
+                    profile=profile,
+                    user_settings=user_settings,
+                    session_state=scheduler_state,
+                    uid=str(uid) if uid else None,
+                )
                 if song:
                     url = await scheduler.get_song_url(song)
                     await send_track(song, url)
@@ -159,9 +231,39 @@ def _track_info(song: dict) -> dict:
     return {
         "id": str(song.get("id")),
         "name": song.get("name", ""),
-        "artist": (
-            song.get("ar", [{}])[0].get("name", "")
-            if song.get("ar")
-            else ""
-        ),
+        "artist": _artist_name(song),
     }
+
+
+def _artist_name(song: dict | None) -> str:
+    if not isinstance(song, dict):
+        return ""
+    artist = song.get("artist")
+    if isinstance(artist, str) and artist.strip():
+        return artist.strip()
+    for key in ("ar", "artists"):
+        artists = song.get(key)
+        if isinstance(artists, list) and artists:
+            first = artists[0]
+            if isinstance(first, dict):
+                name = first.get("name")
+                if isinstance(name, str):
+                    return name.strip()
+        elif isinstance(artists, dict):
+            name = artists.get("name")
+            if isinstance(name, str):
+                return name.strip()
+    return ""
+
+
+async def _uid_matches_active_login(uid) -> bool:
+    netease = getattr(auth, "netease", None)
+    if not netease or not uid:
+        return True
+    try:
+        status = await netease.login_status()
+    except Exception:
+        return False
+    profile = auth._extract_profile(status) if isinstance(status, dict) else {}
+    active_uid = profile.get("userId")
+    return bool(active_uid) and str(active_uid) == str(uid)

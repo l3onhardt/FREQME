@@ -30,7 +30,7 @@ async def lifespan(app: FastAPI):
     import httpx
     bridge_alive = False
     try:
-        r = httpx.get(f"http://localhost:{settings.netease_bridge_port}/login/status", timeout=2.0)
+        r = httpx.get(f"http://127.0.0.1:{settings.netease_bridge_port}/login/status", timeout=2.0)
         bridge_alive = r.status_code == 200
     except Exception:
         pass
@@ -66,6 +66,7 @@ async def lifespan(app: FastAPI):
 
     # Wire module globals
     auth.netease = netease_adapter
+    auth.store = store
     radio.netease = netease_adapter
     radio.llm = llm_router
     radio.tts = tts_adapter

@@ -7,8 +7,8 @@ __pycache__/
 *.pyo
 
 # Cache / Data
-data/tts_cache/
-data/radio.db
+data/*
+!data/.gitkeep
 
 # Node
 node_modules/
@@ -17,10 +17,9 @@ node_modules/
 .vscode/
 .idea/
 
-# Auto-generated
+# Auto-generated local UI experiments
 .superpowers/
 logs/
-docs/
 
 # OS
 .DS_Store

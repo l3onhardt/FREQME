@@ -4,6 +4,11 @@ let uid = null;
 let isPlaying = false;
 const ttsCache = {};
 let retryTimer = null;
+let onboardingSettings = null;
+let onboardingStepIndex = 0;
+let particlesCreated = false;
+
+const onboardingSteps = ['voice', 'notes', 'mode'];
 
 const audioMain = document.getElementById('audio-main');
 const audioTTS = document.getElementById('audio-tts');
@@ -14,6 +19,7 @@ audioTTS.volume = 0.9;
 
 // ---- Background Particles ----
 function createParticles() {
+  if (particlesCreated) return;
   const bg = document.getElementById('player-bg');
   for (let i = 0; i < 20; i++) {
     const p = document.createElement('div');
@@ -25,6 +31,7 @@ function createParticles() {
     p.style.opacity = (0.1 + Math.random() * 0.3);
     bg.appendChild(p);
   }
+  particlesCreated = true;
 }
 
 // ---- TTS Helper ----
@@ -96,7 +103,7 @@ async function initLogin() {
             uid = profile.userId;
             document.getElementById('qr-status').textContent =
               `已登录: ${profile.nickname}`;
-            document.getElementById('start-radio-btn').style.display = 'block';
+            await showOnboardingOrStart(profile);
           }
         } else if (code === 800) {
           document.getElementById('qr-status').textContent =
@@ -121,16 +128,178 @@ async function initLogin() {
   }
 }
 
-// ---- Start Radio ----
-document.getElementById('start-radio-btn').addEventListener('click', () => {
+async function fetchOnboarding(uidValue) {
+  const resp = await fetch(`/api/radio/onboarding/${uidValue}`);
+  if (!resp.ok) {
+    throw new Error('读取调频设置失败');
+  }
+  return resp.json();
+}
+
+async function showOnboardingOrStart(profile) {
+  document.getElementById('start-radio-btn').style.display = 'none';
+
+  let data;
+  try {
+    data = await fetchOnboarding(profile.userId);
+  } catch {
+    data = {
+      profile_ready: false,
+      profile: {},
+      settings: null,
+      onboarded: false,
+      fallback: true,
+    };
+  }
+  if (data.onboarded && data.settings) {
+    onboardingSettings = data.settings;
+    document.getElementById('start-radio-btn').style.display = 'block';
+    return;
+  }
+
   document.getElementById('login-screen').classList.remove('active');
+  document.getElementById('onboarding-screen').classList.add('active');
+  if (data.fallback) {
+    document.getElementById('onboarding-status').textContent =
+      '暂时没读到你的调频记录，先用默认问题把电台调起来。';
+  } else {
+    document.getElementById('onboarding-status').textContent = data.profile_ready
+    ? '歌单已经准备好，选好频率就能开播。'
+    : '还在整理你的听歌资料，先选一个喜欢的电台频率。';
+  }
+  resetOnboardingSteps();
+}
+
+async function bootAuth() {
+  document.getElementById('qr-status').textContent = '正在检查登录状态...';
+  try {
+    let statusData = await fetchAuthStatus();
+    let profile = statusData.data?.profile || statusData.profile;
+    if (!profile?.userId) {
+      await fetch('/api/auth/refresh', { method: 'POST' });
+      statusData = await fetchAuthStatus();
+      profile = statusData.data?.profile || statusData.profile;
+    }
+    if (profile?.userId) {
+      uid = profile.userId;
+      document.getElementById('qr-status').textContent = `已登录: ${profile.nickname}`;
+      await showOnboardingOrStart(profile);
+      return;
+    }
+  } catch {
+    // Fall through to QR login.
+  }
+  initLogin();
+}
+
+async function fetchAuthStatus() {
+  const statusResp = await fetch('/api/auth/status');
+  return statusResp.json();
+}
+
+function showPlayerAndConnect() {
+  const startButton = document.getElementById('start-radio-btn');
+  startButton.disabled = true;
+  startButton.style.display = 'none';
+  document.getElementById('login-screen').classList.remove('active');
+  document.getElementById('onboarding-screen').classList.remove('active');
   document.getElementById('player-screen').classList.add('active');
   createParticles();
   connectWebSocket();
+}
+
+// ---- Onboarding ----
+function resetOnboardingSteps() {
+  onboardingStepIndex = 0;
+  updateOnboardingStep();
+}
+
+function updateOnboardingStep() {
+  document.querySelectorAll('.onboarding-step').forEach((step) => {
+    step.classList.toggle(
+      'active',
+      step.dataset.step === onboardingSteps[onboardingStepIndex],
+    );
+  });
+  document.getElementById('onboarding-next-btn').textContent =
+    onboardingStepIndex === onboardingSteps.length - 1 ? '开始收听' : '继续';
+}
+
+function selectChoice(containerId, attrName, value) {
+  document.querySelectorAll(`#${containerId} .choice-card`).forEach((button) => {
+    button.classList.toggle('selected', button.dataset[attrName] === value);
+  });
+}
+
+document.getElementById('voice-options').addEventListener('click', (event) => {
+  const button = event.target.closest('[data-voice]');
+  if (!button) return;
+  selectChoice('voice-options', 'voice', button.dataset.voice);
+});
+
+document.getElementById('mode-options').addEventListener('click', (event) => {
+  const button = event.target.closest('[data-mode]');
+  if (!button) return;
+  selectChoice('mode-options', 'mode', button.dataset.mode);
+});
+
+document.getElementById('onboarding-next-btn').addEventListener('click', async () => {
+  if (onboardingStepIndex < onboardingSteps.length - 1) {
+    onboardingStepIndex += 1;
+    updateOnboardingStep();
+    return;
+  }
+
+  const selectedVoice = document.querySelector('#voice-options .choice-card.selected');
+  const selectedMode = document.querySelector('#mode-options .choice-card.selected');
+  const payload = {
+    voice_preset: selectedVoice?.dataset.voice || 'warm_female',
+    display_name: document.getElementById('display-name-input').value,
+    music_notes: document.getElementById('music-notes-input').value,
+    current_mode: selectedMode?.dataset.mode || '陪伴',
+  };
+
+  const nextButton = document.getElementById('onboarding-next-btn');
+  nextButton.disabled = true;
+  document.getElementById('onboarding-status').textContent = '正在保存你的电台频率...';
+  try {
+    const resp = await fetch(`/api/radio/onboarding/${uid}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!resp.ok) {
+      throw new Error('保存失败');
+    }
+    const data = await resp.json();
+    onboardingSettings = data.settings;
+    showPlayerAndConnect();
+  } catch (e) {
+    document.getElementById('onboarding-status').textContent =
+      '保存失败，请稍后再试。' + (e.message ? ` ${e.message}` : '');
+    nextButton.disabled = false;
+  }
+});
+
+// ---- Start Radio ----
+document.getElementById('start-radio-btn').addEventListener('click', async () => {
+  if (!onboardingSettings && uid) {
+    try {
+      const data = await fetchOnboarding(uid);
+      onboardingSettings = data.settings || null;
+    } catch {
+      // Let the radio try to start even if settings refresh fails.
+    }
+  }
+  showPlayerAndConnect();
 });
 
 // ---- WebSocket ----
 function connectWebSocket() {
+  if (ws && (ws.readyState === WebSocket.CONNECTING || ws.readyState === WebSocket.OPEN)) {
+    return;
+  }
+
   const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
   ws = new WebSocket(`${protocol}//${location.host}/ws`);
 
@@ -140,6 +309,7 @@ function connectWebSocket() {
       type: 'handshake',
       uid: uid,
       utc_offset: -new Date().getTimezoneOffset(),
+      settings: onboardingSettings,
     }));
   };
 
@@ -292,4 +462,4 @@ volumeSlider.addEventListener('input', (e) => {
 });
 
 // ---- Boot ----
-initLogin();
+bootAuth();

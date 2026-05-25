@@ -3,7 +3,7 @@ import httpx
 from backend.core.config import get_settings
 
 settings = get_settings()
-BASE = f"http://localhost:{settings.netease_bridge_port}"
+BASE = f"http://127.0.0.1:{settings.netease_bridge_port}"
 
 
 class NeteaseAdapter:
@@ -38,6 +38,15 @@ class NeteaseAdapter:
             return data.get("playlist", []) if isinstance(data, dict) else data
         except Exception:
             return []
+
+    async def playlist_detail(self, playlist_id: int | str) -> dict:
+        try:
+            r = await self.client.get(
+                f"{BASE}/playlist/detail", params={"id": playlist_id}, timeout=10.0
+            )
+            return r.json()
+        except Exception:
+            return {}
 
     async def user_record(self, uid: int) -> dict:
         try:
@@ -90,6 +99,13 @@ class NeteaseAdapter:
             return r.json()
         except Exception:
             return {"data": {"code": 200, "account": None, "profile": None}}
+
+    async def login_refresh(self) -> dict:
+        try:
+            r = await self.client.get(f"{BASE}/login/refresh", timeout=8.0)
+            return r.json()
+        except Exception:
+            return {"code": -1, "message": "网易云登录刷新失败"}
 
     async def close(self):
         await self.client.aclose()
