@@ -86,6 +86,19 @@ class NeteaseAdapter:
             pass
         return f"https://music.163.com/song/media/outer/url?id={song_id}.mp3"
 
+    async def search(self, keywords: str, limit: int = 5) -> list[dict]:
+        try:
+            r = await self.client.get(
+                f"{BASE}/search",
+                params={"keywords": keywords, "limit": limit},
+                timeout=10.0,
+            )
+            data = r.json()
+            result = data.get("result", {}) if isinstance(data, dict) else {}
+            return result.get("songs", []) if isinstance(result, dict) else []
+        except Exception:
+            return []
+
     async def like_list(self, uid: int) -> list[int]:
         try:
             r = await self.client.get(f"{BASE}/like/list", params={"uid": uid}, timeout=10.0)

@@ -151,6 +151,26 @@ class StreamScheduler:
                 return song
         return good_songs[0]
 
+    async def _choose_candidate_async(
+        self,
+        songs: list[dict],
+        recent_ids: set[str],
+        recent_artists: set[str],
+        uid: str | None = None,
+    ) -> dict | None:
+        candidates = []
+        for song in songs:
+            sid = self._song_id(song)
+            if not sid:
+                continue
+            try:
+                failed = await self.store.was_track_recently_failed(sid, uid=uid)
+            except Exception:
+                failed = False
+            if not failed:
+                candidates.append(song)
+        return self._choose_candidate(candidates, recent_ids, recent_artists)
+
     def _anchor_due(
         self,
         current_song_id: str | None,
@@ -189,10 +209,11 @@ class StreamScheduler:
                 self._profile_track_to_song(track)
                 for track in self._pool_list(profile.get("anchor_tracks"))
             ]
-            anchor = self._choose_candidate(
+            anchor = await self._choose_candidate_async(
                 [song for song in anchors if song],
                 recent,
                 recent_artists,
+                uid=uid,
             )
             if anchor:
                 name = anchor.get("name") or "这首熟悉的歌"
@@ -208,7 +229,12 @@ class StreamScheduler:
                 simi = await self.netease.simi_song(current_song_id)
             except Exception:
                 simi = []
-            song = self._choose_candidate(self._pool_list(simi)[:8], recent, recent_artists)
+            song = await self._choose_candidate_async(
+                self._pool_list(simi)[:8],
+                recent,
+                recent_artists,
+                uid=uid,
+            )
             if song:
                 return _select(
                     song,
@@ -224,7 +250,12 @@ class StreamScheduler:
         recommends = self._pool_list(recommends)
         if recommends:
             random.shuffle(recommends)
-            song = self._choose_candidate(recommends[:15], recent, recent_artists)
+            song = await self._choose_candidate_async(
+                recommends[:15],
+                recent,
+                recent_artists,
+                uid=uid,
+            )
             if song:
                 return _select(
                     song,
@@ -237,7 +268,12 @@ class StreamScheduler:
             fm = await self.netease.personal_fm()
         except Exception:
             fm = []
-        song = self._choose_candidate(self._pool_list(fm)[:10], recent, recent_artists)
+        song = await self._choose_candidate_async(
+            self._pool_list(fm)[:10],
+            recent,
+            recent_artists,
+            uid=uid,
+        )
         if song:
             return _select(
                 song,
@@ -249,7 +285,12 @@ class StreamScheduler:
         if not self._fallback_queue:
             self._shuffle_fallback()
 
-        song = self._choose_candidate(self._fallback_queue, recent, recent_artists)
+        song = await self._choose_candidate_async(
+            self._fallback_queue,
+            recent,
+            recent_artists,
+            uid=uid,
+        )
         if song:
             self._fallback_queue.remove(song)
             return _select(
@@ -260,7 +301,12 @@ class StreamScheduler:
 
         # 5. All fallback played, reshuffle and try again
         self._shuffle_fallback()
-        song = self._choose_candidate(self._fallback_queue, recent, recent_artists)
+        song = await self._choose_candidate_async(
+            self._fallback_queue,
+            recent,
+            recent_artists,
+            uid=uid,
+        )
         if song:
             self._fallback_queue.remove(song)
             return _select(

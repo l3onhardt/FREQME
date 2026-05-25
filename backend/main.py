@@ -17,6 +17,7 @@ from backend.adapters.tts import TTSAdapter
 from backend.engines.profile import ProfileEngine
 from backend.engines.dj import DJEngine
 from backend.engines.scheduler import StreamScheduler
+from backend.engines.audio_resolver import AudioResolver
 from backend.api import auth, radio, ws
 
 settings = get_settings()
@@ -62,6 +63,7 @@ async def lifespan(app: FastAPI):
     profile_eng = ProfileEngine(netease_adapter, llm_router, store)
     dj_eng = DJEngine(llm_router, store)
     sched = StreamScheduler(netease_adapter, store, bus)
+    audio_resolver = AudioResolver(netease_adapter, store)
     comp = ContextCompressor()
 
     # Wire module globals
@@ -73,6 +75,7 @@ async def lifespan(app: FastAPI):
     radio.profile_engine = profile_eng
     radio.dj_engine = dj_eng
     radio.scheduler = sched
+    radio.audio_resolver = audio_resolver
     radio.store = store
     radio.bus = bus
     radio.compressor = comp
@@ -82,6 +85,7 @@ async def lifespan(app: FastAPI):
     ws.profile_engine = profile_eng
     ws.dj_engine = dj_eng
     ws.scheduler = sched
+    ws.audio_resolver = audio_resolver
     ws.store = store
     ws.bus = bus
     ws.compressor = comp

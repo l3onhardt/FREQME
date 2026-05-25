@@ -56,12 +56,19 @@ class RadioOnboardingTests(unittest.IsolatedAsyncioTestCase):
 
         settings = result["settings"]
         self.assertTrue(result["onboarded"])
-        self.assertEqual(settings["voice_preset"], "warm_female")
+        self.assertEqual(settings["voice_preset"], "silver_female")
         self.assertEqual(len(settings["display_name"]), 40)
         self.assertEqual(len(settings["music_notes"]), 500)
         self.assertEqual(settings["current_mode"], "陪伴")
         self.assertEqual(self.fake_store.saved, [("42", settings)])
 
+    async def test_save_onboarding_allows_only_two_voice_presets(self):
+        result = await radio.save_onboarding(
+            42,
+            {"voice_preset": "bright_girl", "current_mode": "闄即"},
+        )
+
+        self.assertEqual(result["settings"]["voice_preset"], "silver_female")
 
     async def test_save_onboarding_rejects_uid_that_does_not_match_active_login(self):
         original_auth_netease = auth.netease

@@ -9,6 +9,10 @@ from backend.core.config import get_settings
 settings = get_settings()
 
 VOICE_PRESETS = {
+    "silver_female": {
+        "config_attr": "mimo_tts_voice_warm_female",
+        "director": "知性、磁性、低暖的中文电台女主播音色，像深夜里懂音乐的姐姐，成熟克制、有银色质感，不甜腻、不表演化。",
+    },
     "warm_female": {
         "config_attr": "mimo_tts_voice_warm_female",
         "director": "温暖、磁性、克制的中文电台女主播音色，声音贴近真实广播节目，亲切但不甜腻。",

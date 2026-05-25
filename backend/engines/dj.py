@@ -5,6 +5,10 @@ from backend.memory.compressor import ContextCompressor
 from backend.memory.store import MemoryStore
 
 
+def should_generate_segue(track_index: int) -> bool:
+    return track_index > 0 and track_index % 2 == 0
+
+
 class DJEngine:
     def __init__(self, llm: LLMRouter, store: MemoryStore):
         self.llm = llm

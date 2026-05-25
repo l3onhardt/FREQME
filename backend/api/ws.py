@@ -3,6 +3,8 @@ import json
 from fastapi import WebSocket, WebSocketDisconnect
 
 from backend.api import auth
+from backend.engines.dj import should_generate_segue
+from backend.engines.playback_queue import PlaybackQueue
 
 netease = None
 llm = None
@@ -13,6 +15,7 @@ scheduler = None
 store = None
 bus = None
 compressor = None
+audio_resolver = None
 
 
 async def ws_handler(websocket: WebSocket):
@@ -24,25 +27,19 @@ async def ws_handler(websocket: WebSocket):
     current_song = None
     current_song_id = None
     session_id = None
+    track_index = 0
     logged_track_ids = set()
     scheduler_state = scheduler.new_session_state() if scheduler else None
+    playback_queue = PlaybackQueue(prewarm_depth=3)
 
     def current_voice_preset() -> str:
-        return user_settings.get("voice_preset", "warm_female")
-
-    async def send_track(song: dict, url: str):
-        nonlocal current_song, current_song_id
-        await websocket.send_json({
-            "type": "play_track",
-            "track": _track_info(song),
-            "url": url,
-        })
-        await remember_current_song(song)
+        return user_settings.get("voice_preset", "silver_female")
 
     async def remember_current_song(song: dict):
-        nonlocal current_song, current_song_id
+        nonlocal current_song, current_song_id, track_index
         current_song = song
         current_song_id = str(song.get("id"))
+        track_index += 1
         try:
             info = _track_info(song)
             if info["id"] not in logged_track_ids:
@@ -53,61 +50,102 @@ async def ws_handler(websocket: WebSocket):
                     "scheduler",
                     uid=str(uid) if uid else None,
                 )
+                await store.log_playback_event(
+                    "started",
+                    song_id=info["id"],
+                    uid=str(uid) if uid else None,
+                )
                 logged_track_ids.add(info["id"])
         except Exception:
             pass
 
-    async def play_next_with_segue(prev_song_id: str | None = None):
-        """Pick next song, generate segue, send to frontend."""
-        nonlocal current_song, current_song_id
+    async def send_track(song: dict, url: str):
+        await websocket.send_json({
+            "type": "play_track",
+            "track": _track_info(song),
+            "url": url,
+        })
+        await remember_current_song(song)
 
-        next_song = await scheduler.pick_next(
-            prev_song_id,
-            profile=profile,
-            user_settings=user_settings,
-            session_state=scheduler_state,
-            uid=str(uid) if uid else None,
-        )
-        if not next_song:
+    async def fill_queue(max_items: int | None = None):
+        added_count = 0
+        while playback_queue.prewarm_needed() > 0:
+            if max_items is not None and added_count >= max_items:
+                break
+            try:
+                song = await scheduler.pick_next(
+                    current_song_id,
+                    profile=profile,
+                    user_settings=user_settings,
+                    session_state=scheduler_state,
+                    uid=str(uid) if uid else None,
+                )
+            except Exception:
+                break
+            if not song:
+                break
+            try:
+                prepared = await _prepare_queue_item(
+                    audio_resolver,
+                    song,
+                    str(uid) if uid else None,
+                )
+            except Exception:
+                continue
+            if not prepared:
+                continue
+            prepared_song, prepared_url = prepared
+            playback_queue.add_ready(
+                prepared_song,
+                prepared_url,
+                prepared_song.get("selection_reason", {}),
+            )
+            added_count += 1
+
+    async def send_prepared_next(previous_event: str = "played"):
+        nonlocal current_song, current_song_id
+        await fill_queue()
+        item = playback_queue.promote_next(previous_event=previous_event)
+        if not item:
             await websocket.send_json({
                 "type": "error",
                 "message": "暂无更多歌曲，请稍后再试",
             })
             return
 
-        # Try to generate segue, but don't block music if it fails
+        next_song = item.song
         segue = None
         tts_hash_val = ""
-        try:
-            prev_info = current_song or ({"id": prev_song_id} if prev_song_id else {})
-            segue = await dj_engine.generate_segue(
-                profile,
-                scene,
-                prev_info,
-                next_song,
-                compressor,
-                user_settings=user_settings,
-            )
-            tts_audio = await tts.synthesize(
-                segue,
-                scene,
-                voice_preset=current_voice_preset(),
-                user_settings=user_settings,
-            )
-            tts_hash_val = (
-                tts._hash(
+        if previous_event == "skipped" or should_generate_segue(track_index):
+            try:
+                prev_info = current_song or {}
+                segue = await dj_engine.generate_segue(
+                    profile,
+                    scene,
+                    prev_info,
+                    next_song,
+                    compressor,
+                    user_settings=user_settings,
+                )
+                tts_audio = await tts.synthesize(
                     segue,
                     scene,
                     voice_preset=current_voice_preset(),
                     user_settings=user_settings,
                 )
-                if tts_audio
-                else ""
-            )
-        except Exception:
-            pass
-
-        url = await scheduler.get_song_url(next_song)
+                tts_hash_val = (
+                    tts._hash(
+                        segue,
+                        scene,
+                        voice_preset=current_voice_preset(),
+                        user_settings=user_settings,
+                    )
+                    if tts_audio
+                    else ""
+                )
+            except Exception:
+                segue = None
+                tts_hash_val = ""
 
         if segue:
             await websocket.send_json({
@@ -116,25 +154,24 @@ async def ws_handler(websocket: WebSocket):
                 "tts_ready": bool(tts_hash_val),
                 "tts_hash": tts_hash_val,
                 "next_track": _track_info(next_song),
-                "url": url,
+                "url": item.url,
             })
-            # The segue message dispatches the next track, so lock it in now
-            # and let the per-connection log guard prevent duplicate writes.
             await remember_current_song(next_song)
+            try:
+                compressor.add_round({
+                    "round": 0,
+                    "type": "segue",
+                    "speaker": "memo",
+                    "text": segue,
+                    "song": _track_info(next_song),
+                    "timestamp": "",
+                })
+            except Exception:
+                pass
         else:
-            # No segue generated, play directly
-            await send_track(next_song, url)
+            await send_track(next_song, item.url)
 
-        # Log to memory
-        if segue:
-            compressor.add_round({
-                "round": 0,
-                "type": "segue",
-                "speaker": "memo",
-                "text": segue,
-                "song": _track_info(next_song),
-                "timestamp": "",
-            })
+        await fill_queue()
 
     try:
         async for msg_text in websocket.iter_text():
@@ -202,22 +239,27 @@ async def ws_handler(websocket: WebSocket):
                     "tts_hash": tts_hash,
                 })
 
-                # Pick first track
-                song = await scheduler.pick_next(
-                    profile=profile,
-                    user_settings=user_settings,
-                    session_state=scheduler_state,
-                    uid=str(uid) if uid else None,
-                )
-                if song:
-                    url = await scheduler.get_song_url(song)
-                    await send_track(song, url)
+                await fill_queue(max_items=1)
+                item = playback_queue.promote_next()
+                if item:
+                    await send_track(item.song, item.url)
+                    await fill_queue()
 
             elif msg_type == "track_ended":
-                await play_next_with_segue(current_song_id)
+                await send_prepared_next(previous_event="played")
 
             elif msg_type == "skip":
-                await play_next_with_segue(current_song_id)
+                playback_queue.mark_current("skipped")
+                try:
+                    if current_song_id:
+                        await store.log_playback_event(
+                            "skipped",
+                            song_id=current_song_id,
+                            uid=str(uid) if uid else None,
+                        )
+                except Exception:
+                    pass
+                await send_prepared_next(previous_event="skipped")
 
     except WebSocketDisconnect:
         if session_id and store:
@@ -225,6 +267,16 @@ async def ws_handler(websocket: WebSocket):
                 await store.end_session(session_id, 0, "", "用户断开")
             except Exception:
                 pass
+
+
+async def _prepare_queue_item(audio_resolver_obj, song: dict, uid: str | None):
+    if not audio_resolver_obj:
+        url = await scheduler.get_song_url(song)
+        return song, url
+    resolved = await audio_resolver_obj.resolve_with_candidates(song, uid=uid)
+    if not resolved.ok:
+        return None
+    return song, resolved.proxy_url
 
 
 def _track_info(song: dict) -> dict:

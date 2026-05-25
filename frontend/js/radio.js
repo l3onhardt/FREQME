@@ -253,7 +253,7 @@ document.getElementById('onboarding-next-btn').addEventListener('click', async (
   const selectedVoice = document.querySelector('#voice-options .choice-card.selected');
   const selectedMode = document.querySelector('#mode-options .choice-card.selected');
   const payload = {
-    voice_preset: selectedVoice?.dataset.voice || 'warm_female',
+    voice_preset: selectedVoice?.dataset.voice || 'silver_female',
     display_name: document.getElementById('display-name-input').value,
     music_notes: document.getElementById('music-notes-input').value,
     current_mode: selectedMode?.dataset.mode || '陪伴',

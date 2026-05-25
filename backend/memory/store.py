@@ -139,6 +139,82 @@ class MemoryStore:
                 row = await cursor.fetchone()
                 return row[0] if row else None
 
+    async def save_audio_resolution(
+        self,
+        song_id: str,
+        url: str,
+        source: str,
+        content_type: str = "",
+    ) -> None:
+        async with connect_db() as db:
+            await db.execute(
+                "INSERT INTO audio_resolution_cache (song_id, url, source, content_type, updated_at) "
+                "VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP) "
+                "ON CONFLICT(song_id) DO UPDATE SET url=excluded.url, source=excluded.source, "
+                "content_type=excluded.content_type, updated_at=CURRENT_TIMESTAMP",
+                (str(song_id), url, source, content_type),
+            )
+            await db.commit()
+
+    async def get_audio_resolution(self, song_id: str) -> dict | None:
+        async with connect_db() as db:
+            async with db.execute(
+                "SELECT song_id, url, source, content_type, updated_at FROM audio_resolution_cache WHERE song_id=?",
+                (str(song_id),),
+            ) as cursor:
+                row = await cursor.fetchone()
+                if not row:
+                    return None
+                return {
+                    "song_id": row[0],
+                    "url": row[1],
+                    "source": row[2],
+                    "content_type": row[3] or "",
+                    "updated_at": row[4],
+                }
+
+    async def log_playback_event(
+        self,
+        event_type: str,
+        song_id: str | None = None,
+        uid: str | None = None,
+        reason: str = "",
+    ) -> None:
+        async with connect_db() as db:
+            await db.execute(
+                "INSERT INTO playback_event (uid, song_id, event_type, reason) VALUES (?, ?, ?, ?)",
+                (
+                    str(uid) if uid else None,
+                    str(song_id) if song_id else None,
+                    event_type,
+                    reason,
+                ),
+            )
+            await db.commit()
+
+    async def was_track_recently_failed(
+        self,
+        song_id: str,
+        uid: str | None = None,
+        limit: int = 50,
+    ) -> bool:
+        async with connect_db() as db:
+            if uid:
+                async with db.execute(
+                    "SELECT 1 FROM playback_event WHERE uid=? AND song_id=? "
+                    "AND event_type IN ('url_failed', 'playback_failed') "
+                    "ORDER BY created_at DESC LIMIT ?",
+                    (str(uid), str(song_id), limit),
+                ) as cursor:
+                    return await cursor.fetchone() is not None
+            async with db.execute(
+                "SELECT 1 FROM playback_event WHERE song_id=? "
+                "AND event_type IN ('url_failed', 'playback_failed') "
+                "ORDER BY created_at DESC LIMIT ?",
+                (str(song_id), limit),
+            ) as cursor:
+                return await cursor.fetchone() is not None
+
     async def check_token_budget(self) -> bool:
         today = datetime.now().strftime("%Y-%m-%d")
         settings = get_settings()

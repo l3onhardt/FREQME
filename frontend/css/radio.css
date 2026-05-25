@@ -104,8 +104,9 @@ body {
   grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 .choice-card {
+  position: relative;
   min-height: 118px;
-  padding: 18px 16px;
+  padding: 18px 48px 18px 16px;
   border: 1px solid #2c2c3a;
   border-radius: 8px;
   background: rgba(20, 20, 32, 0.82);
@@ -114,10 +115,36 @@ body {
   text-align: left;
   line-height: 1.55;
   overflow-wrap: anywhere;
-  transition: border-color 0.2s, background 0.2s, color 0.2s;
+  transition: border-color 0.2s, background 0.2s, box-shadow 0.2s, color 0.2s;
+}
+.choice-card::after {
+  content: "";
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  width: 20px;
+  height: 20px;
+  border: 1px solid #555767;
+  border-radius: 50%;
+  background: rgba(10, 10, 15, 0.92);
+}
+.choice-card.selected::after {
+  content: "✓";
+  border-color: #e94560;
+  background: #e94560;
+  color: #fff;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 19px;
+  text-align: center;
+}
+.choice-card:focus-visible {
+  outline: 2px solid #f06b80;
+  outline-offset: 3px;
 }
 .choice-grid.compact .choice-card {
   min-height: 64px;
+  padding: 18px 48px 18px 18px;
   text-align: center;
   display: flex;
   align-items: center;
@@ -140,7 +167,8 @@ body {
 .choice-card:hover,
 .choice-card.selected {
   border-color: #e94560;
-  background: rgba(233, 69, 96, 0.12);
+  background: rgba(233, 69, 96, 0.18);
+  box-shadow: 0 0 0 1px rgba(233, 69, 96, 0.35), 0 14px 34px rgba(0, 0, 0, 0.28);
   color: #fff;
 }
 .text-input,

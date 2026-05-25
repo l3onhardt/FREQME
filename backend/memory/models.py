@@ -86,6 +86,21 @@ async def init_db():
                 date TEXT PRIMARY KEY,
                 tokens_used INTEGER DEFAULT 0
             );
+            CREATE TABLE IF NOT EXISTS audio_resolution_cache (
+                song_id TEXT PRIMARY KEY,
+                url TEXT NOT NULL,
+                source TEXT NOT NULL,
+                content_type TEXT,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE IF NOT EXISTS playback_event (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                uid TEXT,
+                song_id TEXT,
+                event_type TEXT NOT NULL,
+                reason TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            );
         """)
         await _ensure_column(db, "track_log", "uid", "TEXT")
         await db.executescript("""
@@ -93,6 +108,8 @@ async def init_db():
             CREATE INDEX IF NOT EXISTS idx_track_uid_played ON track_log(uid, played_at);
             CREATE INDEX IF NOT EXISTS idx_track_song ON track_log(song_id);
             CREATE INDEX IF NOT EXISTS idx_session_start ON session_log(session_start);
+            CREATE INDEX IF NOT EXISTS idx_playback_event_song ON playback_event(song_id, created_at);
+            CREATE INDEX IF NOT EXISTS idx_playback_event_uid_song ON playback_event(uid, song_id, created_at);
         """)
         await db.commit()
 
