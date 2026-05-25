@@ -18,6 +18,24 @@ def _is_provider_rejection(text: str) -> bool:
     return any(marker in lowered for marker in REJECTION_MARKERS)
 
 
+def _mimo_retry_tokens(max_tokens: int) -> int:
+    return min(max(max_tokens * 3, max_tokens + 360), 1200)
+
+
+def _should_retry_mimo_response(response) -> bool:
+    try:
+        data = response.json()
+    except Exception:
+        return False
+    choice = (data.get("choices") or [{}])[0]
+    usage = data.get("usage") or {}
+    details = usage.get("completion_tokens_details") or {}
+    content = ((choice.get("message") or {}).get("content") or "").strip()
+    if choice.get("finish_reason") == "length":
+        return True
+    return not content and details.get("reasoning_tokens", 0) > 0
+
+
 def _mimo_chat(msgs: list[dict], maxt: int, api_key: str, base_url: str, model: str) -> str:
     """Use MiMo's OpenAI-compatible chat completions for text generation."""
     response = httpx.post(
@@ -133,12 +151,25 @@ class LLMRouter:
                 elif callable(url):
                     url = url()
 
-                response = await self.client.post(
-                    url,
-                    headers=cfg["headers"](),
-                    json=cfg["body"](messages, max_tokens),
-                    timeout=15.0,
-                )
+                request_tokens = max_tokens
+                response = None
+                for attempt in range(3):
+                    response = await self.client.post(
+                        url,
+                        headers=cfg["headers"](),
+                        json=cfg["body"](messages, request_tokens),
+                        timeout=25.0 if attempt else 15.0,
+                    )
+                    if (
+                        provider != "mimo"
+                        or response.status_code != 200
+                        or not _should_retry_mimo_response(response)
+                    ):
+                        break
+                    next_tokens = _mimo_retry_tokens(request_tokens)
+                    if next_tokens <= request_tokens:
+                        break
+                    request_tokens = next_tokens
                 if response.status_code == 200:
                     result = cfg["parse"](response)
                     if not result or _is_provider_rejection(result):

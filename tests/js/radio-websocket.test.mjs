@@ -24,6 +24,11 @@ function createElement(id = '') {
     addEventListener(type, handler) {
       listeners.set(type, handler);
     },
+    dispatch(type) {
+      const handler = listeners.get(type);
+      if (handler) return handler({ target: this });
+      return undefined;
+    },
     click() {
       const handler = listeners.get('click');
       if (handler) return handler({ target: this });
@@ -90,6 +95,9 @@ function loadRadio({ fetchImpl } = {}) {
   const elements = new Map(ids.map((id) => [id, createElement(id)]));
   const sockets = [];
   const timers = [];
+  let now = 0;
+  let nextTimerId = 1;
+  const scheduledTimers = new Map();
 
   class MockWebSocket {
     static CONNECTING = 0;
@@ -112,7 +120,13 @@ function loadRadio({ fetchImpl } = {}) {
   const context = {
     WebSocket: MockWebSocket,
     URL: { createObjectURL: () => 'blob:tts' },
-    clearTimeout() {},
+    clearTimeout(id) {
+      const timer = scheduledTimers.get(id);
+      if (timer) {
+        timer.cleared = true;
+        scheduledTimers.delete(id);
+      }
+    },
     console,
     document: {
       createElement,
@@ -138,22 +152,58 @@ function loadRadio({ fetchImpl } = {}) {
     setInterval() {
       return 1;
     },
-    setTimeout(callback) {
-      timers.push(callback);
-      return timers.length;
+    setTimeout(callback, delay = 0) {
+      const id = nextTimerId;
+      nextTimerId += 1;
+      const timer = {
+        id,
+        callback,
+        cleared: false,
+        dueAt: now + Number(delay || 0),
+      };
+      scheduledTimers.set(id, timer);
+      timers.push(() => {
+        if (timer.cleared) return undefined;
+        timer.cleared = true;
+        scheduledTimers.delete(id);
+        return callback();
+      });
+      return id;
     },
   };
 
   vm.createContext(context);
   vm.runInContext(readFileSync(radioPath, 'utf8'), context, { filename: radioPath });
 
-  return { context, elements, sockets, timers };
+  function advanceTimersBy(ms) {
+    const target = now + ms;
+    for (let guard = 0; guard < 1000; guard++) {
+      const nextTimer = [...scheduledTimers.values()]
+        .filter((timer) => !timer.cleared && timer.dueAt <= target)
+        .sort((a, b) => a.dueAt - b.dueAt || a.id - b.id)[0];
+      if (!nextTimer) break;
+      now = nextTimer.dueAt;
+      nextTimer.cleared = true;
+      scheduledTimers.delete(nextTimer.id);
+      nextTimer.callback();
+    }
+    now = target;
+  }
+
+  return { context, elements, sockets, timers, advanceTimersBy };
 }
 
 async function flushAsyncWork(rounds = 8) {
   for (let i = 0; i < rounds; i++) {
     await Promise.resolve();
   }
+}
+
+function assertAlmostEqual(actual, expected, epsilon = 0.000001) {
+  assert.ok(
+    Math.abs(actual - expected) <= epsilon,
+    `expected ${actual} to be within ${epsilon} of ${expected}`,
+  );
 }
 
 async function waitFor(predicate, rounds = 20) {
@@ -275,6 +325,187 @@ test('text-only segue stays visible briefly before starting next track', async (
 
   assert.equal(audioMain.src, '/api/radio/audio/2');
   assert.equal(elements.get('track-name').textContent, 'Next');
+});
+
+test('session start shows an immediate local DJ greeting while preparing audio', async () => {
+  const { context, elements } = loadRadio();
+
+  await context.handleMessage({
+    type: 'session_start',
+    scene: 'night',
+    intro_text: '',
+    tts_ready: false,
+    tts_hash: '',
+  });
+
+  assert.match(elements.get('dj-text').textContent, /今晚|夜|这里|你/);
+  assert.doesNotMatch(elements.get('dj-text').textContent, /AI|正在|接入/);
+});
+
+test('first track starts under late intro TTS and ducks smoothly while DJ speaks', async () => {
+  const { context, elements, advanceTimersBy } = loadRadio({
+    fetchImpl: async (url) => {
+      if (url === '/api/radio/tts/introhash') {
+        return { ok: true, blob: async () => ({}) };
+      }
+      return { ok: true, json: async () => ({}) };
+    },
+  });
+  const audioMain = elements.get('audio-main');
+  const audioTTS = elements.get('audio-tts');
+
+  await context.handleMessage({
+    type: 'session_start',
+    scene: 'night',
+    intro_text: '',
+    tts_ready: false,
+    tts_hash: '',
+  });
+
+  await context.handleMessage({
+    type: 'play_track',
+    track: { name: 'First', artist: 'Artist' },
+    url: '/api/radio/audio/1',
+  });
+
+  assert.equal(audioMain.src, '/api/radio/audio/1');
+  assert.equal(audioMain.paused, false);
+  assert.equal(audioMain.volume, 0.8);
+
+  await context.handleMessage({
+    type: 'intro',
+    text: 'Welcome to tonight.',
+    tts_ready: true,
+    tts_hash: 'introhash',
+  });
+  await flushAsyncWork();
+
+  assert.equal(audioTTS.src, 'blob:tts');
+  assert.equal(audioMain.src, '/api/radio/audio/1');
+  assert.equal(audioMain.paused, false);
+  assert.equal(audioMain.volume, 0.8);
+  advanceTimersBy(350);
+  assertAlmostEqual(audioMain.volume, 0.5);
+  advanceTimersBy(350);
+  assertAlmostEqual(audioMain.volume, 0.2);
+
+  audioTTS.onended();
+
+  assert.equal(audioMain.src, '/api/radio/audio/1');
+  assert.equal(elements.get('track-name').textContent, 'First');
+  assertAlmostEqual(audioMain.volume, 0.2);
+  advanceTimersBy(500);
+  assertAlmostEqual(audioMain.volume, 0.5);
+  advanceTimersBy(500);
+  assertAlmostEqual(audioMain.volume, 0.8);
+});
+
+test('skip stops the current first track while intro is pending', async () => {
+  const { context, elements, timers } = loadRadio();
+  const audioMain = elements.get('audio-main');
+
+  await context.handleMessage({
+    type: 'session_start',
+    scene: 'night',
+    intro_text: '',
+    tts_ready: false,
+    tts_hash: '',
+  });
+  await context.handleMessage({
+    type: 'play_track',
+    track: { name: 'First', artist: 'Artist' },
+    url: '/api/radio/audio/1',
+  });
+
+  assert.equal(audioMain.src, '/api/radio/audio/1');
+  assert.equal(audioMain.paused, false);
+
+  elements.get('btn-skip').click();
+  timers.forEach((timer) => timer());
+
+  assert.equal(audioMain.paused, true);
+});
+
+test('first track starts immediately even if intro never arrives', async () => {
+  const { context, elements, timers } = loadRadio();
+  const audioMain = elements.get('audio-main');
+
+  await context.handleMessage({
+    type: 'session_start',
+    scene: 'night',
+    intro_text: '',
+    tts_ready: false,
+    tts_hash: '',
+  });
+  await context.handleMessage({
+    type: 'play_track',
+    track: { name: 'First', artist: 'Artist' },
+    url: '/api/radio/audio/1',
+  });
+
+  assert.equal(audioMain.src, '/api/radio/audio/1');
+  assert.equal(audioMain.paused, false);
+  timers[0]();
+
+  assert.equal(audioMain.src, '/api/radio/audio/1');
+  assert.equal(elements.get('track-name').textContent, 'First');
+});
+
+test('volume changes during DJ speech retarget the duck and restore smoothly', async () => {
+  const { context, elements, advanceTimersBy } = loadRadio({
+    fetchImpl: async (url) => {
+      if (url === '/api/radio/tts/latehash') {
+        return { ok: true, blob: async () => ({}) };
+      }
+      return { ok: true, json: async () => ({}) };
+    },
+  });
+  const audioMain = elements.get('audio-main');
+  const audioTTS = elements.get('audio-tts');
+  const volumeSlider = elements.get('volume-slider');
+
+  await context.handleMessage({
+    type: 'session_start',
+    scene: 'night',
+    intro_text: '',
+    tts_ready: false,
+    tts_hash: '',
+  });
+  await context.handleMessage({
+    type: 'play_track',
+    track: { name: 'First', artist: 'Artist' },
+    url: '/api/radio/audio/1',
+  });
+
+  await context.handleMessage({
+    type: 'intro',
+    text: 'Late welcome.',
+    tts_ready: true,
+    tts_hash: 'latehash',
+  });
+  await flushAsyncWork();
+
+  assert.equal(audioMain.src, '/api/radio/audio/1');
+  assert.equal(audioTTS.src, 'blob:tts');
+  advanceTimersBy(700);
+  assertAlmostEqual(audioMain.volume, 0.2);
+
+  volumeSlider.value = '50';
+  volumeSlider.dispatch('input');
+
+  assertAlmostEqual(audioMain.volume, 0.2);
+  advanceTimersBy(150);
+  assertAlmostEqual(audioMain.volume, 0.1625);
+  advanceTimersBy(150);
+  assertAlmostEqual(audioMain.volume, 0.125);
+
+  audioTTS.onended();
+
+  assertAlmostEqual(audioMain.volume, 0.125);
+  advanceTimersBy(500);
+  assertAlmostEqual(audioMain.volume, 0.3125);
+  advanceTimersBy(500);
+  assertAlmostEqual(audioMain.volume, 0.5);
 });
 
 test('intro message updates DJ text after playback has started', async () => {

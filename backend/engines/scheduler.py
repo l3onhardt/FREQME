@@ -336,9 +336,4 @@ class StreamScheduler:
 
     async def get_song_url(self, song: dict) -> str:
         sid = str(song.get("id"))
-        url = await self.netease.song_url(sid)
-        # If NetEase returns its own fallback URL, it means no real URL found
-        # Try the direct outer URL which works for many songs
-        if "song/media/outer/url" in url:
-            return url
-        return url or f"https://music.163.com/song/media/outer/url?id={sid}.mp3"
+        return await self.netease.song_url(sid)

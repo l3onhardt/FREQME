@@ -71,6 +71,84 @@ class AudioResolverTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(resolved.url, "https://cdn.test/2.mp3")
         self.assertEqual(resolved.source, "search_candidate")
 
+    async def test_rejects_search_candidate_with_different_title_and_artist(self):
+        netease = FakeNetease()
+        netease.urls = {"1": "", "2": "https://cdn.test/2.mp3"}
+        netease.search_results = [{"id": "2", "name": "13", "ar": [{"name": "默樂隊"}]}]
+        store = FakeStore()
+        resolver = AudioResolver(netease, store)
+
+        resolved = await resolver.resolve_with_candidates(
+            {"id": "1", "name": "MY LEVEL (EGOTRIP)", "ar": [{"name": "Eliminate"}]},
+            uid="u1",
+        )
+
+        self.assertFalse(resolved.ok)
+        self.assertEqual(store.events[-1]["event_type"], "url_failed")
+        self.assertEqual(store.events[-1]["reason"], "empty_url")
+
+    async def test_allows_search_candidate_with_same_title_and_artist(self):
+        netease = FakeNetease()
+        netease.urls = {"1": "", "2": "https://cdn.test/2.mp3"}
+        netease.search_results = [
+            {
+                "id": "2",
+                "name": "MY LEVEL (EGOTRIP)",
+                "ar": [{"name": "Eliminate"}],
+            }
+        ]
+        store = FakeStore()
+        resolver = AudioResolver(netease, store)
+
+        resolved = await resolver.resolve_with_candidates(
+            {"id": "1", "name": "MY LEVEL (EGOTRIP)", "ar": [{"name": "Eliminate"}]},
+        )
+
+        self.assertTrue(resolved.ok)
+        self.assertEqual(resolved.song_id, "2")
+        self.assertEqual(resolved.source, "search_candidate")
+
+    async def test_falls_back_when_primary_is_unresolved_netease_outer_url(self):
+        netease = FakeNetease()
+        netease.urls = {
+            "1": "https://music.163.com/song/media/outer/url?id=1.mp3",
+            "2": "https://cdn.test/2.mp3",
+        }
+        netease.search_results = [{"id": "2", "name": "Song", "ar": [{"name": "Artist"}]}]
+        store = FakeStore()
+        resolver = AudioResolver(netease, store)
+
+        resolved = await resolver.resolve_with_candidates(
+            {"id": "1", "name": "Song", "ar": [{"name": "Artist"}]},
+        )
+
+        self.assertEqual(resolved.song_id, "2")
+        self.assertEqual(resolved.url, "https://cdn.test/2.mp3")
+        self.assertEqual(resolved.source, "search_candidate")
+
+    async def test_ignores_cached_unresolved_netease_outer_url(self):
+        netease = FakeNetease()
+        netease.urls = {
+            "1": "https://music.163.com/song/media/outer/url?id=1.mp3",
+            "2": "https://cdn.test/2.mp3",
+        }
+        netease.search_results = [{"id": "2", "name": "Song", "ar": [{"name": "Artist"}]}]
+        store = FakeStore()
+        store.cache["1"] = {
+            "song_id": "1",
+            "url": "https://music.163.com/song/media/outer/url?id=1.mp3",
+            "source": "cache",
+        }
+        resolver = AudioResolver(netease, store)
+
+        resolved = await resolver.resolve_with_candidates(
+            {"id": "1", "name": "Song", "ar": [{"name": "Artist"}]},
+        )
+
+        self.assertEqual(resolved.song_id, "2")
+        self.assertEqual(resolved.url, "https://cdn.test/2.mp3")
+        self.assertEqual(resolved.source, "search_candidate")
+
     async def test_logs_failure_when_no_candidate_resolves(self):
         netease = FakeNetease()
         netease.urls = {"1": ""}
@@ -82,3 +160,19 @@ class AudioResolverTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(resolved.ok)
         self.assertEqual(store.events[-1]["event_type"], "url_failed")
         self.assertEqual(store.events[-1]["reason"], "empty_url")
+
+    async def test_treats_adapter_outer_url_fallback_as_unplayable(self):
+        netease = FakeNetease()
+        netease.urls = {
+            "1": "https://music.163.com/song/media/outer/url?id=1.mp3",
+        }
+        store = FakeStore()
+        resolver = AudioResolver(netease, store)
+
+        resolved = await resolver.resolve_with_candidates(
+            {"id": "1", "name": "Song", "ar": [{"name": "Artist"}]},
+            uid="u1",
+        )
+
+        self.assertFalse(resolved.ok)
+        self.assertEqual(store.events[-1]["reason"], "unplayable_url")

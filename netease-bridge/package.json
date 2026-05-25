@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "test": "node --test auth-state.test.mjs"
+    "test": "node --test auth-state.test.mjs song-url.test.mjs"
   },
   "dependencies": {
     "express": "^4.21.0",

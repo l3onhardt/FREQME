@@ -165,6 +165,13 @@ async def get_audio_proxy(
             or resolved.content_type
             or "audio/mpeg"
         )
+        if not _is_audio_media_type(media_type):
+            await upstream.aclose()
+            await client.aclose()
+            return JSONResponse(
+                {"error": f"upstream returned non-audio content: {media_type}"},
+                status_code=502,
+            )
 
         async def body():
             try:
@@ -189,3 +196,8 @@ async def get_audio_proxy(
     except Exception as error:
         await client.aclose()
         return JSONResponse({"error": str(error)}, status_code=502)
+
+
+def _is_audio_media_type(media_type: str) -> bool:
+    normalized = (media_type or "").split(";", 1)[0].strip().lower()
+    return normalized.startswith("audio/")

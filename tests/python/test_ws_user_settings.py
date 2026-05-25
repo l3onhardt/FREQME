@@ -1,3 +1,4 @@
+import asyncio
 import json
 import unittest
 
@@ -25,6 +26,7 @@ class FakeStore:
     def __init__(self, stored_settings):
         self.stored_settings = stored_settings
         self.logged_tracks = []
+        self.recent_playable_tracks = []
 
     async def get_user_settings(self, uid):
         return self.stored_settings
@@ -40,6 +42,9 @@ class FakeStore:
 
     async def log_track(self, track_id, name, artist, source, uid=None):
         self.logged_tracks.append((track_id, name, artist, source, uid))
+
+    async def get_recent_playable_tracks(self, uid=None, limit=20):
+        return self.recent_playable_tracks[:limit]
 
 
 class FakeDJEngine:
@@ -75,6 +80,24 @@ class FakeDJEngine:
             "user_settings": user_settings,
         })
         return "segue"
+
+    async def generate_program_break(
+        self,
+        profile,
+        scene,
+        played_songs,
+        next_song,
+        context,
+        user_settings=None,
+    ):
+        self.segue_calls.append({
+            "profile": profile,
+            "scene": scene,
+            "played_songs": list(played_songs),
+            "next_song": next_song,
+            "user_settings": user_settings,
+        })
+        return "program break"
 
 
 class FailingIntroDJEngine(FakeDJEngine):
@@ -131,7 +154,7 @@ class FailingSegueTTS(FakeTTS):
             "voice_preset": voice_preset,
             "user_settings": user_settings,
         })
-        if text == "segue":
+        if text in {"segue", "program break"}:
             raise RuntimeError("tts unavailable")
         return b"audio"
 
@@ -143,6 +166,9 @@ class FakeScheduler:
         self.songs = [
             {"id": "first", "name": "First Song", "ar": [{"name": "First Artist"}]},
             {"id": "second", "name": "Second Song", "ar": [{"name": "Second Artist"}]},
+            {"id": "third", "name": "Third Song", "ar": [{"name": "Third Artist"}]},
+            {"id": "fourth", "name": "Fourth Song", "ar": [{"name": "Fourth Artist"}]},
+            {"id": "fifth", "name": "Fifth Song", "ar": [{"name": "Fifth Artist"}]},
         ]
 
     def new_session_state(self):
@@ -171,6 +197,84 @@ class FakeScheduler:
         return f"https://example.test/{song['id']}.mp3"
 
 
+class EndlessUnplayableScheduler(FakeScheduler):
+    async def pick_next(
+        self,
+        current_song_id=None,
+        profile=None,
+        user_settings=None,
+        session_state=None,
+        uid=None,
+    ):
+        self.pick_next_calls.append({
+            "current_song_id": current_song_id,
+            "profile": profile,
+            "user_settings": user_settings,
+            "session_state": session_state,
+            "uid": uid,
+        })
+        return {
+            "id": f"bad-{len(self.pick_next_calls)}",
+            "name": "Unplayable",
+            "ar": [{"name": "No Audio"}],
+        }
+
+
+class MostlyFailingResolver:
+    def __init__(self):
+        self.calls = []
+
+    async def resolve_with_candidates(self, song, uid=None):
+        self.calls.append(str(song.get("id")))
+        song_id = str(song.get("id"))
+
+        ok = song_id == "cached-good"
+        return type(
+            "Result",
+            (),
+            {
+                "ok": ok,
+                "proxy_url": "/api/radio/audio/cached-good" if ok else "",
+                "reason": "unplayable_url",
+                "song_id": "cached-good" if ok else song_id,
+            },
+        )()
+
+
+class IntroOrderScheduler(FakeScheduler):
+    def __init__(self, websocket):
+        super().__init__()
+        self.websocket = websocket
+        self.intro_sent_before_first_pick = None
+        self.intro_sent_before_second_pick = None
+
+    async def pick_next(
+        self,
+        current_song_id=None,
+        profile=None,
+        user_settings=None,
+        session_state=None,
+        uid=None,
+    ):
+        if len(self.pick_next_calls) == 0:
+            self.intro_sent_before_first_pick = any(
+                payload["type"] == "intro"
+                for payload in self.websocket.sent
+            )
+        if len(self.pick_next_calls) == 1:
+            self.intro_sent_before_second_pick = any(
+                payload["type"] == "intro"
+                for payload in self.websocket.sent
+            )
+        return await super().pick_next(
+            current_song_id,
+            profile=profile,
+            user_settings=user_settings,
+            session_state=session_state,
+            uid=uid,
+        )
+
+
 class FakeCompressor:
     def __init__(self):
         self.rounds = []
@@ -188,6 +292,7 @@ class WebSocketUserSettingsTests(unittest.IsolatedAsyncioTestCase):
             "scheduler": ws.scheduler,
             "compressor": ws.compressor,
             "profile_engine": ws.profile_engine,
+            "audio_resolver": ws.audio_resolver,
             "auth_netease": auth.netease,
         }
         self.addCleanup(self._restore_ws_globals)
@@ -216,6 +321,8 @@ class WebSocketUserSettingsTests(unittest.IsolatedAsyncioTestCase):
         fake_websocket = FakeWebSocket([
             {"type": "handshake", "uid": "42", "settings": handshake_settings},
             {"type": "skip"},
+            {"type": "track_ended"},
+            {"type": "track_ended"},
         ])
 
         ws.store = fake_store
@@ -249,13 +356,18 @@ class WebSocketUserSettingsTests(unittest.IsolatedAsyncioTestCase):
             fake_scheduler.session_states[0],
         )
         self.assertEqual(fake_dj.segue_calls[0]["user_settings"], stored_settings)
+        self.assertEqual(
+            [song["id"] for song in fake_dj.segue_calls[0]["played_songs"]],
+            ["first", "second", "third"],
+        )
+        self.assertEqual(fake_dj.segue_calls[0]["next_song"]["id"], "fourth")
         self.assertEqual(fake_tts.synthesize_calls[1]["user_settings"], stored_settings)
         self.assertEqual(fake_tts.synthesize_calls[1]["voice_preset"], "bright_girl")
         self.assertEqual(fake_tts.hash_calls[1]["user_settings"], stored_settings)
         self.assertEqual(fake_tts.hash_calls[1]["voice_preset"], "bright_girl")
         self.assertNotEqual(fake_dj.intro_calls[0]["user_settings"], handshake_settings)
 
-    async def test_ws_skip_uses_prewarmed_llm_segue_without_waiting_for_new_inference(self):
+    async def test_ws_skip_uses_prewarmed_llm_break_without_waiting_for_new_inference(self):
         fake_store = FakeStore({"voice_preset": "warm_male"})
         fake_dj = FakeDJEngine()
         fake_tts = FakeTTS()
@@ -266,6 +378,10 @@ class WebSocketUserSettingsTests(unittest.IsolatedAsyncioTestCase):
                 yield json.dumps({"type": "handshake", "uid": "42", "settings": {}})
                 self.pre_skip_segue_count = len(fake_dj.segue_calls)
                 yield json.dumps({"type": "skip"})
+                self.post_first_skip_segue_count = len(fake_dj.segue_calls)
+                yield json.dumps({"type": "track_ended"})
+                self.pre_break_skip_segue_count = len(fake_dj.segue_calls)
+                yield json.dumps({"type": "track_ended"})
 
         fake_websocket = CheckpointWebSocket([])
 
@@ -276,14 +392,21 @@ class WebSocketUserSettingsTests(unittest.IsolatedAsyncioTestCase):
         ws.compressor = FakeCompressor()
         ws.profile_engine = None
 
-        await ws.ws_handler(fake_websocket)
+        await asyncio.wait_for(ws.ws_handler(fake_websocket), timeout=1.0)
 
-        self.assertEqual(fake_websocket.pre_skip_segue_count, 1)
+        self.assertEqual(fake_websocket.pre_skip_segue_count, 0)
+        self.assertEqual(fake_websocket.post_first_skip_segue_count, 0)
+        self.assertEqual(fake_websocket.pre_break_skip_segue_count, 1)
         self.assertEqual(len(fake_dj.segue_calls), 1)
-        self.assertEqual(fake_dj.segue_calls[0]["current_song"]["id"], "first")
-        self.assertEqual(fake_dj.segue_calls[0]["next_song"]["id"], "second")
+        self.assertEqual(
+            [song["id"] for song in fake_dj.segue_calls[0]["played_songs"]],
+            ["first", "second", "third"],
+        )
+        self.assertEqual(fake_dj.segue_calls[0]["next_song"]["id"], "fourth")
         sent_types = [payload["type"] for payload in fake_websocket.sent]
         self.assertIn("segue", sent_types)
+        segue = next(payload for payload in fake_websocket.sent if payload["type"] == "segue")
+        self.assertEqual(segue["next_track"]["id"], "fourth")
 
     async def test_ws_handshake_does_not_stall_when_llm_intro_is_unavailable(self):
         fake_store = FakeStore({"voice_preset": "warm_male"})
@@ -301,14 +424,24 @@ class WebSocketUserSettingsTests(unittest.IsolatedAsyncioTestCase):
         ws.compressor = FakeCompressor()
         ws.profile_engine = None
 
-        await ws.ws_handler(fake_websocket)
+        await asyncio.wait_for(ws.ws_handler(fake_websocket), timeout=1.0)
 
         sent_types = [payload["type"] for payload in fake_websocket.sent]
         self.assertIn("session_start", sent_types)
         self.assertIn("play_track", sent_types)
+        self.assertIn("intro", sent_types)
         session_start = next(payload for payload in fake_websocket.sent if payload["type"] == "session_start")
-        self.assertEqual(session_start["intro_text"], "")
+        self.assertIn("今晚", session_start["intro_text"])
+        self.assertNotIn("AI", session_start["intro_text"])
+        self.assertNotIn("接入", session_start["intro_text"])
+        self.assertNotIn("正在", session_start["intro_text"])
         self.assertFalse(session_start["tts_ready"])
+        intro = next(payload for payload in fake_websocket.sent if payload["type"] == "intro")
+        self.assertIn("今晚", intro["text"])
+        self.assertNotIn("AI", intro["text"])
+        self.assertNotIn("接入", intro["text"])
+        self.assertNotIn("正在", intro["text"])
+        self.assertTrue(intro["tts_ready"])
 
     async def test_ws_sends_intro_message_when_llm_intro_is_available(self):
         fake_store = FakeStore({"voice_preset": "warm_male"})
@@ -332,9 +465,78 @@ class WebSocketUserSettingsTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("session_start", sent_types)
         self.assertIn("play_track", sent_types)
         self.assertIn("intro", sent_types)
-        intro = next(payload for payload in fake_websocket.sent if payload["type"] == "intro")
-        self.assertEqual(intro["text"], "intro")
-        self.assertTrue(intro["tts_ready"])
+        intros = [payload for payload in fake_websocket.sent if payload["type"] == "intro"]
+        self.assertTrue(any("今晚" in payload["text"] for payload in intros))
+        self.assertFalse(any("AI" in payload["text"] for payload in intros))
+        self.assertFalse(any("接入" in payload["text"] for payload in intros))
+        llm_intro = next(payload for payload in intros if payload["text"] == "intro")
+        self.assertTrue(llm_intro["tts_ready"])
+
+    async def test_ws_sends_default_intro_before_waiting_for_first_track(self):
+        fake_store = FakeStore({"voice_preset": "warm_male"})
+        fake_dj = FakeDJEngine()
+        fake_tts = FakeTTS()
+        fake_websocket = FakeWebSocket([
+            {"type": "handshake", "uid": "42", "settings": {}},
+        ])
+        fake_scheduler = IntroOrderScheduler(fake_websocket)
+
+        ws.store = fake_store
+        ws.dj_engine = fake_dj
+        ws.tts = fake_tts
+        ws.scheduler = fake_scheduler
+        ws.compressor = FakeCompressor()
+        ws.profile_engine = None
+
+        await ws.ws_handler(fake_websocket)
+
+        self.assertTrue(fake_scheduler.intro_sent_before_first_pick)
+
+    async def test_ws_sends_intro_before_waiting_for_second_track_prewarm(self):
+        fake_store = FakeStore({"voice_preset": "warm_male"})
+        fake_dj = FakeDJEngine()
+        fake_tts = FakeTTS()
+        fake_websocket = FakeWebSocket([
+            {"type": "handshake", "uid": "42", "settings": {}},
+        ])
+        fake_scheduler = IntroOrderScheduler(fake_websocket)
+
+        ws.store = fake_store
+        ws.dj_engine = fake_dj
+        ws.tts = fake_tts
+        ws.scheduler = fake_scheduler
+        ws.compressor = FakeCompressor()
+        ws.profile_engine = None
+
+        await ws.ws_handler(fake_websocket)
+
+        self.assertTrue(fake_scheduler.intro_sent_before_second_pick)
+
+    async def test_ws_uses_recent_playable_track_when_first_song_resolution_keeps_failing(self):
+        fake_store = FakeStore({"voice_preset": "warm_male"})
+        fake_store.recent_playable_tracks = [
+            {"id": "cached-good", "name": "Known Good", "artist": "Known Artist"},
+        ]
+        fake_resolver = MostlyFailingResolver()
+        fake_websocket = FakeWebSocket([
+            {"type": "handshake", "uid": "42", "settings": {}},
+        ])
+
+        ws.store = fake_store
+        ws.dj_engine = FakeDJEngine()
+        ws.tts = FakeTTS()
+        ws.scheduler = EndlessUnplayableScheduler()
+        ws.compressor = FakeCompressor()
+        ws.profile_engine = None
+        ws.audio_resolver = fake_resolver
+
+        await asyncio.wait_for(ws.ws_handler(fake_websocket), timeout=1.0)
+
+        play_track = next(payload for payload in fake_websocket.sent if payload["type"] == "play_track")
+        self.assertEqual(play_track["track"]["id"], "cached-good")
+        self.assertEqual(play_track["track"]["name"], "Known Good")
+        self.assertEqual(play_track["url"], "/api/radio/audio/cached-good")
+        self.assertIn("cached-good", fake_resolver.calls)
 
     async def test_ws_keeps_llm_segue_text_when_tts_for_segue_fails(self):
         fake_store = FakeStore({"voice_preset": "warm_male"})
@@ -344,6 +546,8 @@ class WebSocketUserSettingsTests(unittest.IsolatedAsyncioTestCase):
         fake_websocket = FakeWebSocket([
             {"type": "handshake", "uid": "42", "settings": {}},
             {"type": "skip"},
+            {"type": "track_ended"},
+            {"type": "track_ended"},
         ])
 
         ws.store = fake_store
@@ -356,7 +560,7 @@ class WebSocketUserSettingsTests(unittest.IsolatedAsyncioTestCase):
         await ws.ws_handler(fake_websocket)
 
         segue = next(payload for payload in fake_websocket.sent if payload["type"] == "segue")
-        self.assertEqual(segue["text"], "segue")
+        self.assertEqual(segue["text"], "program break")
         self.assertFalse(segue["tts_ready"])
         self.assertEqual(segue["tts_hash"], "")
 

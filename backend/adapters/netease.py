@@ -84,7 +84,7 @@ class NeteaseAdapter:
                 return data[0]["url"]
         except Exception:
             pass
-        return f"https://music.163.com/song/media/outer/url?id={song_id}.mp3"
+        return ""
 
     async def search(self, keywords: str, limit: int = 5) -> list[dict]:
         try:

@@ -38,6 +38,9 @@ class PlaybackQueue:
     def current(self) -> PlaybackQueueItem | None:
         return next((item for item in self.items if item.status == "playing"), None)
 
+    def ready_items(self) -> list[PlaybackQueueItem]:
+        return [item for item in self.items if item.status == "ready"]
+
     def promote_next(self, previous_event: str = "played") -> PlaybackQueueItem | None:
         current = self.current()
         if current:

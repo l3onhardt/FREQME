@@ -7,6 +7,19 @@ let retryTimer = null;
 let onboardingSettings = null;
 let onboardingStepIndex = 0;
 let particlesCreated = false;
+let introPending = false;
+let introPlaying = false;
+let pendingTrackAfterIntro = null;
+let introFallbackTimer = null;
+let userVolume = 0.8;
+let isDucked = false;
+let mainVolumeFadeTimer = null;
+const DUCKING_RATIO = 0.25;
+const DUCK_FADE_MS = 700;
+const RESTORE_FADE_MS = 1000;
+const VOLUME_RETARGET_FADE_MS = 300;
+const VOLUME_FADE_STEP_MS = 50;
+const LOCAL_DJ_GREETING = '晚上好，这里是今晚的私人电台。我先把第一首歌轻轻放进来，你不用急，跟着这一点光慢慢听。';
 
 const onboardingSteps = ['voice', 'notes', 'mode'];
 
@@ -14,7 +27,7 @@ const audioMain = document.getElementById('audio-main');
 const audioTTS = document.getElementById('audio-tts');
 const volumeSlider = document.getElementById('volume-slider');
 
-audioMain.volume = 0.8;
+audioMain.volume = userVolume;
 audioTTS.volume = 0.9;
 
 // ---- Background Particles ----
@@ -35,6 +48,76 @@ function createParticles() {
 }
 
 // ---- TTS Helper ----
+function clampVolume(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return 0;
+  return Math.max(0, Math.min(1, numeric));
+}
+
+function targetMainVolume() {
+  return clampVolume(isDucked ? userVolume * DUCKING_RATIO : userVolume);
+}
+
+function cancelMainVolumeFade() {
+  if (mainVolumeFadeTimer) {
+    clearTimeout(mainVolumeFadeTimer);
+    mainVolumeFadeTimer = null;
+  }
+}
+
+function setMainVolume(value) {
+  audioMain.volume = clampVolume(value);
+}
+
+function fadeMainVolumeTo(target, durationMs) {
+  const safeTarget = clampVolume(target);
+  const start = clampVolume(audioMain.volume);
+
+  cancelMainVolumeFade();
+
+  if (durationMs <= 0 || Math.abs(start - safeTarget) < 0.001) {
+    setMainVolume(safeTarget);
+    return;
+  }
+
+  const totalSteps = Math.max(1, Math.round(durationMs / VOLUME_FADE_STEP_MS));
+  let currentStep = 0;
+
+  const tick = () => {
+    currentStep += 1;
+    const progress = Math.min(1, currentStep / totalSteps);
+    setMainVolume(start + ((safeTarget - start) * progress));
+
+    if (progress < 1) {
+      mainVolumeFadeTimer = setTimeout(tick, VOLUME_FADE_STEP_MS);
+    } else {
+      mainVolumeFadeTimer = null;
+    }
+  };
+
+  mainVolumeFadeTimer = setTimeout(tick, VOLUME_FADE_STEP_MS);
+}
+
+function applyMainVolume({ immediate = false, durationMs = RESTORE_FADE_MS } = {}) {
+  const target = targetMainVolume();
+  if (immediate) {
+    cancelMainVolumeFade();
+    setMainVolume(target);
+    return;
+  }
+  fadeMainVolumeTo(target, durationMs);
+}
+
+function duckMainForDJ() {
+  isDucked = true;
+  applyMainVolume({ durationMs: DUCK_FADE_MS });
+}
+
+function restoreMainAfterDJ() {
+  isDucked = false;
+  applyMainVolume({ durationMs: RESTORE_FADE_MS });
+}
+
 async function playTTS(hash, text, onEnd) {
   if (text) {
     document.getElementById('dj-text').textContent = text;
@@ -49,20 +132,84 @@ async function playTTS(hash, text, onEnd) {
     return;
   }
   audioTTS.src = url;
+  duckMainForDJ();
   audioTTS.onended = () => {
     audioTTS.onended = null;
+    restoreMainAfterDJ();
     if (onEnd) onEnd();
   };
-  audioTTS.play().catch(() => { if (onEnd) onEnd(); });
+  audioTTS.play().catch(() => {
+    restoreMainAfterDJ();
+    if (onEnd) onEnd();
+  });
 }
 
 function playTrack(track, url) {
   document.getElementById('track-name').textContent = track.name || '--';
   document.getElementById('track-artist').textContent = track.artist || '--';
   audioMain.src = url;
+  applyMainVolume({ immediate: true });
   audioMain.play().catch(() => {});
   isPlaying = true;
   document.getElementById('btn-play').textContent = '⏸';
+}
+
+function clearIntroFallbackTimer() {
+  if (introFallbackTimer) {
+    clearTimeout(introFallbackTimer);
+    introFallbackTimer = null;
+  }
+}
+
+function finishIntroPlayback() {
+  const pending = pendingTrackAfterIntro;
+  pendingTrackAfterIntro = null;
+  introPending = false;
+  introPlaying = false;
+  audioTTS._hasIntro = false;
+  clearIntroFallbackTimer();
+  if (pending) {
+    playTrack(pending.track, pending.url);
+  }
+}
+
+function beginIntroWait() {
+  introPending = true;
+  introPlaying = false;
+  pendingTrackAfterIntro = null;
+  audioTTS._hasIntro = false;
+  clearIntroFallbackTimer();
+  introFallbackTimer = setTimeout(finishIntroPlayback, 25000);
+}
+
+function playIntroTTS(hash, text) {
+  introPending = false;
+  introPlaying = true;
+  audioTTS._hasIntro = true;
+  clearIntroFallbackTimer();
+  playTTS(hash, text, finishIntroPlayback);
+}
+
+function showTextIntro(text) {
+  if (text) {
+    document.getElementById('dj-text').textContent = text;
+  }
+  introPending = false;
+  introPlaying = false;
+  audioTTS._hasIntro = false;
+  clearIntroFallbackTimer();
+  if (pendingTrackAfterIntro) {
+    introFallbackTimer = setTimeout(finishIntroPlayback, 3500);
+  }
+}
+
+function resetIntroGate() {
+  pendingTrackAfterIntro = null;
+  introPending = false;
+  introPlaying = false;
+  audioTTS._hasIntro = false;
+  clearIntroFallbackTimer();
+  restoreMainAfterDJ();
 }
 
 // ---- QR Login ----
@@ -349,39 +496,29 @@ async function handleMessage(msg) {
       const sceneMap = { '深夜': '深夜电台', '清晨': '清晨电台', '午后': '午后电台' };
       sl.textContent = sceneMap[msg.scene] || '小米memo电台';
 
-      // Play TTS intro first; the first play_track will arrive
-      // and play after TTS finishes (handled in play_track case)
+      beginIntroWait();
       if (msg.tts_ready && msg.tts_hash) {
-        audioTTS._hasIntro = true;
-        playTTS(msg.tts_hash, msg.intro_text);
+        playIntroTTS(msg.tts_hash, msg.intro_text);
       } else {
-        audioTTS._hasIntro = false;
-        document.getElementById('dj-text').textContent = msg.intro_text || '';
+        document.getElementById('dj-text').textContent = msg.intro_text || LOCAL_DJ_GREETING;
       }
       break;
     }
 
     case 'intro': {
       if (msg.tts_ready && msg.tts_hash) {
-        playTTS(msg.tts_hash, msg.text);
+        playIntroTTS(msg.tts_hash, msg.text);
       } else if (msg.text) {
-        document.getElementById('dj-text').textContent = msg.text;
+        showTextIntro(msg.text);
+      } else {
+        finishIntroPlayback();
       }
       break;
     }
 
     case 'play_track': {
-      // If TTS intro is still playing, wait for it to finish
-      if (audioTTS._hasIntro && !audioTTS.ended && audioTTS.src && !audioTTS.paused) {
-        audioTTS.onended = () => {
-          audioTTS.onended = null;
-          audioTTS._hasIntro = false;
-          playTrack(msg.track, msg.url);
-        };
-      } else {
-        audioTTS._hasIntro = false;
-        playTrack(msg.track, msg.url);
-      }
+      audioTTS._hasIntro = false;
+      playTrack(msg.track, msg.url);
       break;
     }
 
@@ -393,7 +530,10 @@ async function handleMessage(msg) {
       };
 
       if (msg.tts_ready && msg.tts_hash) {
-        playTTS(msg.tts_hash, msg.text, playNextTrack);
+        if (msg.next_track) {
+          playTrack(msg.next_track, msg.url);
+        }
+        playTTS(msg.tts_hash, msg.text);
       } else if (msg.text) {
         document.getElementById('dj-text').textContent = msg.text;
         setTimeout(playNextTrack, 3500);
@@ -405,6 +545,7 @@ async function handleMessage(msg) {
 
     case 'error': {
       document.getElementById('dj-text').textContent = msg.message || '出错了';
+      resetIntroGate();
       // Auto-retry after a few seconds
       if (retryTimer) clearTimeout(retryTimer);
       retryTimer = setTimeout(() => {
@@ -453,21 +594,21 @@ document.getElementById('btn-play').addEventListener('click', () => {
 });
 
 document.getElementById('btn-skip').addEventListener('click', () => {
+  resetIntroGate();
   audioMain.pause();
   audioTTS.pause();
   audioMain.currentTime = 0;
   audioTTS.currentTime = 0;
   audioTTS.removeAttribute('src');
-  audioTTS._hasIntro = false;
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify({ type: 'skip' }));
   }
 });
 
 volumeSlider.addEventListener('input', (e) => {
-  const v = e.target.value / 100;
-  audioMain.volume = v;
-  audioTTS.volume = v;
+  userVolume = clampVolume(e.target.value / 100);
+  applyMainVolume({ durationMs: isDucked ? VOLUME_RETARGET_FADE_MS : 0 });
+  audioTTS.volume = userVolume;
 });
 
 // ---- Boot ----

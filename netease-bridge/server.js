@@ -9,11 +9,12 @@ import {
     saveCookie,
     sanitizeLoginBody,
 } from './auth-state.js';
+import { resolveSongUrl } from './song-url.js';
 
 const {
     login_qr_key, login_qr_create, login_qr_check,
     user_playlist, playlist_detail, user_record, recommend_songs,
-    personal_fm, simi_song, song_url, search,
+    personal_fm, simi_song, song_url, song_url_v1, search,
     login_refresh, login_status, like_list,
 } = NeteaseCloudMusicApi;
 
@@ -99,8 +100,12 @@ app.get('/simi/song', asyncRoute(async (req, res) => {
 }));
 
 app.get('/song/url', asyncRoute(async (req, res) => {
-    const r = await song_url({ id: req.query.id, br: 320000 });
-    res.json(r.body);
+    const body = await resolveSongUrl({
+        id: req.query.id,
+        cookie,
+        api: { song_url, song_url_v1 },
+    });
+    res.json(body);
 }));
 
 app.get('/search', asyncRoute(async (req, res) => {

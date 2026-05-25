@@ -165,16 +165,13 @@ class SchedulerPersonalizedPickTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(song["id"], "fresh-artist")
         self.assertEqual(song["selection_reason"]["type"], "discovery_similar")
 
-    async def test_song_url_behavior_still_falls_back_to_outer_url(self):
+    async def test_song_url_behavior_returns_empty_when_netease_has_no_real_url(self):
         netease = FakeNetease()
         scheduler = self.make_scheduler(netease=netease)
 
         url = await scheduler.get_song_url({"id": "song-1"})
 
-        self.assertEqual(
-            url,
-            "https://music.163.com/song/media/outer/url?id=song-1.mp3",
-        )
+        self.assertEqual(url, "")
 
     async def test_fallback_pool_avoids_recent_artist_across_queue_candidates(self):
         netease = FakeNetease()

@@ -18,6 +18,9 @@ bus = None
 compressor = None
 audio_resolver = None
 
+DEFAULT_DJ_INTRO = "晚上好，这里是今晚的私人电台。我先把第一首歌轻轻放进来，你不用急，跟着这一点光慢慢听。"
+MAX_QUEUE_PREPARE_ATTEMPTS = 12
+
 
 async def ws_handler(websocket: WebSocket):
     await websocket.accept()
@@ -29,18 +32,54 @@ async def ws_handler(websocket: WebSocket):
     current_song_id = None
     session_id = None
     track_index = 0
+    played_songs = []
     logged_track_ids = set()
     scheduler_state = scheduler.new_session_state() if scheduler else None
     playback_queue = PlaybackQueue(prewarm_depth=3)
+    prewarm_task = None
 
     def current_voice_preset() -> str:
         return user_settings.get("voice_preset", "silver_female")
+
+    async def synthesize_intro_text(text: str) -> str:
+        if not text:
+            return ""
+        try:
+            tts_audio = await asyncio.wait_for(
+                tts.synthesize(
+                    text,
+                    scene,
+                    voice_preset=current_voice_preset(),
+                    user_settings=user_settings,
+                ),
+                timeout=12.0,
+            )
+            return (
+                tts._hash(
+                    text,
+                    scene,
+                    voice_preset=current_voice_preset(),
+                    user_settings=user_settings,
+                )
+                if tts_audio
+                else ""
+            )
+        except Exception:
+            return ""
+
+    def should_prepare_break_for_next_song() -> bool:
+        return (
+            len(played_songs) >= 3
+            and len(played_songs) % 3 == 0
+            and not playback_queue.ready_items()
+        )
 
     async def remember_current_song(song: dict):
         nonlocal current_song, current_song_id, track_index
         current_song = song
         current_song_id = str(song.get("id"))
         track_index += 1
+        played_songs.append(song)
         try:
             info = _track_info(song)
             if info["id"] not in logged_track_ids:
@@ -61,12 +100,18 @@ async def ws_handler(websocket: WebSocket):
             pass
 
     async def send_track(song: dict, url: str):
+        nonlocal prewarm_task
         await websocket.send_json({
             "type": "play_track",
             "track": _track_info(song),
             "url": url,
         })
         await remember_current_song(song)
+        if should_prepare_break_for_next_song():
+            if prewarm_task and not prewarm_task.done():
+                prewarm_task.cancel()
+            prewarm_task = asyncio.create_task(fill_queue(max_items=1))
+            await asyncio.sleep(0)
 
     async def prepare_intro():
         intro_text = ""
@@ -84,35 +129,20 @@ async def ws_handler(websocket: WebSocket):
             return "", ""
         if not intro_text:
             return "", ""
-        try:
-            tts_audio = await asyncio.wait_for(
-                tts.synthesize(
-                    intro_text,
-                    scene,
-                    voice_preset=current_voice_preset(),
-                    user_settings=user_settings,
-                ),
-                timeout=12.0,
-            )
-            tts_hash_val = (
-                tts._hash(
-                    intro_text,
-                    scene,
-                    voice_preset=current_voice_preset(),
-                    user_settings=user_settings,
-                )
-                if tts_audio
-                else ""
-            )
-        except Exception:
-            tts_hash_val = ""
+        tts_hash_val = await synthesize_intro_text(intro_text)
         return intro_text, tts_hash_val
 
-    async def fill_queue(max_items: int | None = None):
+    async def fill_queue(max_items: int | None = None, allow_program_break: bool = True):
         added_count = 0
+        attempts = 0
         while playback_queue.prewarm_needed() > 0:
             if max_items is not None and added_count >= max_items:
                 break
+            if attempts >= MAX_QUEUE_PREPARE_ATTEMPTS:
+                if await add_recent_playable_fallback():
+                    added_count += 1
+                break
+            attempts += 1
             try:
                 song = await scheduler.pick_next(
                     current_song_id,
@@ -138,12 +168,14 @@ async def ws_handler(websocket: WebSocket):
             prepared_song, prepared_url = prepared
             segue_text = ""
             tts_hash_val = ""
-            if current_song:
+            if allow_program_break and should_generate_segue(
+                track_index + len(playback_queue.ready_items()) + 1
+            ):
                 try:
-                    segue_text = await dj_engine.generate_segue(
+                    segue_text = await dj_engine.generate_program_break(
                         profile,
                         scene,
-                        current_song,
+                        played_songs,
                         prepared_song,
                         compressor,
                         user_settings=user_settings,
@@ -179,9 +211,56 @@ async def ws_handler(websocket: WebSocket):
             )
             added_count += 1
 
+    async def add_recent_playable_fallback() -> bool:
+        try:
+            recent_tracks = await store.get_recent_playable_tracks(
+                uid=str(uid) if uid else None,
+                limit=20,
+            )
+        except Exception:
+            recent_tracks = []
+        for recent_track in recent_tracks or []:
+            recent_id = str((recent_track or {}).get("id") or "")
+            if not recent_id or recent_id == current_song_id:
+                continue
+            if any(
+                str(item.song.get("id")) == recent_id
+                and item.status in {"playing", "ready", "prewarming"}
+                for item in playback_queue.items
+            ):
+                continue
+            prepared = await _prepare_queue_item(
+                audio_resolver,
+                _fallback_track_to_song(recent_track),
+                str(uid) if uid else None,
+            )
+            if not prepared:
+                continue
+            prepared_song, prepared_url = prepared
+            playback_queue.add_ready(
+                prepared_song,
+                prepared_url,
+                {
+                    "type": "recent_playable_fallback",
+                    "text": "先接上一首刚刚确认可播的歌，让电台不断档。",
+                },
+            )
+            return True
+        return False
+
     async def send_prepared_next(previous_event: str = "played"):
         nonlocal current_song, current_song_id
-        await fill_queue(max_items=1)
+        nonlocal prewarm_task
+        if prewarm_task:
+            try:
+                await asyncio.wait_for(asyncio.shield(prewarm_task), timeout=0.05)
+            except asyncio.TimeoutError:
+                prewarm_task.cancel()
+            except asyncio.CancelledError:
+                pass
+            prewarm_task = None
+        if not playback_queue.ready_items():
+            await fill_queue(max_items=1, allow_program_break=False)
         item = playback_queue.promote_next(previous_event=previous_event)
         if not item:
             await websocket.send_json({
@@ -218,7 +297,8 @@ async def ws_handler(websocket: WebSocket):
         else:
             await send_track(next_song, item.url)
 
-        await fill_queue(max_items=1)
+        if not (prewarm_task and not prewarm_task.done()):
+            await fill_queue(max_items=1)
 
     try:
         async for msg_text in websocket.iter_text():
@@ -250,6 +330,9 @@ async def ws_handler(websocket: WebSocket):
                             "dj_style_suggestion": "温暖自然",
                         }
 
+                default_intro_task = asyncio.create_task(
+                    synthesize_intro_text(DEFAULT_DJ_INTRO)
+                )
                 intro_task = asyncio.create_task(prepare_intro())
 
                 try:
@@ -261,16 +344,26 @@ async def ws_handler(websocket: WebSocket):
                     "type": "session_start",
                     "profile": profile,
                     "scene": scene,
-                    "intro_text": "",
+                    "intro_text": DEFAULT_DJ_INTRO,
                     "tts_ready": False,
                     "tts_hash": "",
                 })
+
+                try:
+                    default_tts_hash = await default_intro_task
+                    await websocket.send_json({
+                        "type": "intro",
+                        "text": DEFAULT_DJ_INTRO,
+                        "tts_ready": bool(default_tts_hash),
+                        "tts_hash": default_tts_hash,
+                    })
+                except Exception:
+                    pass
 
                 await fill_queue(max_items=1)
                 item = playback_queue.promote_next()
                 if item:
                     await send_track(item.song, item.url)
-                    await fill_queue(max_items=1)
 
                 try:
                     intro, tts_hash = await intro_task
@@ -283,6 +376,8 @@ async def ws_handler(websocket: WebSocket):
                         })
                 except Exception:
                     pass
+
+                await fill_queue(max_items=1)
 
             elif msg_type == "track_ended":
                 await send_prepared_next(previous_event="played")
@@ -315,7 +410,10 @@ async def _prepare_queue_item(audio_resolver_obj, song: dict, uid: str | None):
     resolved = await audio_resolver_obj.resolve_with_candidates(song, uid=uid)
     if not resolved.ok:
         return None
-    return song, resolved.proxy_url
+    prepared_song = dict(song)
+    if resolved.song_id:
+        prepared_song["id"] = resolved.song_id
+    return prepared_song, resolved.proxy_url
 
 
 def _track_info(song: dict) -> dict:
@@ -323,6 +421,16 @@ def _track_info(song: dict) -> dict:
         "id": str(song.get("id")),
         "name": song.get("name", ""),
         "artist": _artist_name(song),
+    }
+
+
+def _fallback_track_to_song(track: dict) -> dict:
+    artist = track.get("artist", "") if isinstance(track, dict) else ""
+    return {
+        "id": str(track.get("id", "")),
+        "name": track.get("name", "") or track.get("song_name", ""),
+        "artist": artist,
+        "ar": [{"name": artist}] if artist else [],
     }
 
 

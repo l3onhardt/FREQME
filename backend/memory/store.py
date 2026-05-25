@@ -89,6 +89,44 @@ class MemoryStore:
             ) as cursor:
                 return [row[0] for row in await cursor.fetchall()]
 
+    async def get_recent_playable_tracks(
+        self,
+        uid: str | None = None,
+        limit: int = 20,
+    ) -> list[dict]:
+        async with connect_db() as db:
+            if uid:
+                query = """
+                    SELECT tl.song_id, tl.song_name, tl.artist
+                    FROM track_log tl
+                    INNER JOIN audio_resolution_cache arc ON arc.song_id = tl.song_id
+                    WHERE tl.uid = ?
+                    GROUP BY tl.song_id
+                    ORDER BY MAX(tl.played_at) DESC
+                    LIMIT ?
+                """
+                params = (str(uid), limit)
+            else:
+                query = """
+                    SELECT tl.song_id, tl.song_name, tl.artist
+                    FROM track_log tl
+                    INNER JOIN audio_resolution_cache arc ON arc.song_id = tl.song_id
+                    GROUP BY tl.song_id
+                    ORDER BY MAX(tl.played_at) DESC
+                    LIMIT ?
+                """
+                params = (limit,)
+            async with db.execute(query, params) as cursor:
+                rows = await cursor.fetchall()
+                return [
+                    {
+                        "id": row[0],
+                        "name": row[1],
+                        "artist": row[2] or "",
+                    }
+                    for row in rows
+                ]
+
     async def log_script(self, topic: str, script: str, style: str,
                          song_id: str = "", tts_hash: str = "") -> None:
         async with connect_db() as db:

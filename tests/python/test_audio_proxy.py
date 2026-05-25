@@ -72,3 +72,33 @@ class AudioProxyTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(captured["stream"])
         self.assertEqual(response.status_code, 206)
         self.assertEqual(response.headers["content-range"], "bytes 10-19/100")
+
+    async def test_track_proxy_rejects_html_upstream_as_unplayable(self):
+        closed = {"upstream": False, "client": False}
+
+        class FakeUpstream:
+            status_code = 200
+            headers = {"content-type": "text/html;charset=utf8"}
+
+            async def aiter_bytes(self):
+                yield b"<html>not audio</html>"
+
+            async def aclose(self):
+                closed["upstream"] = True
+
+        class FakeClient:
+            def build_request(self, method, url, headers=None):
+                return object()
+
+            async def send(self, request, stream=False):
+                return FakeUpstream()
+
+            async def aclose(self):
+                closed["client"] = True
+
+        with patch.object(radio.httpx, "AsyncClient", return_value=FakeClient()):
+            response = await radio.get_audio_proxy("42")
+
+        self.assertEqual(response.status_code, 502)
+        self.assertTrue(closed["upstream"])
+        self.assertTrue(closed["client"])

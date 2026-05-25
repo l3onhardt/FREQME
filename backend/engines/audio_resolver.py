@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+import re
 
 
 @dataclass
@@ -26,7 +27,7 @@ class AudioResolver:
             return AudioResolution(False, "", reason="missing_song_id")
 
         cached = await self.store.get_audio_resolution(song_id)
-        if cached and cached.get("url"):
+        if cached and cached.get("url") and self._is_playable_url(cached["url"]):
             return AudioResolution(
                 True,
                 song_id,
@@ -57,6 +58,8 @@ class AudioResolver:
                 candidate_id = self._song_id(candidate)
                 if not candidate_id or candidate_id == self._song_id(song):
                     continue
+                if not self._is_same_recording(song, candidate):
+                    continue
                 candidate_resolution = await self._try_song_url(candidate_id, "search_candidate")
                 if candidate_resolution.ok:
                     await self._cache(candidate_resolution)
@@ -77,6 +80,8 @@ class AudioResolver:
             return AudioResolution(False, song_id, source=source, reason="timeout")
         if not url:
             return AudioResolution(False, song_id, source=source, reason="empty_url")
+        if not self._is_playable_url(url):
+            return AudioResolution(False, song_id, source=source, reason="unplayable_url")
         return AudioResolution(True, song_id, url, source, "audio/mpeg")
 
     async def _cache(self, resolved: AudioResolution) -> None:
@@ -115,3 +120,20 @@ class AudioResolver:
         name = str(song.get("name") or "").strip()
         artist = self._artist_name(song)
         return f"{artist} {name}".strip()
+
+    def _is_playable_url(self, url: str) -> bool:
+        return "music.163.com/song/media/outer/url" not in str(url)
+
+    def _is_same_recording(self, original: dict | None, candidate: dict | None) -> bool:
+        original_name = self._normalize_match_text((original or {}).get("name"))
+        candidate_name = self._normalize_match_text((candidate or {}).get("name"))
+        if not original_name or original_name != candidate_name:
+            return False
+
+        original_artist = self._normalize_match_text(self._artist_name(original))
+        candidate_artist = self._normalize_match_text(self._artist_name(candidate))
+        return not original_artist or original_artist == candidate_artist
+
+    def _normalize_match_text(self, value) -> str:
+        text = str(value or "").casefold()
+        return re.sub(r"[\W_]+", "", text, flags=re.UNICODE)
