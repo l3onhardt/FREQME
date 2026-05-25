@@ -6,6 +6,7 @@ import path from 'node:path';
 import {
   clearCookie,
   loadCookie,
+  responseBodyFromError,
   saveCookie,
   sanitizeLoginBody,
 } from './auth-state.js';
@@ -81,4 +82,18 @@ test('sanitizeLoginBody does not require structuredClone', () => {
   } finally {
     globalThis.structuredClone = originalStructuredClone;
   }
+});
+
+test('responseBodyFromError turns rejected api body into sanitized json', () => {
+  const body = responseBodyFromError({
+    body: {
+      code: 301,
+      cookie: 'SECRET',
+      data: { cookie: 'ALSO_SECRET' },
+    },
+  });
+
+  assert.equal(body.code, 301);
+  assert.equal(body.cookie, undefined);
+  assert.equal(body.data.cookie, undefined);
 });

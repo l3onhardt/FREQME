@@ -41,3 +41,16 @@ export function sanitizeLoginBody(body) {
   }
   return clean;
 }
+
+export function responseBodyFromError(error) {
+  if (error?.body && typeof error.body === 'object') {
+    return sanitizeLoginBody(error.body);
+  }
+  if (typeof error === 'object' && error && 'code' in error) {
+    return sanitizeLoginBody(error);
+  }
+  return {
+    code: -1,
+    message: error?.message || 'NetEase bridge request failed',
+  };
+}
