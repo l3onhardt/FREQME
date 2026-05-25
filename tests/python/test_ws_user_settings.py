@@ -77,6 +77,16 @@ class FakeDJEngine:
         return "segue"
 
 
+class FailingIntroDJEngine(FakeDJEngine):
+    async def generate_intro(self, profile, scene, user_settings=None):
+        self.intro_calls.append({
+            "profile": profile,
+            "scene": scene,
+            "user_settings": user_settings,
+        })
+        raise RuntimeError("llm unavailable")
+
+
 class FakeTTS:
     def __init__(self):
         self.synthesize_calls = []
@@ -105,6 +115,25 @@ class FakeTTS:
             "user_settings": user_settings,
         })
         return f"hash-{text}"
+
+
+class FailingSegueTTS(FakeTTS):
+    async def synthesize(
+        self,
+        text,
+        style="daily",
+        voice_preset=None,
+        user_settings=None,
+    ):
+        self.synthesize_calls.append({
+            "text": text,
+            "style": style,
+            "voice_preset": voice_preset,
+            "user_settings": user_settings,
+        })
+        if text == "segue":
+            raise RuntimeError("tts unavailable")
+        return b"audio"
 
 
 class FakeScheduler:
@@ -225,6 +254,85 @@ class WebSocketUserSettingsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(fake_tts.hash_calls[1]["user_settings"], stored_settings)
         self.assertEqual(fake_tts.hash_calls[1]["voice_preset"], "bright_girl")
         self.assertNotEqual(fake_dj.intro_calls[0]["user_settings"], handshake_settings)
+
+    async def test_ws_skip_uses_prewarmed_llm_segue_without_waiting_for_new_inference(self):
+        fake_store = FakeStore({"voice_preset": "warm_male"})
+        fake_dj = FakeDJEngine()
+        fake_tts = FakeTTS()
+        fake_scheduler = FakeScheduler()
+
+        class CheckpointWebSocket(FakeWebSocket):
+            async def iter_text(self):
+                yield json.dumps({"type": "handshake", "uid": "42", "settings": {}})
+                self.pre_skip_segue_count = len(fake_dj.segue_calls)
+                yield json.dumps({"type": "skip"})
+
+        fake_websocket = CheckpointWebSocket([])
+
+        ws.store = fake_store
+        ws.dj_engine = fake_dj
+        ws.tts = fake_tts
+        ws.scheduler = fake_scheduler
+        ws.compressor = FakeCompressor()
+        ws.profile_engine = None
+
+        await ws.ws_handler(fake_websocket)
+
+        self.assertEqual(fake_websocket.pre_skip_segue_count, 1)
+        self.assertEqual(len(fake_dj.segue_calls), 1)
+        self.assertEqual(fake_dj.segue_calls[0]["current_song"]["id"], "first")
+        self.assertEqual(fake_dj.segue_calls[0]["next_song"]["id"], "second")
+        sent_types = [payload["type"] for payload in fake_websocket.sent]
+        self.assertIn("segue", sent_types)
+
+    async def test_ws_handshake_does_not_stall_when_llm_intro_is_unavailable(self):
+        fake_store = FakeStore({"voice_preset": "warm_male"})
+        fake_dj = FailingIntroDJEngine()
+        fake_tts = FakeTTS()
+        fake_scheduler = FakeScheduler()
+        fake_websocket = FakeWebSocket([
+            {"type": "handshake", "uid": "42", "settings": {}},
+        ])
+
+        ws.store = fake_store
+        ws.dj_engine = fake_dj
+        ws.tts = fake_tts
+        ws.scheduler = fake_scheduler
+        ws.compressor = FakeCompressor()
+        ws.profile_engine = None
+
+        await ws.ws_handler(fake_websocket)
+
+        sent_types = [payload["type"] for payload in fake_websocket.sent]
+        self.assertIn("session_start", sent_types)
+        self.assertIn("play_track", sent_types)
+        session_start = next(payload for payload in fake_websocket.sent if payload["type"] == "session_start")
+        self.assertEqual(session_start["intro_text"], "")
+        self.assertFalse(session_start["tts_ready"])
+
+    async def test_ws_keeps_llm_segue_text_when_tts_for_segue_fails(self):
+        fake_store = FakeStore({"voice_preset": "warm_male"})
+        fake_dj = FakeDJEngine()
+        fake_tts = FailingSegueTTS()
+        fake_scheduler = FakeScheduler()
+        fake_websocket = FakeWebSocket([
+            {"type": "handshake", "uid": "42", "settings": {}},
+            {"type": "skip"},
+        ])
+
+        ws.store = fake_store
+        ws.dj_engine = fake_dj
+        ws.tts = fake_tts
+        ws.scheduler = fake_scheduler
+        ws.compressor = FakeCompressor()
+        ws.profile_engine = None
+
+        await ws.ws_handler(fake_websocket)
+
+        segue = next(payload for payload in fake_websocket.sent if payload["type"] == "segue")
+        self.assertEqual(segue["text"], "segue")
+        self.assertFalse(segue["tts_ready"])
+        self.assertEqual(segue["tts_hash"], "")
 
     async def test_ws_rejects_handshake_uid_that_does_not_match_active_login(self):
         async def login_status():

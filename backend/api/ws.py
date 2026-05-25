@@ -1,3 +1,4 @@
+import asyncio
 import json
 
 from fastapi import WebSocket, WebSocketDisconnect
@@ -95,16 +96,52 @@ async def ws_handler(websocket: WebSocket):
             if not prepared:
                 continue
             prepared_song, prepared_url = prepared
+            segue_text = ""
+            tts_hash_val = ""
+            if current_song:
+                try:
+                    segue_text = await dj_engine.generate_segue(
+                        profile,
+                        scene,
+                        current_song,
+                        prepared_song,
+                        compressor,
+                        user_settings=user_settings,
+                    )
+                except Exception:
+                    segue_text = ""
+                try:
+                    if segue_text:
+                        tts_audio = await tts.synthesize(
+                            segue_text,
+                            scene,
+                            voice_preset=current_voice_preset(),
+                            user_settings=user_settings,
+                        )
+                        tts_hash_val = (
+                            tts._hash(
+                                segue_text,
+                                scene,
+                                voice_preset=current_voice_preset(),
+                                user_settings=user_settings,
+                            )
+                            if tts_audio
+                            else ""
+                        )
+                except Exception:
+                    tts_hash_val = ""
             playback_queue.add_ready(
                 prepared_song,
                 prepared_url,
                 prepared_song.get("selection_reason", {}),
+                segue_text=segue_text,
+                tts_hash=tts_hash_val,
             )
             added_count += 1
 
     async def send_prepared_next(previous_event: str = "played"):
         nonlocal current_song, current_song_id
-        await fill_queue()
+        await fill_queue(max_items=1)
         item = playback_queue.promote_next(previous_event=previous_event)
         if not item:
             await websocket.send_json({
@@ -114,38 +151,8 @@ async def ws_handler(websocket: WebSocket):
             return
 
         next_song = item.song
-        segue = None
-        tts_hash_val = ""
-        if previous_event == "skipped" or should_generate_segue(track_index):
-            try:
-                prev_info = current_song or {}
-                segue = await dj_engine.generate_segue(
-                    profile,
-                    scene,
-                    prev_info,
-                    next_song,
-                    compressor,
-                    user_settings=user_settings,
-                )
-                tts_audio = await tts.synthesize(
-                    segue,
-                    scene,
-                    voice_preset=current_voice_preset(),
-                    user_settings=user_settings,
-                )
-                tts_hash_val = (
-                    tts._hash(
-                        segue,
-                        scene,
-                        voice_preset=current_voice_preset(),
-                        user_settings=user_settings,
-                    )
-                    if tts_audio
-                    else ""
-                )
-            except Exception:
-                segue = None
-                tts_hash_val = ""
+        segue = item.segue_text
+        tts_hash_val = item.tts_hash
 
         if segue:
             await websocket.send_json({
@@ -171,7 +178,7 @@ async def ws_handler(websocket: WebSocket):
         else:
             await send_track(next_song, item.url)
 
-        await fill_queue()
+        await fill_queue(max_items=1)
 
     try:
         async for msg_text in websocket.iter_text():
@@ -203,27 +210,42 @@ async def ws_handler(websocket: WebSocket):
                             "dj_style_suggestion": "温暖自然",
                         }
 
-                intro = await dj_engine.generate_intro(
-                    profile,
-                    scene,
-                    user_settings=user_settings,
-                )
-                tts_audio = await tts.synthesize(
-                    intro,
-                    scene,
-                    voice_preset=current_voice_preset(),
-                    user_settings=user_settings,
-                )
-                tts_hash = (
-                    tts._hash(
-                        intro,
-                        scene,
-                        voice_preset=current_voice_preset(),
-                        user_settings=user_settings,
+                intro = ""
+                tts_audio = None
+                tts_hash = ""
+                try:
+                    intro = await asyncio.wait_for(
+                        dj_engine.generate_intro(
+                            profile,
+                            scene,
+                            user_settings=user_settings,
+                        ),
+                        timeout=8.0,
                     )
-                    if tts_audio
-                    else ""
-                )
+                    if intro:
+                        tts_audio = await asyncio.wait_for(
+                            tts.synthesize(
+                                intro,
+                                scene,
+                                voice_preset=current_voice_preset(),
+                                user_settings=user_settings,
+                            ),
+                            timeout=8.0,
+                        )
+                        tts_hash = (
+                            tts._hash(
+                                intro,
+                                scene,
+                                voice_preset=current_voice_preset(),
+                                user_settings=user_settings,
+                            )
+                            if tts_audio
+                            else ""
+                        )
+                except Exception:
+                    intro = ""
+                    tts_audio = None
+                    tts_hash = ""
 
                 try:
                     session_id = await store.create_session(str(uid))
@@ -243,7 +265,7 @@ async def ws_handler(websocket: WebSocket):
                 item = playback_queue.promote_next()
                 if item:
                     await send_track(item.song, item.url)
-                    await fill_queue()
+                    await fill_queue(max_items=1)
 
             elif msg_type == "track_ended":
                 await send_prepared_next(previous_event="played")

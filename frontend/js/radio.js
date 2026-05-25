@@ -387,7 +387,7 @@ async function handleMessage(msg) {
         playTTS(msg.tts_hash, msg.text, playNextTrack);
       } else if (msg.text) {
         document.getElementById('dj-text').textContent = msg.text;
-        playNextTrack();
+        setTimeout(playNextTrack, 3500);
       } else {
         playNextTrack();
       }

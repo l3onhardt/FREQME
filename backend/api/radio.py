@@ -1,7 +1,7 @@
 from pathlib import Path
 
 import httpx
-from fastapi import APIRouter
+from fastapi import APIRouter, Header
 from fastapi.responses import JSONResponse
 from fastapi.responses import FileResponse
 from fastapi.responses import StreamingResponse
@@ -136,7 +136,10 @@ async def get_track_url(id: str):
 
 
 @router.get("/audio/{song_id}")
-async def get_audio_proxy(song_id: str):
+async def get_audio_proxy(
+    song_id: str,
+    range_header: str | None = Header(default=None, alias="Range"),
+):
     if not audio_resolver:
         return JSONResponse({"error": "audio resolver unavailable"}, status_code=503)
 
@@ -146,7 +149,11 @@ async def get_audio_proxy(song_id: str):
 
     client = httpx.AsyncClient(timeout=30.0, follow_redirects=True, trust_env=False)
     try:
-        upstream = await client.get(resolved.url)
+        headers = {}
+        if range_header:
+            headers["range"] = range_header
+        request = client.build_request("GET", resolved.url, headers=headers)
+        upstream = await client.send(request, stream=True)
         if upstream.status_code >= 400:
             await client.aclose()
             return JSONResponse(
@@ -161,17 +168,23 @@ async def get_audio_proxy(song_id: str):
 
         async def body():
             try:
-                yield upstream.content
+                async for chunk in upstream.aiter_bytes():
+                    yield chunk
             finally:
+                await upstream.aclose()
                 await client.aclose()
+
+        response_headers = {"Cache-Control": "public, max-age=3600"}
+        for header_name in ("accept-ranges", "content-range", "content-length"):
+            header_value = upstream.headers.get(header_name)
+            if header_value:
+                response_headers[header_name.title()] = header_value
 
         return StreamingResponse(
             body(),
+            status_code=upstream.status_code,
             media_type=media_type,
-            headers={
-                "Cache-Control": "public, max-age=3600",
-                "Accept-Ranges": "bytes",
-            },
+            headers=response_headers,
         )
     except Exception as error:
         await client.aclose()

@@ -147,7 +147,7 @@ function loadRadio({ fetchImpl } = {}) {
   vm.createContext(context);
   vm.runInContext(readFileSync(radioPath, 'utf8'), context, { filename: radioPath });
 
-  return { elements, sockets, timers };
+  return { context, elements, sockets, timers };
 }
 
 async function flushAsyncWork(rounds = 8) {
@@ -252,4 +252,27 @@ test('onboarding fetch failure shows default onboarding instead of QR fallback',
   assert.ok(elements.get('onboarding-screen').activeClasses.has('active'));
   assert.ok(!elements.get('login-screen').activeClasses.has('active'));
   assert.ok(elements.get('onboarding-status').textContent.length > 0);
+});
+
+test('text-only segue stays visible briefly before starting next track', async () => {
+  const { context, elements, timers } = loadRadio();
+  const audioMain = elements.get('audio-main');
+
+  await context.handleMessage({
+    type: 'segue',
+    text: '这两首歌的光线刚好接上。',
+    tts_ready: false,
+    tts_hash: '',
+    next_track: { name: 'Next', artist: 'Artist' },
+    url: '/api/radio/audio/2',
+  });
+
+  assert.equal(elements.get('dj-text').textContent, '这两首歌的光线刚好接上。');
+  assert.equal(audioMain.src, '');
+  assert.equal(timers.length, 1);
+
+  timers[0]();
+
+  assert.equal(audioMain.src, '/api/radio/audio/2');
+  assert.equal(elements.get('track-name').textContent, 'Next');
 });

@@ -37,16 +37,18 @@ class DJEngine:
     ) -> str:
         style = profile.get("dj_style_suggestion", "温暖自然")
         personality = profile.get("personality", {})
-        prompt = f"""现在是{scene}。用户正在听电台。
+        prompt = f"""现在是{scene}，用户刚打开一档私人 AI 音乐电台。
+
 用户画像：{personality}
 建议的 DJ 风格：{style}
 
-请生成一段电台开场白，约 20 秒朗读时长，介绍今晚的主题。
-不要用“欢迎收听”之类的开场白，直接自然开始。
-像朋友见面一样随意自然。"""
+请生成一段开场白，朗读时长约 12 到 20 秒。
+只输出主播要说的话，不要标题、括号、解释或舞台提示。
+不要说“欢迎收听”，不要说“根据你的画像”，不要提算法。
+语气要像真实电台主播自然开口，有画面感，但不要矫情。"""
         return await self.llm.chat(
             self._with_user_settings_hint(prompt, user_settings),
-            max_tokens=200,
+            max_tokens=180,
         )
 
     async def generate_segue(
@@ -74,27 +76,28 @@ class DJEngine:
         current_mode = (user_settings or {}).get("current_mode", "").strip()
         music_notes = (user_settings or {}).get("music_notes", "").strip()[:200]
 
-        prompt = f"""你是小米 memo，电台主播。现在是{scene}。
+        prompt = f"""你是小米 memo，一位私人音乐电台主播。现在是{scene}。
 
 当前刚播完：{current_name} - {current_artist}
-接下来要播：{next_name} - {next_artist}
-选曲依据：{selection_reason or '延续当下氛围，让歌曲自然接上。'}
+下一首即将播放：{next_name} - {next_artist}
+选曲线索：{selection_reason or '延续刚才的情绪，让两首歌自然接上。'}
 
-用户画像：{', '.join(traits) if traits else '普通人'}
-你的风格：{style}
-用户 mode：{current_mode or '未说明'}
-用户 notes：{music_notes or '未说明'}
+用户画像：{', '.join(traits) if traits else '暂无明确画像'}
+主播风格：{style}
+用户当前状态：{current_mode or '未说明'}
+用户备注：{music_notes or '未说明'}
 
-最近对话：
-{recent if recent else '（刚开始）'}
+最近电台上下文：
+{recent if recent else '刚开始，没有历史上下文。'}
 
-请生成一段 20 秒到 60 秒朗读时长的串场语，从当前歌曲自然过渡到下一首。
-用场景、感受、画面来连接两首歌，不要说“推荐”“喜欢”“接下来请听”。
-不要暴露“我分析了你”或算法依据，把选曲依据化成自然电台主播会说的感受。
-像朋友分享一个发现一样自然。"""
+请生成一段 1 到 2 句的串场，朗读时长约 8 到 15 秒。
+只输出主播要说的话，不要标题、括号、解释或舞台提示。
+必须自然连接“{current_name}”和“{next_name}”，可以点到两首歌的气质变化。
+不要说推荐，不要说喜欢，不要说接下来请听，不要暴露算法、用户画像或选曲依据。
+语气要像深夜电台里真实的人在接歌：具体、克制、贴近音乐。"""
         return await self.llm.chat(
             self._with_user_settings_hint(prompt, user_settings),
-            max_tokens=300,
+            max_tokens=180,
         )
 
     def _artist_name(self, song: dict | None) -> str:
@@ -127,11 +130,11 @@ class DJEngine:
         current_mode = (user_settings or {}).get("current_mode", "").strip()
         hints = []
         if display_name:
-            hints.append(f"display name: {display_name}")
+            hints.append(f"听众昵称：{display_name}")
         if current_mode:
-            hints.append(f"current mode: {current_mode}")
+            hints.append(f"当前状态：{current_mode}")
         if music_notes:
-            hints.append(f"music notes: {music_notes}")
+            hints.append(f"音乐偏好备注：{music_notes}")
         if not hints:
             return prompt
-        return f"{prompt}\n\nListener settings: {'; '.join(hints)}"
+        return f"{prompt}\n\n听众补充信息：{'；'.join(hints)}"
