@@ -41,6 +41,11 @@ class PlaybackQueue:
     def ready_items(self) -> list[PlaybackQueueItem]:
         return [item for item in self.items if item.status == "ready"]
 
+    def clear_ready(self) -> int:
+        ready_count = sum(1 for item in self.items if item.status == "ready")
+        self.items = [item for item in self.items if item.status != "ready"]
+        return ready_count
+
     def promote_next(self, previous_event: str = "played") -> PlaybackQueueItem | None:
         current = self.current()
         if current:

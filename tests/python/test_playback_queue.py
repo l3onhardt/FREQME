@@ -22,3 +22,16 @@ class PlaybackQueueTests(unittest.TestCase):
         queue.add_ready({"id": "1"}, "/audio/1")
 
         self.assertEqual(queue.prewarm_needed(), 2)
+
+    def test_clear_ready_keeps_playing_and_old_history(self):
+        queue = PlaybackQueue(prewarm_depth=3)
+        queue.add_ready({"id": "1"}, "/audio/1")
+        queue.add_ready({"id": "2"}, "/audio/2")
+        queue.promote_next()
+        queue.add_ready({"id": "3"}, "/audio/3")
+
+        removed = queue.clear_ready()
+
+        self.assertEqual(removed, 2)
+        self.assertEqual([item.song["id"] for item in queue.items], ["1"])
+        self.assertEqual(queue.items[0].status, "playing")
