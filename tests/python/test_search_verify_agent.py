@@ -350,6 +350,27 @@ class SearchVerifyAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn('"id": "cover"', judgement_prompt)
         self.assertNotIn('"id": "accompaniment"', judgement_prompt)
 
+    async def test_accompaniment_request_allows_backing_but_filters_cover_and_ktv(self):
+        netease = FakeNetease()
+        netease.results_by_query["Creep backing track"] = [
+            {"id": "backing", "name": "Creep backing track", "ar": [{"name": "Session Band"}]},
+            {"id": "cover", "name": "Creep cover", "ar": [{"name": "Bedroom Singer"}]},
+            {"id": "karaoke", "name": "Creep karaoke", "ar": [{"name": "Radiohead"}]},
+        ]
+        llm = FakeLLM([
+            '{"search_queries":["Creep backing track"]}',
+            '{"chosen_id":"backing","confidence":0.9}',
+        ])
+        agent = SearchVerifyAgent(llm, netease, AlwaysPlayableResolver())
+
+        result = await agent.verify({"style_hint": "backing track", "search_goals": ["Creep backing track"]})
+
+        self.assertEqual(result.status, "verified")
+        judgement_prompt = llm.calls[1]["prompt"]
+        self.assertIn('"id": "backing"', judgement_prompt)
+        self.assertNotIn('"id": "cover"', judgement_prompt)
+        self.assertNotIn('"id": "karaoke"', judgement_prompt)
+
     async def test_structured_entities_generate_fallback_query_when_llm_query_fails(self):
         netease = FakeNetease()
         netease.results_by_query["Arthur Rubinstein Chopin Nocturnes classical piano"] = [
@@ -419,3 +440,29 @@ class SearchVerifyAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.status, "verified")
         self.assertEqual(len(result.fallback_candidates), 3)
         self.assertLessEqual(len(result.fallback_candidates[0]["task"]), 240)
+
+    async def test_default_recovery_option_fields_are_bounded(self):
+        long_text = "x" * 400
+        netease = FakeNetease()
+        llm = FakeLLM([
+            '{"search_queries":["No playable version"]}',
+            '{"chosen_id":"","confidence":0.0}',
+        ])
+        agent = SearchVerifyAgent(llm, netease, FakeResolver())
+
+        result = await agent.verify(
+            {
+                "primary_entities": [
+                    {"role": "artist", "name": long_text},
+                    {"role": "composer", "name": long_text},
+                ],
+                "work_hint": long_text,
+                "style_hint": long_text,
+            }
+        )
+
+        self.assertEqual(result.status, "not_found")
+        self.assertLessEqual(len(result.recovery_options), 3)
+        self.assertLessEqual(len(result.recovery_options[0]["type"]), 240)
+        self.assertLessEqual(len(result.recovery_options[0]["task"]), 240)
+        self.assertLessEqual(len(result.recovery_options[0]["reason"]), 240)

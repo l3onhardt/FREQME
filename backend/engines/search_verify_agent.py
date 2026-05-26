@@ -152,7 +152,13 @@ Return JSON only:
         entities = music_task.get("primary_entities") if isinstance(music_task, dict) else []
         names = [str(item.get("name")) for item in entities or [] if isinstance(item, dict) and item.get("name")]
         task = " ".join(names + [str(music_task.get("work_hint") or music_task.get("style_hint") or "")]).strip()
-        return [{"type": "adjacent_version", "task": task, "reason": "Relax exact version while keeping the musical direction."}] if task else []
+        return self._bounded_dict_list([
+            {
+                "type": "adjacent_version",
+                "task": task,
+                "reason": "Relax exact version while keeping the musical direction.",
+            }
+        ]) if task else []
 
     def _chosen_song(self, candidates: list[dict], judgement: dict) -> dict | None:
         if not isinstance(judgement, dict):
