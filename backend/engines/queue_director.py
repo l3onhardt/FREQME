@@ -25,14 +25,27 @@ class QueueDirectorResult:
     recovery_options: list[dict] = field(default_factory=list)
 
     def to_dict(self) -> dict:
+        def json_safe(value):
+            if isinstance(value, Mapping):
+                return {str(key): json_safe(item) for key, item in value.items()}
+            if is_dataclass(value):
+                return json_safe(asdict(value))
+            if isinstance(value, list):
+                return [json_safe(item) for item in value]
+            if isinstance(value, tuple):
+                return [json_safe(item) for item in value]
+            if isinstance(value, (str, int, float, bool)) or value is None:
+                return value
+            return str(value)[:240]
+
         return {
             "status": self.status,
             "dj_text": self.dj_text,
-            "next_song": self.next_song or None,
+            "next_song": json_safe(self.next_song) if self.next_song is not None else None,
             "url": self.url,
-            "decision": dict(self.decision or {}),
-            "verification": dict(self.verification or {}),
-            "recovery_options": list(self.recovery_options or []),
+            "decision": json_safe(self.decision or {}),
+            "verification": json_safe(self.verification or {}),
+            "recovery_options": json_safe(self.recovery_options or []),
         }
 
 
@@ -80,7 +93,11 @@ class QueueDirector:
         if action == "ask_clarifying_question":
             return QueueDirectorResult(
                 status="ask",
-                dj_text=self._dj_text(decision) or "Which direction should I play?",
+                dj_text=self._safe_dj_text(
+                    self._dj_text(decision),
+                    request_text,
+                    fallback="Which direction should I play?",
+                ),
                 decision=decision_dict,
             )
 
@@ -99,8 +116,16 @@ class QueueDirector:
                 url = str(self._field(verification, "url", "") or "")
                 selection_reason = {
                     "type": "dj_agent_verified",
-                    "understood_intent": str(self._field(decision, "understood_intent", "") or ""),
-                    "verification_note": self._verification_note(verification),
+                    "understood_intent": self._safe_text(
+                        self._field(decision, "understood_intent", ""),
+                        request_text,
+                        fallback="",
+                    ),
+                    "verification_note": self._safe_text(
+                        self._verification_note(verification),
+                        request_text,
+                        fallback="",
+                    ),
                 }
                 selection_reason["text"] = (
                     selection_reason["verification_note"]
@@ -110,7 +135,11 @@ class QueueDirector:
                 playback_queue.add_ready(song, url, selection_reason=selection_reason)
                 return QueueDirectorResult(
                     status="queued",
-                    dj_text=self._dj_text(decision),
+                    dj_text=self._safe_dj_text(
+                        self._dj_text(decision),
+                        request_text,
+                        fallback="Queued the verified track.",
+                    ),
                     next_song=song,
                     url=url,
                     decision=decision_dict,
@@ -218,6 +247,15 @@ class QueueDirector:
     def _dj_text(self, decision) -> str:
         response = self._mapping(self._field(decision, "dj_response", {}))
         return str(response.get("speak_now") or "")
+
+    def _safe_dj_text(self, text: str, request_text: str, fallback: str) -> str:
+        return self._safe_text(text, request_text, fallback=fallback) or fallback
+
+    def _safe_text(self, text, request_text: str, fallback: str = "") -> str:
+        value = str(text or "").strip()
+        if not value or self._contains_raw_text(value, request_text):
+            return fallback
+        return value[:240]
 
     def _recovery_text(self, decision, request_text: str = "") -> str:
         intent = str(self._field(decision, "understood_intent", "") or "").strip()

@@ -1,9 +1,15 @@
+import json
 import unittest
 
 from backend.engines.dj_request_agent import DJDecision
 from backend.engines.playback_queue import PlaybackQueue
 from backend.engines.queue_director import QueueDirector
 from backend.engines.search_verify_agent import SearchVerification
+
+
+class WeirdObject:
+    def __str__(self):
+        return "weird nested object"
 
 
 class FakeMemoryManager:
@@ -160,6 +166,64 @@ class QueueDirectorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ready[0].selection_reason["verification_note"], "official studio version")
         self.assertEqual(ready[0].selection_reason["text"], "official studio version")
 
+    async def test_queued_dj_text_does_not_echo_raw_request(self):
+        raw_sentence = "raw queued request"
+        queue = PlaybackQueue()
+        decision = playable_decision(action="play_now", speak_now=raw_sentence)
+        verifier = FakeVerifier(
+            SearchVerification(
+                status="verified",
+                selected_song={"id": "verified", "name": "Weird Fishes"},
+                url="/audio/verified",
+            )
+        )
+        director = QueueDirector(FakeDJAgent(decision), verifier, FakeMemoryManager())
+
+        result = await director.handle_song_request(
+            raw_sentence,
+            playback_queue=queue,
+            uid="uid-1",
+            session_id=7,
+            profile={},
+            user_settings={},
+            playback_context={},
+        )
+
+        self.assertEqual(result.status, "queued")
+        self.assertNotIn(raw_sentence, result.dj_text)
+
+    async def test_queued_selection_reason_does_not_echo_raw_request(self):
+        raw_sentence = "raw selection reason"
+        queue = PlaybackQueue()
+        decision = playable_decision(action="play_now")
+        decision.understood_intent = raw_sentence
+        verifier = FakeVerifier(
+            SearchVerification(
+                status="verified",
+                selected_song={"id": "verified", "name": "Weird Fishes"},
+                url="/audio/verified",
+                verification={"version_note": ""},
+            )
+        )
+        director = QueueDirector(FakeDJAgent(decision), verifier, FakeMemoryManager())
+
+        result = await director.handle_song_request(
+            raw_sentence,
+            playback_queue=queue,
+            uid="uid-1",
+            session_id=7,
+            profile={},
+            user_settings={},
+            playback_context={},
+        )
+
+        reason = queue.ready_items()[0].selection_reason
+        self.assertEqual(result.status, "queued")
+        self.assertEqual(reason["type"], "dj_agent_verified")
+        self.assertNotIn(raw_sentence, reason["understood_intent"])
+        self.assertNotIn(raw_sentence, reason["verification_note"])
+        self.assertNotIn(raw_sentence, reason["text"])
+
     async def test_ask_clarifying_question_updates_memory_but_does_not_clear_or_verify(self):
         queue = PlaybackQueue()
         queue.add_ready({"id": "stale", "name": "Stale"}, "/audio/stale")
@@ -187,6 +251,32 @@ class QueueDirectorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(memory.update_calls[0]["request_text"], "that one")
         self.assertEqual(verifier.calls, [])
         self.assertEqual([item.song["id"] for item in queue.ready_items()], ["stale"])
+
+    async def test_ask_dj_text_does_not_echo_raw_request(self):
+        raw_sentence = "raw ask request"
+        decision = DJDecision(
+            action="ask_clarifying_question",
+            understood_intent="The request is unclear.",
+            dj_response={"speak_now": raw_sentence},
+        )
+        director = QueueDirector(
+            FakeDJAgent(decision),
+            FakeVerifier(SearchVerification(status="verified", selected_song={}, url="")),
+            FakeMemoryManager(),
+        )
+
+        result = await director.handle_song_request(
+            raw_sentence,
+            playback_queue=PlaybackQueue(),
+            uid="uid-1",
+            session_id=7,
+            profile={},
+            user_settings={},
+            playback_context={},
+        )
+
+        self.assertEqual(result.status, "ask")
+        self.assertNotIn(raw_sentence, result.dj_text)
 
     async def test_search_failure_returns_recovery_without_quoting_raw_sentence(self):
         queue = PlaybackQueue()
@@ -464,6 +554,35 @@ class QueueDirectorTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsInstance(data["decision"], dict)
         self.assertIsInstance(data["verification"], dict)
         self.assertIsInstance(data["recovery_options"], list)
+
+    async def test_result_to_dict_is_json_serializable_with_weird_nested_song_object(self):
+        result = await QueueDirector(
+            FakeDJAgent(playable_decision(action="play_now")),
+            FakeVerifier(
+                SearchVerification(
+                    status="verified",
+                    selected_song={
+                        "id": "verified",
+                        "name": "Weird Fishes",
+                        "nested": {"object": WeirdObject()},
+                    },
+                    url="/audio/verified",
+                )
+            ),
+            FakeMemoryManager(),
+        ).handle_song_request(
+            "play Radiohead",
+            playback_queue=PlaybackQueue(),
+            uid="uid-1",
+            session_id=7,
+            profile={},
+            user_settings={},
+            playback_context={},
+        )
+
+        dumped = json.dumps(result.to_dict(), ensure_ascii=False)
+
+        self.assertIn("weird nested object", dumped)
 
     async def test_dict_style_decision_and_verification_are_supported(self):
         queue = PlaybackQueue()
