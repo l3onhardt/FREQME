@@ -26,20 +26,20 @@ class QueueDirectorResult:
 
 
 class QueueDirector:
-    def __init__(self, dj_agent, verifier, playback_queue, memory_manager):
-        self.dj_agent = dj_agent
-        self.verifier = verifier
-        self.playback_queue = playback_queue
+    def __init__(self, dj_request_agent, search_verify_agent, memory_manager):
+        self.dj_agent = dj_request_agent
+        self.verifier = search_verify_agent
         self.memory_manager = memory_manager
 
-    async def handle_request(
+    async def handle_song_request(
         self,
+        request_text: str,
+        playback_queue,
         uid: str | None,
         session_id: int | None,
-        request_text: str,
-        profile: dict | None = None,
-        user_settings: dict | None = None,
-        playback_context: dict | None = None,
+        profile: dict | None,
+        user_settings: dict | None,
+        playback_context: dict | None,
         recent_turns: list[dict] | None = None,
     ) -> QueueDirectorResult:
         context_pack = await self.memory_manager.build_context_pack(
@@ -59,12 +59,19 @@ class QueueDirector:
         if action == "ask_clarifying_question":
             return QueueDirectorResult(
                 status="ask",
-                dj_text=self._dj_text(decision) or "你想听哪一类？",
+                dj_text=self._dj_text(decision) or "Which direction should I play?",
                 decision=decision_dict,
             )
 
         if action in PLAYABLE_ACTIONS:
-            self.playback_queue.clear_ready()
+            playback_queue.clear_ready()
+            if not self._has_executable_music_task(decision):
+                return QueueDirectorResult(
+                    status="needs_recovery",
+                    dj_text=self._recovery_text(decision, request_text),
+                    decision=decision_dict,
+                )
+
             verification = await self._verify(decision, uid, request_text)
             if self._is_verified(verification):
                 song = dict(self._field(verification, "selected_song", {}) or {})
@@ -74,7 +81,7 @@ class QueueDirector:
                     "understood_intent": str(self._field(decision, "understood_intent", "") or ""),
                     "verification_note": self._verification_note(verification),
                 }
-                self.playback_queue.add_ready(song, url, selection_reason=selection_reason)
+                playback_queue.add_ready(song, url, selection_reason=selection_reason)
                 return QueueDirectorResult(
                     status="queued",
                     dj_text=self._dj_text(decision),
@@ -83,9 +90,10 @@ class QueueDirector:
                     decision=decision_dict,
                     verification=self._to_dict(verification),
                 )
+
             return QueueDirectorResult(
                 status="needs_recovery",
-                dj_text=self._recovery_text(decision),
+                dj_text=self._recovery_text(decision, request_text),
                 decision=decision_dict,
                 verification=self._to_dict(verification),
                 recovery_options=self._bounded_recovery_options(verification),
@@ -93,8 +101,32 @@ class QueueDirector:
 
         return QueueDirectorResult(
             status="ask",
-            dj_text="我需要再确认一下你想听的音乐方向。",
+            dj_text="I need to confirm the music direction first.",
             decision=decision_dict,
+        )
+
+    async def handle_request(
+        self,
+        uid: str | None,
+        session_id: int | None,
+        request_text: str,
+        profile: dict | None = None,
+        user_settings: dict | None = None,
+        playback_context: dict | None = None,
+        recent_turns: list[dict] | None = None,
+        playback_queue=None,
+    ) -> QueueDirectorResult:
+        if playback_queue is None:
+            raise TypeError("playback_queue is required")
+        return await self.handle_song_request(
+            request_text,
+            playback_queue=playback_queue,
+            uid=uid,
+            session_id=session_id,
+            profile=profile,
+            user_settings=user_settings,
+            playback_context=playback_context,
+            recent_turns=recent_turns,
         )
 
     async def _verify(self, decision, uid: str | None, request_text: str):
@@ -122,13 +154,16 @@ class QueueDirector:
         response = self._mapping(self._field(decision, "dj_response", {}))
         return str(response.get("speak_now") or "")
 
-    def _recovery_text(self, decision) -> str:
+    def _recovery_text(self, decision, request_text: str = "") -> str:
         intent = str(self._field(decision, "understood_intent", "") or "").strip()
-        if intent:
-            return f"我按这个方向找了，但还没核到可播放的准确版本：{intent}"
+        if intent and not self._contains_raw_text(intent, request_text):
+            return f"I tried that direction but could not verify a playable match: {intent}"
+
         task = self._mapping(self._field(decision, "music_task", {}))
-        direction = str(task.get("type") or "这个音乐方向")
-        return f"我按{direction}找了，但还没核到可播放的准确版本。"
+        direction = str(task.get("type") or "this music direction").strip()
+        if self._contains_raw_text(direction, request_text):
+            direction = "this music direction"
+        return f"I tried {direction} but could not verify a playable match."
 
     def _verification_note(self, verification) -> str:
         data = self._mapping(self._field(verification, "verification", {}))
@@ -151,6 +186,27 @@ class QueueDirector:
             if len(result) >= 3:
                 break
         return result
+
+    def _has_executable_music_task(self, decision) -> bool:
+        task = self._mapping(self._field(decision, "music_task", {}))
+        return any(
+            [
+                bool(self._nonempty_list(task.get("search_goals"))),
+                bool(self._nonempty_list(task.get("primary_entities"))),
+                bool(str(task.get("work_hint") or "").strip()),
+                bool(str(task.get("style_hint") or "").strip()),
+            ]
+        )
+
+    def _nonempty_list(self, value) -> list:
+        if not isinstance(value, list):
+            return []
+        return [item for item in value if item]
+
+    def _contains_raw_text(self, candidate: str, request_text: str) -> bool:
+        raw = " ".join(str(request_text or "").split())
+        text = " ".join(str(candidate or "").split())
+        return bool(raw and text and (raw in text or text in raw))
 
     def _to_dict(self, value) -> dict:
         if value is None:

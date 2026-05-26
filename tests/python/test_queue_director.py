@@ -75,7 +75,7 @@ class RaisingVerifier:
         raise RuntimeError("verifier unavailable")
 
 
-def playable_decision(action="set_direction_and_play", speak_now="接上这条线。"):
+def playable_decision(action="set_direction_and_play", speak_now="Queued."):
     return DJDecision(
         action=action,
         understood_intent="User wants Radiohead songs.",
@@ -106,14 +106,22 @@ class QueueDirectorTests(unittest.IsolatedAsyncioTestCase):
                 verification={"version_note": "official studio version"},
             )
         )
-        director = QueueDirector(FakeDJAgent(decision), verifier, queue, FakeMemoryManager())
+        director = QueueDirector(FakeDJAgent(decision), verifier, FakeMemoryManager())
 
-        result = await director.handle_request("uid-1", 7, "别放这个了，来点 Radiohead")
+        result = await director.handle_song_request(
+            "change it to Radiohead",
+            playback_queue=queue,
+            uid="uid-1",
+            session_id=7,
+            profile={},
+            user_settings={},
+            playback_context={},
+        )
 
         self.assertEqual(result.status, "queued")
         self.assertEqual(result.next_song["id"], "verified")
         self.assertEqual(verifier.calls[0]["music_task"], decision.music_task)
-        self.assertEqual(verifier.calls[0]["raw_user_text"], "别放这个了，来点 Radiohead")
+        self.assertEqual(verifier.calls[0]["raw_user_text"], "change it to Radiohead")
         self.assertEqual(queue.items[0].song["id"], "playing")
         self.assertEqual(queue.items[0].status, "playing")
         ready = queue.ready_items()
@@ -122,28 +130,38 @@ class QueueDirectorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ready[0].selection_reason["understood_intent"], "User wants Radiohead songs.")
         self.assertEqual(ready[0].selection_reason["verification_note"], "official studio version")
 
-    async def test_ask_clarifying_question_does_not_clear_or_verify(self):
+    async def test_ask_clarifying_question_updates_memory_but_does_not_clear_or_verify(self):
         queue = PlaybackQueue()
         queue.add_ready({"id": "stale", "name": "Stale"}, "/audio/stale")
         decision = DJDecision(
             action="ask_clarifying_question",
             understood_intent="The request is unclear.",
-            dj_response={"speak_now": "你想听哪一类？"},
+            dj_response={"speak_now": "Which kind do you mean?"},
         )
         verifier = FakeVerifier(SearchVerification(status="verified", selected_song={}, url=""))
-        director = QueueDirector(FakeDJAgent(decision), verifier, queue, FakeMemoryManager())
+        memory = FakeMemoryManager()
+        director = QueueDirector(FakeDJAgent(decision), verifier, memory)
 
-        result = await director.handle_request("uid-1", 7, "随便那个")
+        result = await director.handle_song_request(
+            "that one",
+            playback_queue=queue,
+            uid="uid-1",
+            session_id=7,
+            profile={},
+            user_settings={},
+            playback_context={},
+        )
 
         self.assertEqual(result.status, "ask")
-        self.assertEqual(result.dj_text, "你想听哪一类？")
+        self.assertEqual(result.dj_text, "Which kind do you mean?")
+        self.assertEqual(memory.update_calls[0]["request_text"], "that one")
         self.assertEqual(verifier.calls, [])
         self.assertEqual([item.song["id"] for item in queue.ready_items()], ["stale"])
 
     async def test_search_failure_returns_recovery_without_quoting_raw_sentence(self):
         queue = PlaybackQueue()
         queue.add_ready({"id": "stale", "name": "Stale"}, "/audio/stale")
-        raw_sentence = "别放这个了，给我那首超级难找的歌"
+        raw_sentence = "play the extremely obscure song I just described"
         decision = playable_decision(action="play_now", speak_now=raw_sentence)
         verifier = FakeVerifier(
             SearchVerification(
@@ -157,9 +175,17 @@ class QueueDirectorTests(unittest.IsolatedAsyncioTestCase):
                 ],
             )
         )
-        director = QueueDirector(FakeDJAgent(decision), verifier, queue, FakeMemoryManager())
+        director = QueueDirector(FakeDJAgent(decision), verifier, FakeMemoryManager())
 
-        result = await director.handle_request("uid-1", 7, raw_sentence)
+        result = await director.handle_song_request(
+            raw_sentence,
+            playback_queue=queue,
+            uid="uid-1",
+            session_id=7,
+            profile={},
+            user_settings={},
+            playback_context={},
+        )
 
         self.assertEqual(result.status, "needs_recovery")
         self.assertNotIn(raw_sentence, result.dj_text)
@@ -167,24 +193,99 @@ class QueueDirectorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(result.recovery_options), 3)
         self.assertEqual(result.recovery_options[0]["task"], "Radiohead live")
 
+    async def test_recovery_text_does_not_use_understood_intent_when_it_contains_raw_sentence(self):
+        queue = PlaybackQueue()
+        raw_sentence = "literal unsafe user sentence"
+        decision = playable_decision(action="play_now")
+        decision.understood_intent = raw_sentence
+        verifier = FakeVerifier(SearchVerification(status="not_found"))
+        director = QueueDirector(FakeDJAgent(decision), verifier, FakeMemoryManager())
+
+        result = await director.handle_song_request(
+            raw_sentence,
+            playback_queue=queue,
+            uid="uid-1",
+            session_id=7,
+            profile={},
+            user_settings={},
+            playback_context={},
+        )
+
+        self.assertEqual(result.status, "needs_recovery")
+        self.assertNotIn(raw_sentence, result.dj_text)
+
+    async def test_negative_feedback_without_executable_task_clears_but_does_not_verify(self):
+        queue = PlaybackQueue()
+        queue.add_ready({"id": "stale", "name": "Stale"}, "/audio/stale")
+        decision = DJDecision(
+            action="negative_feedback",
+            understood_intent="User rejected the current direction.",
+            music_task={"type": "negative_feedback", "search_goals": [], "primary_entities": []},
+            dj_response={"speak_now": "I will adjust."},
+        )
+        verifier = FakeVerifier(SearchVerification(status="verified", selected_song={"id": "x"}, url="/audio/x"))
+        memory = FakeMemoryManager()
+        director = QueueDirector(FakeDJAgent(decision), verifier, memory)
+
+        result = await director.handle_song_request(
+            "not this",
+            playback_queue=queue,
+            uid="uid-1",
+            session_id=7,
+            profile={},
+            user_settings={},
+            playback_context={},
+        )
+
+        self.assertEqual(result.status, "needs_recovery")
+        self.assertEqual(queue.ready_items(), [])
+        self.assertEqual(verifier.calls, [])
+        self.assertEqual(memory.update_calls[0]["request_text"], "not this")
+
+    async def test_invalid_verified_result_does_not_queue(self):
+        queue = PlaybackQueue()
+        queue.add_ready({"id": "stale", "name": "Stale"}, "/audio/stale")
+        decision = playable_decision(action="play_now")
+        verifier = FakeVerifier(
+            SearchVerification(
+                status="verified",
+                selected_song={"id": "verified", "name": "No URL"},
+                url="",
+            )
+        )
+        director = QueueDirector(FakeDJAgent(decision), verifier, FakeMemoryManager())
+
+        result = await director.handle_song_request(
+            "play Radiohead",
+            playback_queue=queue,
+            uid="uid-1",
+            session_id=7,
+            profile={},
+            user_settings={},
+            playback_context={},
+        )
+
+        self.assertEqual(result.status, "needs_recovery")
+        self.assertEqual(queue.ready_items(), [])
+
     async def test_context_and_memory_update_are_called_with_bounded_inputs(self):
         memory = FakeMemoryManager()
         decision = playable_decision()
         director = QueueDirector(
             FakeDJAgent(decision),
             FakeVerifier(SearchVerification(status="not_found")),
-            PlaybackQueue(),
             memory,
         )
         profile = {"radio_insights": {"taste_summary": "alt rock"}}
         user_settings = {"locale": "zh-CN"}
         playback_context = {"current_track": {"name": "Now"}}
-        recent_turns = [{"speaker": "user", "text": "之前"}]
+        recent_turns = [{"speaker": "user", "text": "earlier"}]
 
-        await director.handle_request(
-            "uid-1",
-            7,
-            "来点 Radiohead",
+        await director.handle_song_request(
+            "play Radiohead",
+            playback_queue=PlaybackQueue(),
+            uid="uid-1",
+            session_id=7,
             profile=profile,
             user_settings=user_settings,
             playback_context=playback_context,
@@ -197,20 +298,28 @@ class QueueDirectorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(memory.build_calls[0]["recent_turns"], recent_turns)
         self.assertEqual(memory.update_calls[0]["uid"], "uid-1")
         self.assertEqual(memory.update_calls[0]["session_id"], 7)
-        self.assertEqual(memory.update_calls[0]["request_text"], "来点 Radiohead")
+        self.assertEqual(memory.update_calls[0]["request_text"], "play Radiohead")
         self.assertIs(memory.update_calls[0]["decision"], decision)
 
     async def test_verifier_exception_returns_recovery_without_queueing(self):
         queue = PlaybackQueue()
         decision = playable_decision(action="negative_feedback")
         verifier = RaisingVerifier()
-        director = QueueDirector(FakeDJAgent(decision), verifier, queue, FakeMemoryManager())
+        director = QueueDirector(FakeDJAgent(decision), verifier, FakeMemoryManager())
 
-        result = await director.handle_request("uid-1", 7, "别放这个")
+        result = await director.handle_song_request(
+            "not this",
+            playback_queue=queue,
+            uid="uid-1",
+            session_id=7,
+            profile={},
+            user_settings={},
+            playback_context={},
+        )
 
         self.assertEqual(result.status, "needs_recovery")
         self.assertEqual(queue.ready_items(), [])
-        self.assertEqual(verifier.calls[0]["raw_user_text"], "别放这个")
+        self.assertEqual(verifier.calls[0]["raw_user_text"], "not this")
 
 
 if __name__ == "__main__":
