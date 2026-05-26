@@ -21,6 +21,10 @@ compressor = None
 audio_resolver = None
 request_agent = None
 radio_brain = None
+dj_request_agent = None
+search_verify_agent = None
+queue_director = None
+dj_memory_manager = None
 
 DEFAULT_DJ_INTRO = "晚上好，这里是今晚的私人电台。我先把第一首歌轻轻放进来，你不用急，跟着这一点光慢慢听。"
 MAX_QUEUE_PREPARE_ATTEMPTS = 12

@@ -11,6 +11,7 @@ from backend.core.event_bus import EventBus
 from backend.memory.models import init_db
 from backend.memory.store import MemoryStore
 from backend.memory.compressor import ContextCompressor
+from backend.memory.dj_memory import DJMemoryManager
 from backend.adapters.netease import NeteaseAdapter
 from backend.adapters.llm_router import LLMRouter
 from backend.adapters.tts import TTSAdapter
@@ -20,6 +21,9 @@ from backend.engines.scheduler import StreamScheduler
 from backend.engines.audio_resolver import AudioResolver
 from backend.engines.song_request_agent import SongRequestAgent
 from backend.engines.radio_brain import RadioBrain
+from backend.engines.dj_request_agent import DJRequestAgent
+from backend.engines.search_verify_agent import SearchVerifyAgent
+from backend.engines.queue_director import QueueDirector
 from backend.api import auth, radio, ws
 
 settings = get_settings()
@@ -68,6 +72,19 @@ async def lifespan(app: FastAPI):
     audio_resolver = AudioResolver(netease_adapter, store)
     request_agent = SongRequestAgent(llm_router, netease_adapter, llm_timeout_s=5.0)
     radio_brain = RadioBrain()
+    dj_memory_manager = DJMemoryManager(store)
+    dj_request_agent = DJRequestAgent(llm_router, llm_timeout_s=8.0)
+    search_verify_agent = SearchVerifyAgent(
+        llm_router,
+        netease_adapter,
+        audio_resolver,
+        llm_timeout_s=8.0,
+    )
+    queue_director = QueueDirector(
+        dj_request_agent,
+        search_verify_agent,
+        dj_memory_manager,
+    )
     comp = ContextCompressor()
 
     # Wire module globals
@@ -92,6 +109,10 @@ async def lifespan(app: FastAPI):
     ws.audio_resolver = audio_resolver
     ws.request_agent = request_agent
     ws.radio_brain = radio_brain
+    ws.dj_memory_manager = dj_memory_manager
+    ws.dj_request_agent = dj_request_agent
+    ws.search_verify_agent = search_verify_agent
+    ws.queue_director = queue_director
     ws.store = store
     ws.bus = bus
     ws.compressor = comp
