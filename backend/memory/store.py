@@ -57,6 +57,138 @@ class MemoryStore:
                 row = await cursor.fetchone()
                 return json.loads(row[0]) if row else None
 
+    async def log_dj_memory_event(
+        self,
+        uid: str,
+        session_id: int | None,
+        event_type: str,
+        raw_text: str = "",
+        payload: dict | None = None,
+        importance: float | None = None,
+        expires_at: str | None = None,
+    ) -> int:
+        payload = payload or {}
+        event_importance = importance
+        if event_importance is None:
+            event_importance = float(payload.get("importance", 0.5) or 0.5)
+        async with connect_db() as db:
+            cursor = await db.execute(
+                "INSERT INTO dj_memory_event "
+                "(uid, session_id, event_type, raw_text, payload_json, importance, expires_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    str(uid),
+                    session_id,
+                    event_type,
+                    raw_text,
+                    json.dumps(payload, ensure_ascii=False),
+                    event_importance,
+                    expires_at,
+                ),
+            )
+            await db.commit()
+            return int(cursor.lastrowid)
+
+    async def get_recent_dj_memory_events(self, uid: str, limit: int = 20) -> list[dict]:
+        async with connect_db() as db:
+            async with db.execute(
+                "SELECT id, session_id, event_type, raw_text, payload_json, importance, expires_at, created_at "
+                "FROM dj_memory_event WHERE uid=? ORDER BY created_at DESC, id DESC LIMIT ?",
+                (str(uid), limit),
+            ) as cursor:
+                rows = await cursor.fetchall()
+        return [
+            {
+                "id": row[0],
+                "session_id": row[1],
+                "event_type": row[2],
+                "raw_text": row[3] or "",
+                "payload": json.loads(row[4] or "{}"),
+                "importance": row[5],
+                "expires_at": row[6],
+                "created_at": row[7],
+            }
+            for row in rows
+        ]
+
+    async def save_dj_session_memory(self, uid: str, session_id: int, memory: dict) -> None:
+        async with connect_db() as db:
+            await db.execute(
+                "INSERT INTO dj_session_memory (uid, session_id, memory_json, updated_at) "
+                "VALUES (?, ?, ?, CURRENT_TIMESTAMP) "
+                "ON CONFLICT(uid, session_id) DO UPDATE SET "
+                "memory_json=excluded.memory_json, updated_at=CURRENT_TIMESTAMP",
+                (str(uid), int(session_id), json.dumps(memory, ensure_ascii=False)),
+            )
+            await db.commit()
+
+    async def get_dj_session_memory(self, uid: str, session_id: int) -> dict:
+        async with connect_db() as db:
+            async with db.execute(
+                "SELECT memory_json FROM dj_session_memory WHERE uid=? AND session_id=?",
+                (str(uid), int(session_id)),
+            ) as cursor:
+                row = await cursor.fetchone()
+        return json.loads(row[0]) if row else {}
+
+    async def upsert_dj_user_memory(
+        self,
+        uid: str,
+        memory_key: str,
+        memory_text: str,
+        confidence: float,
+        evidence_count: int,
+        tags: list[str] | None = None,
+    ) -> None:
+        async with connect_db() as db:
+            await db.execute(
+                "INSERT INTO dj_user_memory "
+                "(uid, memory_key, memory_text, confidence, evidence_count, tags_json, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP) "
+                "ON CONFLICT(uid, memory_key) DO UPDATE SET "
+                "memory_text=excluded.memory_text, confidence=excluded.confidence, "
+                "evidence_count=excluded.evidence_count, tags_json=excluded.tags_json, "
+                "updated_at=CURRENT_TIMESTAMP",
+                (
+                    str(uid),
+                    memory_key,
+                    memory_text,
+                    float(confidence),
+                    int(evidence_count),
+                    json.dumps(tags or [], ensure_ascii=False),
+                ),
+            )
+            await db.commit()
+
+    async def get_dj_user_memories(
+        self,
+        uid: str,
+        tags: list[str] | None = None,
+        limit: int = 10,
+    ) -> list[dict]:
+        async with connect_db() as db:
+            async with db.execute(
+                "SELECT memory_key, memory_text, confidence, evidence_count, tags_json, updated_at "
+                "FROM dj_user_memory WHERE uid=? ORDER BY confidence DESC, updated_at DESC LIMIT ?",
+                (str(uid), int(limit)),
+            ) as cursor:
+                rows = await cursor.fetchall()
+        wanted = set(tags or [])
+        memories = []
+        for row in rows:
+            row_tags = json.loads(row[4] or "[]")
+            if wanted and not wanted.intersection(row_tags):
+                continue
+            memories.append({
+                "memory_key": row[0],
+                "memory_text": row[1],
+                "confidence": row[2],
+                "evidence_count": row[3],
+                "tags": row_tags,
+                "updated_at": row[5],
+            })
+        return memories
+
     async def log_track(
         self,
         song_id: str,

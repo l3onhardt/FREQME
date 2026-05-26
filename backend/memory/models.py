@@ -101,6 +101,42 @@ async def init_db():
                 reason TEXT,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP
             );
+            CREATE TABLE IF NOT EXISTS dj_memory_event (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                uid TEXT NOT NULL,
+                session_id INTEGER,
+                event_type TEXT NOT NULL,
+                raw_text TEXT,
+                payload_json TEXT NOT NULL,
+                importance REAL DEFAULT 0.5,
+                expires_at TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE INDEX IF NOT EXISTS idx_dj_memory_event_uid_created
+                ON dj_memory_event(uid, created_at);
+            CREATE INDEX IF NOT EXISTS idx_dj_memory_event_uid_type
+                ON dj_memory_event(uid, event_type, created_at);
+
+            CREATE TABLE IF NOT EXISTS dj_session_memory (
+                uid TEXT NOT NULL,
+                session_id INTEGER NOT NULL,
+                memory_json TEXT NOT NULL,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY(uid, session_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS dj_user_memory (
+                uid TEXT NOT NULL,
+                memory_key TEXT NOT NULL,
+                memory_text TEXT NOT NULL,
+                confidence REAL DEFAULT 0.5,
+                evidence_count INTEGER DEFAULT 1,
+                tags_json TEXT NOT NULL,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY(uid, memory_key)
+            );
+            CREATE INDEX IF NOT EXISTS idx_dj_user_memory_uid_updated
+                ON dj_user_memory(uid, updated_at);
         """)
         await _ensure_column(db, "track_log", "uid", "TEXT")
         await db.executescript("""

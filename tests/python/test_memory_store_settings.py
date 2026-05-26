@@ -91,6 +91,60 @@ class MemoryStoreSettingsTest(unittest.TestCase):
 
             asyncio.run(run())
 
+    def test_dj_memory_event_session_and_user_memory_round_trip(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            os.environ["RADIO_DB_PATH"] = str(Path(tmp) / "radio-test.db")
+
+            from backend.memory.models import init_db
+            from backend.memory.store import MemoryStore
+
+            async def run():
+                await init_db()
+                store = MemoryStore()
+
+                event_id = await store.log_dj_memory_event(
+                    uid="42",
+                    session_id=7,
+                    event_type="user_request",
+                    raw_text="我要听齐默尔曼的肖邦",
+                    payload={
+                        "agent_understanding": "Zimerman / Chopin",
+                        "entities": ["Krystian Zimerman", "Chopin"],
+                        "tags": ["classical", "piano"],
+                        "importance": 0.82,
+                    },
+                )
+                self.assertIsInstance(event_id, int)
+
+                await store.save_dj_session_memory(
+                    uid="42",
+                    session_id=7,
+                    memory={
+                        "active_mode": {
+                            "label": "Zimerman / Chopin",
+                            "expires_after_tracks": 4,
+                        }
+                    },
+                )
+                await store.upsert_dj_user_memory(
+                    uid="42",
+                    memory_key="avoid_overplayed_chinese_pop",
+                    memory_text="User dislikes overplayed Chinese pop.",
+                    confidence=0.78,
+                    evidence_count=5,
+                    tags=["negative_feedback", "taste"],
+                )
+
+                session_memory = await store.get_dj_session_memory("42", 7)
+                user_memories = await store.get_dj_user_memories("42", tags=["taste"])
+                events = await store.get_recent_dj_memory_events("42", limit=5)
+
+                self.assertEqual(session_memory["active_mode"]["label"], "Zimerman / Chopin")
+                self.assertEqual(user_memories[0]["memory_key"], "avoid_overplayed_chinese_pop")
+                self.assertEqual(events[0]["raw_text"], "我要听齐默尔曼的肖邦")
+
+            asyncio.run(run())
+
     def test_recent_tracks_are_scoped_by_uid_with_legacy_fallback(self):
         with tempfile.TemporaryDirectory() as tmp:
             os.environ["RADIO_DB_PATH"] = str(Path(tmp) / "radio-test.db")
