@@ -205,14 +205,12 @@ Return only JSON:
 
     def _normalize_music_task(self, value) -> dict:
         source = value if isinstance(value, dict) else {}
-        primary_entities = source.get("primary_entities")
-        search_goals = source.get("search_goals")
         return {
             "type": str(source.get("type") or ""),
-            "primary_entities": primary_entities if isinstance(primary_entities, list) else [],
+            "primary_entities": self._normalize_primary_entities(source.get("primary_entities")),
             "work_hint": str(source.get("work_hint") or ""),
             "style_hint": str(source.get("style_hint") or ""),
-            "search_goals": search_goals if isinstance(search_goals, list) else [],
+            "search_goals": self._normalize_search_goals(source.get("search_goals")),
             "must_not_search_literal_user_sentence": True,
         }
 
@@ -225,6 +223,30 @@ Return only JSON:
                 bool(str(music_task.get("style_hint") or "").strip()),
             ]
         )
+
+    def _normalize_search_goals(self, value) -> list[str]:
+        if not isinstance(value, list):
+            return []
+        goals = []
+        for item in value:
+            goal = str(item or "").strip()
+            if goal:
+                goals.append(goal)
+        return goals
+
+    def _normalize_primary_entities(self, value) -> list[dict]:
+        if not isinstance(value, list):
+            return []
+        entities = []
+        for item in value:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name") or "").strip()
+            if not name:
+                continue
+            role = str(item.get("role") or "").strip() or "music_entity"
+            entities.append({"role": role, "name": name})
+        return entities
 
     def _normalize_queue_policy(self, value, action: str) -> dict:
         source = value if isinstance(value, dict) else {}

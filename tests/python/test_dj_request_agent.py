@@ -109,6 +109,41 @@ class DJRequestAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(decision.action, "ask_clarifying_question")
         self.assertEqual(decision.music_task["type"], "unclear")
 
+    async def test_blank_search_goals_and_empty_entities_fall_back(self):
+        agent = DJRequestAgent(FakeLLM("""
+        {
+          "action": "play_now",
+          "music_task": {
+            "search_goals": ["   "],
+            "primary_entities": [{}]
+          }
+        }
+        """))
+
+        decision = await agent.decide("放点东西", context_pack={})
+
+        self.assertEqual(decision.action, "ask_clarifying_question")
+        self.assertEqual(decision.music_task["search_goals"], [])
+        self.assertEqual(decision.music_task["primary_entities"], [])
+
+    async def test_valid_entity_with_blank_role_defaults_to_music_entity(self):
+        agent = DJRequestAgent(FakeLLM("""
+        {
+          "action": "set_direction_and_play",
+          "music_task": {
+            "primary_entities": [{"role": "   ", "name": "Björk"}]
+          }
+        }
+        """))
+
+        decision = await agent.decide("来点bjork", context_pack={})
+
+        self.assertEqual(decision.action, "set_direction_and_play")
+        self.assertEqual(
+            decision.music_task["primary_entities"],
+            [{"role": "music_entity", "name": "Björk"}],
+        )
+
     async def test_model_cannot_disable_literal_search_guard(self):
         agent = DJRequestAgent(FakeLLM("""
         {
