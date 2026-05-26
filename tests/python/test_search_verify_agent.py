@@ -113,6 +113,40 @@ class SearchVerifyAgentTests(unittest.IsolatedAsyncioTestCase):
         searched = [call["keywords"] for call in netease.search_calls]
         self.assertEqual(searched, ["Arthur Rubinstein Chopin Nocturne"])
         self.assertNotIn("想听鲁宾斯坦弹的肖邦夜曲", llm.calls[0]["prompt"])
+        for call in llm.calls:
+            self.assertNotIn("想听鲁宾斯坦弹的肖邦夜曲", call["prompt"])
+
+    async def test_valid_chinese_structured_goal_is_searched_and_verified(self):
+        netease = FakeNetease()
+        netease.results_by_query["鲁宾斯坦 肖邦 夜曲"] = [
+            {"id": "rubinstein", "name": "肖邦 夜曲", "ar": [{"name": "鲁宾斯坦"}]},
+        ]
+        llm = FakeLLM([
+            '{"search_queries":["鲁宾斯坦 肖邦 夜曲"]}',
+            '{"chosen_id":"rubinstein","confidence":0.9}',
+        ])
+        agent = SearchVerifyAgent(llm, netease, FakeResolver())
+
+        result = await agent.verify({"search_goals": ["鲁宾斯坦 肖邦 夜曲"]})
+
+        self.assertEqual(result.status, "verified")
+        self.assertEqual([call["keywords"] for call in netease.search_calls], ["鲁宾斯坦 肖邦 夜曲"])
+
+    async def test_mojibake_chinese_structured_goal_is_repaired_and_searched(self):
+        netease = FakeNetease()
+        netease.results_by_query["放点 播放"] = [
+            {"id": "rubinstein", "name": "肖邦 夜曲", "ar": [{"name": "鲁宾斯坦"}]},
+        ]
+        llm = FakeLLM([
+            '{"search_queries":[]}',
+            '{"chosen_id":"rubinstein","confidence":0.9}',
+        ])
+        agent = SearchVerifyAgent(llm, netease, FakeResolver())
+
+        result = await agent.verify({"search_goals": ["鎯冲惉 鏀剧偣 鎾斁"]})
+
+        self.assertEqual(result.status, "verified")
+        self.assertEqual([call["keywords"] for call in netease.search_calls], ["放点 播放"])
 
     async def test_dirty_search_goals_are_cleaned_or_rejected_before_search(self):
         netease = FakeNetease()
@@ -241,3 +275,63 @@ class SearchVerifyAgentTests(unittest.IsolatedAsyncioTestCase):
         for song in bad_examples:
             with self.subTest(song=song["name"]):
                 self.assertTrue(agent._is_bad_candidate(song))
+
+    async def test_requested_version_candidates_are_allowed_for_judgement(self):
+        netease = FakeNetease()
+        netease.results_by_query["Creep cover"] = [
+            {"id": "cover", "name": "Creep cover", "ar": [{"name": "Bedroom Singer"}], "alia": ["翻唱"]},
+        ]
+        netease.results_by_query["Creep accompaniment"] = [
+            {"id": "accompaniment", "name": "Creep accompaniment version", "ar": [{"name": "Session Band"}]},
+        ]
+        netease.results_by_query["Creep 卡拉OK"] = [
+            {"id": "karaoke", "name": "Creep 卡拉OK版", "ar": [{"name": "Radiohead"}]},
+        ]
+        llm = FakeLLM([
+            '{"search_queries":["Creep cover","Creep accompaniment","Creep 卡拉OK"]}',
+            '{"chosen_id":"cover","confidence":0.9}',
+        ])
+        agent = SearchVerifyAgent(llm, netease, AlwaysPlayableResolver())
+
+        result = await agent.verify(
+            {
+                "type": "cover_request",
+                "work_hint": "cover accompaniment",
+                "style_hint": "卡拉OK",
+                "search_goals": ["Creep cover", "Creep accompaniment", "Creep 卡拉OK"],
+            }
+        )
+
+        self.assertEqual(result.status, "verified")
+        judgement_prompt = llm.calls[1]["prompt"]
+        self.assertIn('"id": "cover"', judgement_prompt)
+        self.assertIn('"id": "accompaniment"', judgement_prompt)
+        self.assertIn('"id": "karaoke"', judgement_prompt)
+
+    async def test_structured_entities_generate_fallback_query_when_llm_query_fails(self):
+        netease = FakeNetease()
+        netease.results_by_query["Arthur Rubinstein Chopin Nocturnes classical piano"] = [
+            {"id": "rubinstein", "name": "Nocturne No.2", "ar": [{"name": "Arthur Rubinstein"}]},
+        ]
+        llm = FakeLLM([
+            'not json',
+            '{"chosen_id":"rubinstein","confidence":0.9}',
+        ])
+        agent = SearchVerifyAgent(llm, netease, FakeResolver())
+
+        result = await agent.verify(
+            {
+                "primary_entities": [
+                    {"role": "performer", "name": "Arthur Rubinstein"},
+                    {"role": "composer", "name": "Chopin"},
+                ],
+                "work_hint": "Nocturnes",
+                "style_hint": "classical piano",
+            }
+        )
+
+        self.assertEqual(result.status, "verified")
+        self.assertEqual(
+            [call["keywords"] for call in netease.search_calls],
+            ["Arthur Rubinstein Chopin Nocturnes classical piano"],
+        )

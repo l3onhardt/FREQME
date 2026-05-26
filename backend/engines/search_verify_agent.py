@@ -40,7 +40,7 @@ class SearchVerifyAgent:
             except Exception:
                 found = []
             for candidate in self._pool_list(found)[:8]:
-                if not self._is_bad_candidate(candidate):
+                if not self._is_bad_candidate(candidate, music_task):
                     candidates.append(self._normalize_candidate(candidate, query))
         if not candidates:
             return await self._not_found(music_task, queries, "No candidates returned.")
@@ -79,16 +79,12 @@ class SearchVerifyAgent:
                 "version_note": str(judgement.get("version_note") or ""),
                 "risk": str(judgement.get("risk") or ""),
             },
-            fallback_candidates=judgement.get("fallback_candidates") or [],
+            fallback_candidates=self._bounded_dict_list(judgement.get("fallback_candidates")),
             used_query=song.get("_source_query", ""),
         )
 
     async def _queries(self, music_task: dict, raw_user_text: str) -> list[str]:
-        goals = [
-            self._clean_query(query, raw_user_text)
-            for query in music_task.get("search_goals", [])
-            if self._clean_query(query, raw_user_text)
-        ]
+        goals = self._clean_queries(music_task.get("search_goals", []), raw_user_text)
         prompt = f"""Create NetEase search queries from this structured music task.
 Use only the structured task fields. Do not reinterpret the full user request.
 
@@ -105,12 +101,11 @@ Return JSON only:
             data = self._parse_json(response)
         except Exception:
             data = {}
-        generated = [
-            self._clean_query(query, raw_user_text)
-            for query in data.get("search_queries", [])
-            if self._clean_query(query, raw_user_text)
-        ]
-        return self._dedupe(generated + goals)[:6]
+        generated = self._clean_queries(data.get("search_queries", []), raw_user_text)
+        queries = self._dedupe(generated + goals)
+        if queries:
+            return queries[:6]
+        return self._structured_query_fallback(music_task, raw_user_text)[:6]
 
     async def _judge(self, music_task: dict, candidates: list[dict]) -> dict:
         prompt = f"""Choose the best verified playable music candidate for this DJ task.
@@ -153,7 +148,7 @@ Return JSON only:
     def _recovery_options(self, music_task: dict, judgement: dict) -> list[dict]:
         options = judgement.get("recovery_options") if isinstance(judgement, dict) else None
         if isinstance(options, list) and options:
-            return options[:3]
+            return self._bounded_dict_list(options)
         entities = music_task.get("primary_entities") if isinstance(music_task, dict) else []
         names = [str(item.get("name")) for item in entities or [] if isinstance(item, dict) and item.get("name")]
         task = " ".join(names + [str(music_task.get("work_hint") or music_task.get("style_hint") or "")]).strip()
@@ -176,6 +171,16 @@ Return JSON only:
     def _candidate_text(self, candidates: list[dict]) -> str:
         bounded = candidates[:MAX_CANDIDATES_FOR_JUDGEMENT]
         return json.dumps(bounded, ensure_ascii=False, indent=2)[:12000]
+
+    def _clean_queries(self, values, raw_user_text: str = "") -> list[str]:
+        return [
+            cleaned
+            for cleaned in (self._clean_query(value, raw_user_text) for value in self._pool_values(values))
+            if cleaned
+        ]
+
+    def _pool_values(self, value) -> list:
+        return value if isinstance(value, list) else []
 
     def _clean_query(self, value, raw_user_text: str = "") -> str:
         query = self._repair_mojibake(" ".join(str(value or "").split()))[:MAX_QUERY_LEN]
@@ -203,19 +208,21 @@ Return JSON only:
         for prefix in sorted(command_prefixes, key=len, reverse=True):
             if query.startswith(prefix):
                 query = query[len(prefix):].strip(" ，,。.!！?？吗嘛呢吧")
+                if self._looks_like_compact_chinese_sentence(query):
+                    return ""
                 break
 
         query = re.sub(r"^(can|could|would|please|play|listen to|put on|give me)\b", "", query, flags=re.I).strip()
         query = re.sub(r"[?？吗嘛呢吧]+$", "", query).strip()
         if not query:
             return ""
-        if self._looks_like_chinese_command_query(query):
+        if self._looks_like_compact_chinese_sentence(query) and raw and query in raw:
             return ""
         return query
 
-    def _is_bad_candidate(self, song: dict) -> bool:
+    def _is_bad_candidate(self, song: dict, music_task: dict | None = None) -> bool:
         text = " ".join(self._metadata_strings(song)).lower()
-        bad_tokens = (
+        utility_tokens = (
             "歌单",
             "playlist",
             "study",
@@ -233,6 +240,9 @@ Return JSON only:
             "sound effect",
             "background music",
             "背景音乐",
+            "纯音乐盒",
+        )
+        version_tokens = (
             "ktv",
             "karaoke",
             "卡拉ok",
@@ -243,9 +253,42 @@ Return JSON only:
             "accompaniment version",
             "翻唱",
             "cover",
-            "纯音乐盒",
         )
-        return any(token in text for token in bad_tokens)
+        if any(token in text for token in utility_tokens):
+            return True
+        if self._task_allows_version_candidate(music_task):
+            return False
+        return any(token in text for token in version_tokens)
+
+    def _task_allows_version_candidate(self, music_task: dict | None) -> bool:
+        if not isinstance(music_task, dict):
+            return False
+        text_parts = []
+        for key in ("type", "work_hint", "style_hint"):
+            text_parts.append(str(music_task.get(key) or ""))
+        for key in ("search_goals", "genres", "moods", "tags"):
+            value = music_task.get(key)
+            if isinstance(value, list):
+                text_parts.extend(str(item) for item in value)
+            else:
+                text_parts.append(str(value or ""))
+        for entity in music_task.get("primary_entities") or []:
+            if isinstance(entity, dict):
+                text_parts.extend(str(value) for value in entity.values())
+        text = self._repair_mojibake(" ".join(text_parts)).lower()
+        requested_tokens = (
+            "cover",
+            "翻唱",
+            "ktv",
+            "karaoke",
+            "卡拉ok",
+            "伴奏",
+            "backing",
+            "backing track",
+            "accompaniment",
+            "accompaniment version",
+        )
+        return any(token in text for token in requested_tokens)
 
     def _artist_name(self, song: dict | None) -> str:
         if not isinstance(song, dict):
@@ -319,6 +362,36 @@ Return JSON only:
     def _pool_list(self, value) -> list[dict]:
         return value if isinstance(value, list) else []
 
+    def _structured_query_fallback(self, music_task: dict, raw_user_text: str) -> list[str]:
+        if not isinstance(music_task, dict):
+            return []
+        parts = []
+        for entity in music_task.get("primary_entities") or []:
+            if isinstance(entity, dict) and entity.get("name"):
+                parts.append(str(entity.get("name")))
+        for key in ("work_hint", "style_hint"):
+            if music_task.get(key):
+                parts.append(str(music_task.get(key)))
+        query = self._clean_query(" ".join(parts), raw_user_text)
+        return [query] if query else []
+
+    def _bounded_dict_list(self, value) -> list[dict]:
+        if not isinstance(value, list):
+            return []
+        result = []
+        for item in value:
+            if not isinstance(item, dict):
+                continue
+            bounded = {}
+            for key in ("type", "task", "reason"):
+                if item.get(key) is not None:
+                    bounded[key] = str(item.get(key))[:240]
+            if bounded:
+                result.append(bounded)
+            if len(result) >= 3:
+                break
+        return result
+
     def _dedupe(self, values: list[str]) -> list[str]:
         result = []
         for value in values:
@@ -365,7 +438,8 @@ Return JSON only:
             repaired = repaired.replace(bad, good)
         return repaired
 
-    def _looks_like_chinese_command_query(self, query: str) -> bool:
+    def _looks_like_compact_chinese_sentence(self, query: str) -> bool:
         has_cjk = bool(re.search(r"[\u4e00-\u9fff]", query))
         has_ascii_word = bool(re.search(r"[A-Za-z0-9]", query))
-        return has_cjk and not has_ascii_word and len(query) > 6
+        has_separator = bool(re.search(r"\s", query))
+        return has_cjk and not has_ascii_word and not has_separator and len(query) > 6
