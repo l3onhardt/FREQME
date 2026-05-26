@@ -88,6 +88,22 @@ async def ws_handler(websocket: WebSocket):
             and not playback_queue.ready_items()
         )
 
+    def dj_playback_context() -> dict:
+        return {
+            "current_track": _track_info(current_song) if current_song else None,
+            "recent_tracks": [_track_info(song) for song in played_songs[-10:]],
+            "ready_queue": [
+                _track_info(item.song) for item in playback_queue.ready_items()
+            ],
+            "scene": scene,
+        }
+
+    def safe_director_status_text(text: str, request_text: str, fallback: str) -> str:
+        safe_text = str(text or "").strip()
+        if not safe_text or (request_text and request_text in safe_text):
+            return fallback
+        return safe_text
+
     def request_status_for_ready_item(request_text: str) -> dict:
         ready = playback_queue.ready_items()
         brain_decision = {}
@@ -99,6 +115,7 @@ async def ws_handler(websocket: WebSocket):
             if brain_decision.get("intent_type") in {
                 "taste_direction",
                 "artist_direction",
+                "music_entity_direction",
                 "negative_feedback",
                 "skip_variant",
                 "profile_correction",
@@ -142,6 +159,30 @@ async def ws_handler(websocket: WebSocket):
                     if ack_text
                     else f"收到，我会往“{request_text}”这个方向调整。"
                 ),
+                "next_track": track,
+            }
+        if brain_decision.get("intent_type") == "music_entity_direction":
+            ack_text = str(brain_decision.get("ack_text") or "").strip()
+            return {
+                "type": "request_status",
+                "status": "ready",
+                "text": (
+                    f"{ack_text} 下一首先接：{track['name']}。"
+                    if ack_text
+                    else f"收到，我会先理解“{request_text}”里的音乐对象，再接具体歌。"
+                ),
+                "next_track": track,
+            }
+        if reason_type == "dj_agent_verified":
+            reason_text = ""
+            if isinstance(item.selection_reason, dict):
+                reason_text = str(item.selection_reason.get("text") or "").strip()
+            if reason_text and request_text and request_text in reason_text:
+                reason_text = ""
+            return {
+                "type": "request_status",
+                "status": "ready",
+                "text": reason_text or f"Next track is ready: {track['name']}.",
                 "next_track": track,
             }
         if reason_type == "request_intent":
@@ -543,7 +584,6 @@ async def ws_handler(websocket: WebSocket):
                     except Exception:
                         pass
                     prewarm_task = None
-                clear_ready_queue()
                 try:
                     await store.log_playback_event(
                         "song_request",
@@ -554,6 +594,75 @@ async def ws_handler(websocket: WebSocket):
                 except Exception:
                     pass
 
+                if queue_director:
+                    try:
+                        recent_turns = (
+                            compressor.get_context()
+                            if hasattr(compressor, "get_context")
+                            else []
+                        )
+                    except Exception:
+                        recent_turns = []
+                    try:
+                        result = await queue_director.handle_song_request(
+                            request_text=request_text,
+                            playback_queue=playback_queue,
+                            uid=str(uid) if uid else None,
+                            session_id=session_id,
+                            profile=profile,
+                            user_settings=user_settings,
+                            playback_context=dj_playback_context(),
+                            recent_turns=recent_turns,
+                        )
+                    except Exception:
+                        result = None
+
+                    result_status = getattr(result, "status", "") if result else ""
+                    result_text = getattr(result, "dj_text", "") if result else ""
+                    if result_text:
+                        dj_text = safe_director_status_text(
+                            result_text,
+                            request_text,
+                            "I could not safely verify a playable match.",
+                        )
+                        tts_hash_val = await synthesize_intro_text(dj_text)
+                        await websocket.send_json({
+                            "type": "dj_message",
+                            "text": dj_text,
+                            "tts_ready": bool(tts_hash_val),
+                            "tts_hash": tts_hash_val,
+                        })
+
+                    if result_status == "queued":
+                        await websocket.send_json(request_status_for_ready_item(request_text))
+                        await fill_queue(max_items=1, allow_program_break=False)
+                        continue
+                    if result_status == "ask":
+                        ask_text = safe_director_status_text(
+                            result_text,
+                            request_text,
+                            "I need to clarify the music direction first.",
+                        )
+                        await websocket.send_json({
+                            "type": "request_status",
+                            "status": "needs_clarification",
+                            "text": ask_text,
+                        })
+                        continue
+
+                    recovery_text = safe_director_status_text(
+                        result_text,
+                        request_text,
+                        "I could not safely verify a playable match.",
+                    )
+                    await websocket.send_json({
+                        "type": "request_status",
+                        "status": "not_found",
+                        "text": recovery_text,
+                    })
+                    continue
+
+                clear_ready_queue()
                 brain_decision = None
                 if radio_brain:
                     try:
@@ -630,6 +739,7 @@ async def ws_handler(websocket: WebSocket):
                     "negative_feedback",
                     "taste_direction",
                     "artist_direction",
+                    "music_entity_direction",
                     "skip_variant",
                     "profile_correction",
                 }:
