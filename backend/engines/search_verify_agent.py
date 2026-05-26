@@ -116,7 +116,7 @@ Task:
 Candidates:
 {self._candidate_text(candidates)}
 
-Reject playlists, utility audio, study audio, covers unless requested, wrong artists, and wrong classical performers.
+Reject playlists, utility audio, study audio, unrequested covers, unrequested KTV/karaoke, unrequested backing/accompaniment, wrong artists, and wrong classical performers.
 Return JSON only:
 {{
   "chosen_id": "candidate id or empty",
@@ -242,27 +242,17 @@ Return JSON only:
             "背景音乐",
             "纯音乐盒",
         )
-        version_tokens = (
-            "ktv",
-            "karaoke",
-            "卡拉ok",
-            "伴奏",
-            "backing track",
-            "backing",
-            "accompaniment",
-            "accompaniment version",
-            "翻唱",
-            "cover",
-        )
         if any(token in text for token in utility_tokens):
             return True
-        if self._task_allows_version_candidate(music_task):
+        candidate_versions = self._version_categories(text)
+        if not candidate_versions:
             return False
-        return any(token in text for token in version_tokens)
+        allowed_versions = self._requested_version_categories(music_task)
+        return not candidate_versions.issubset(allowed_versions)
 
-    def _task_allows_version_candidate(self, music_task: dict | None) -> bool:
+    def _requested_version_categories(self, music_task: dict | None) -> set[str]:
         if not isinstance(music_task, dict):
-            return False
+            return set()
         text_parts = []
         for key in ("type", "work_hint", "style_hint"):
             text_parts.append(str(music_task.get(key) or ""))
@@ -276,19 +266,17 @@ Return JSON only:
             if isinstance(entity, dict):
                 text_parts.extend(str(value) for value in entity.values())
         text = self._repair_mojibake(" ".join(text_parts)).lower()
-        requested_tokens = (
-            "cover",
-            "翻唱",
-            "ktv",
-            "karaoke",
-            "卡拉ok",
-            "伴奏",
-            "backing",
-            "backing track",
-            "accompaniment",
-            "accompaniment version",
-        )
-        return any(token in text for token in requested_tokens)
+        return self._version_categories(text)
+
+    def _version_categories(self, text: str) -> set[str]:
+        categories = set()
+        if any(token in text for token in ("cover", "翻唱")):
+            categories.add("cover")
+        if any(token in text for token in ("ktv", "karaoke", "卡拉ok")):
+            categories.add("ktv")
+        if any(token in text for token in ("伴奏", "backing", "backing track", "accompaniment", "accompaniment version")):
+            categories.add("accompaniment")
+        return categories
 
     def _artist_name(self, song: dict | None) -> str:
         if not isinstance(song, dict):
@@ -372,7 +360,7 @@ Return JSON only:
         for key in ("work_hint", "style_hint"):
             if music_task.get(key):
                 parts.append(str(music_task.get(key)))
-        query = self._clean_query(" ".join(parts), raw_user_text)
+        query = self._clean_query(" ".join(parts), "")
         return [query] if query else []
 
     def _bounded_dict_list(self, value) -> list[dict]:

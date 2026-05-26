@@ -235,7 +235,7 @@ class SearchVerifyAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.status, "verified")
         self.assertEqual(result.selected_song["id"], "creep")
         judgement_prompt = llm.calls[1]["prompt"]
-        self.assertNotIn("KTV", judgement_prompt)
+        self.assertNotIn('"id": "ktv"', judgement_prompt)
         self.assertNotIn("白噪音", judgement_prompt)
         self.assertNotIn("Bedroom Singer", judgement_prompt)
         self.assertNotIn('"id": "cover"', judgement_prompt)
@@ -308,6 +308,48 @@ class SearchVerifyAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('"id": "accompaniment"', judgement_prompt)
         self.assertIn('"id": "karaoke"', judgement_prompt)
 
+    async def test_cover_request_allows_cover_but_filters_other_version_pollutants(self):
+        netease = FakeNetease()
+        netease.results_by_query["Creep cover"] = [
+            {"id": "cover", "name": "Creep cover", "ar": [{"name": "Bedroom Singer"}], "alia": ["翻唱"]},
+            {"id": "karaoke", "name": "Creep karaoke", "ar": [{"name": "Radiohead"}]},
+            {"id": "accompaniment", "name": "Creep accompaniment version", "ar": [{"name": "Session Band"}]},
+        ]
+        llm = FakeLLM([
+            '{"search_queries":["Creep cover"]}',
+            '{"chosen_id":"cover","confidence":0.9}',
+        ])
+        agent = SearchVerifyAgent(llm, netease, AlwaysPlayableResolver())
+
+        result = await agent.verify({"type": "cover_request", "search_goals": ["Creep cover"]})
+
+        self.assertEqual(result.status, "verified")
+        judgement_prompt = llm.calls[1]["prompt"]
+        self.assertIn('"id": "cover"', judgement_prompt)
+        self.assertNotIn('"id": "karaoke"', judgement_prompt)
+        self.assertNotIn('"id": "accompaniment"', judgement_prompt)
+
+    async def test_ktv_request_allows_ktv_but_filters_cover_and_accompaniment(self):
+        netease = FakeNetease()
+        netease.results_by_query["Creep karaoke"] = [
+            {"id": "karaoke", "name": "Creep karaoke", "ar": [{"name": "Radiohead"}]},
+            {"id": "cover", "name": "Creep cover", "ar": [{"name": "Bedroom Singer"}]},
+            {"id": "accompaniment", "name": "Creep backing track", "ar": [{"name": "Session Band"}]},
+        ]
+        llm = FakeLLM([
+            '{"search_queries":["Creep karaoke"]}',
+            '{"chosen_id":"karaoke","confidence":0.9}',
+        ])
+        agent = SearchVerifyAgent(llm, netease, AlwaysPlayableResolver())
+
+        result = await agent.verify({"style_hint": "karaoke", "search_goals": ["Creep karaoke"]})
+
+        self.assertEqual(result.status, "verified")
+        judgement_prompt = llm.calls[1]["prompt"]
+        self.assertIn('"id": "karaoke"', judgement_prompt)
+        self.assertNotIn('"id": "cover"', judgement_prompt)
+        self.assertNotIn('"id": "accompaniment"', judgement_prompt)
+
     async def test_structured_entities_generate_fallback_query_when_llm_query_fails(self):
         netease = FakeNetease()
         netease.results_by_query["Arthur Rubinstein Chopin Nocturnes classical piano"] = [
@@ -335,3 +377,45 @@ class SearchVerifyAgentTests(unittest.IsolatedAsyncioTestCase):
             [call["keywords"] for call in netease.search_calls],
             ["Arthur Rubinstein Chopin Nocturnes classical piano"],
         )
+
+    async def test_structured_fallback_ignores_raw_user_text_equality(self):
+        netease = FakeNetease()
+        netease.results_by_query["Radiohead Creep"] = [
+            {"id": "creep", "name": "Creep", "ar": [{"name": "Radiohead"}]},
+        ]
+        llm = FakeLLM([
+            'not json',
+            '{"chosen_id":"creep","confidence":0.9}',
+        ])
+        agent = SearchVerifyAgent(llm, netease, AlwaysPlayableResolver())
+
+        result = await agent.verify(
+            {
+                "primary_entities": [
+                    {"role": "artist", "name": "Radiohead"},
+                ],
+                "work_hint": "Creep",
+            },
+            raw_user_text="Radiohead Creep",
+        )
+
+        self.assertEqual(result.status, "verified")
+        self.assertEqual([call["keywords"] for call in netease.search_calls], ["Radiohead Creep"])
+
+    async def test_bounds_recovery_and_fallback_candidate_fields(self):
+        long_text = "x" * 400
+        netease = FakeNetease()
+        netease.results_by_query["Radiohead Creep"] = [
+            {"id": "creep", "name": "Creep", "ar": [{"name": "Radiohead"}]},
+        ]
+        llm = FakeLLM([
+            '{"search_queries":["Radiohead Creep"]}',
+            '{"chosen_id":"creep","confidence":0.9,"fallback_candidates":[{"type":"a","task":"' + long_text + '","reason":"' + long_text + '"},{"type":"b","task":"b","reason":"b"},{"type":"c","task":"c","reason":"c"},{"type":"d","task":"d","reason":"d"}]}',
+        ])
+        agent = SearchVerifyAgent(llm, netease, AlwaysPlayableResolver())
+
+        result = await agent.verify({"search_goals": ["Radiohead Creep"]})
+
+        self.assertEqual(result.status, "verified")
+        self.assertEqual(len(result.fallback_candidates), 3)
+        self.assertLessEqual(len(result.fallback_candidates[0]["task"]), 240)
