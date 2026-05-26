@@ -81,6 +81,86 @@ class DJPromptQualityTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("人类电台 DJ", prompt)
         self.assertEqual(llm.calls[0]["max_tokens"], 360)
 
+    async def test_intro_prompt_uses_radio_insights_time_location_and_request_intent(self):
+        llm = FakeLLM()
+        engine = DJEngine(llm, store=None)
+
+        await engine.generate_intro(
+            {
+                "personality": {"traits": ["夜晚型", "偏爱细腻人声"]},
+                "dj_style_suggestion": "温暖、磁性、像懂歌的夜间主播",
+                "radio_insights": {
+                    "taste_summary": "你常听的不是热闹本身，而是夜里能把心放稳的歌。",
+                    "comfort_zone": ["华语慢歌", "细腻男声"],
+                    "discovery_direction": ["低饱和独立流行", "城市夜行感"],
+                    "dj_talking_points": [
+                        "你会反复回到有人声呼吸感的歌。",
+                        "熟悉旋律对你更像一个安全地带。",
+                    ],
+                },
+            },
+            "深夜",
+            user_settings={
+                "display_name": "Katz",
+                "current_mode": "陪伴",
+                "listening_intent": {
+                    "raw_text": "想听一点夜路上能放空的歌",
+                    "keywords": "夜路 放空 城市",
+                    "mood": "夜行感",
+                },
+                "timezone_name": "Asia/Shanghai",
+                "locale": "zh-CN",
+                "region_hint": "上海",
+            },
+        )
+
+        prompt = llm.calls[0]["prompt"]
+        self.assertIn("你常听的不是热闹本身", prompt)
+        self.assertIn("你会反复回到有人声呼吸感的歌", prompt)
+        self.assertIn("想听一点夜路上能放空的歌", prompt)
+        self.assertIn("Asia/Shanghai", prompt)
+        self.assertIn("上海", prompt)
+        self.assertIn("不要说“根据你的画像”", prompt)
+
+    async def test_program_break_prompt_carries_request_intent_without_becoming_mechanical(self):
+        llm = FakeLLM()
+        engine = DJEngine(llm, store=None)
+
+        await engine.generate_program_break(
+            {
+                "personality": {"traits": ["安静"]},
+                "dj_style_suggestion": "温暖、克制",
+                "radio_insights": {
+                    "taste_summary": "熟悉旋律像用户的安全地带。",
+                    "dj_talking_points": ["用户会被低声部和留白吸引。"],
+                },
+            },
+            "深夜",
+            [{"id": "1", "name": "First", "ar": [{"name": "A"}]}],
+            {
+                "id": "2",
+                "name": "Second",
+                "ar": [{"name": "B"}],
+                "selection_reason": {"text": "回应你刚刚说想听夜路上的歌。"},
+            },
+            FakeContext(),
+            user_settings={
+                "listening_intent": {
+                    "raw_text": "想听夜路上的歌",
+                    "keywords": "夜路 城市",
+                },
+                "timezone_name": "Asia/Shanghai",
+                "region_hint": "杭州",
+            },
+        )
+
+        prompt = llm.calls[0]["prompt"]
+        self.assertIn("熟悉旋律像用户的安全地带", prompt)
+        self.assertIn("用户会被低声部和留白吸引", prompt)
+        self.assertIn("想听夜路上的歌", prompt)
+        self.assertIn("杭州", prompt)
+        self.assertIn("不要提系统、画像或选曲规则", prompt)
+
     async def test_user_music_notes_are_cleaned_before_prompting(self):
         llm = FakeLLM()
         engine = DJEngine(llm, store=None)

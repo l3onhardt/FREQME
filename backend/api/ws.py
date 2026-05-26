@@ -1,11 +1,13 @@
 import asyncio
 import json
+import re
 
 from fastapi import WebSocket, WebSocketDisconnect
 
 from backend.api import auth
 from backend.engines.dj import should_generate_segue
 from backend.engines.playback_queue import PlaybackQueue
+from backend.engines.song_request_agent import SongRequestPick
 
 netease = None
 llm = None
@@ -17,6 +19,8 @@ store = None
 bus = None
 compressor = None
 audio_resolver = None
+request_agent = None
+radio_brain = None
 
 DEFAULT_DJ_INTRO = "晚上好，这里是今晚的私人电台。我先把第一首歌轻轻放进来，你不用急，跟着这一点光慢慢听。"
 MAX_QUEUE_PREPARE_ATTEMPTS = 12
@@ -67,12 +71,68 @@ async def ws_handler(websocket: WebSocket):
         except Exception:
             return ""
 
+    def clear_ready_queue() -> None:
+        playback_queue.items = [
+            item for item in playback_queue.items
+            if item.status != "ready"
+        ]
+
     def should_prepare_break_for_next_song() -> bool:
         return (
             len(played_songs) >= 3
             and len(played_songs) % 3 == 0
             and not playback_queue.ready_items()
         )
+
+    def request_status_for_ready_item(request_text: str) -> dict:
+        ready = playback_queue.ready_items()
+        if not ready:
+            return {
+                "type": "request_status",
+                "status": "fallback",
+                "text": f"我还没找到特别准的“{request_text}”，先往这个情绪靠近一点。",
+            }
+        item = ready[0]
+        reason_type = (
+            item.selection_reason.get("type")
+            if isinstance(item.selection_reason, dict)
+            else ""
+        )
+        track = _track_info(item.song)
+        if reason_type == "request_intent":
+            return {
+                "type": "request_status",
+                "status": "ready",
+                "text": f"我先把下一首往这个方向靠：{track['name']}。如果你想现在切过去，点下一首就好。",
+                "next_track": track,
+            }
+        return {
+            "type": "request_status",
+            "status": "fallback",
+            "text": f"没找到特别准的“{request_text}”，我先往这个情绪靠近一点。",
+            "next_track": track,
+        }
+
+    async def queue_agent_pick(pick: SongRequestPick) -> bool:
+        if not pick.found or not pick.song:
+            return False
+        try:
+            prepared = await _prepare_queue_item(
+                audio_resolver,
+                pick.song,
+                str(uid) if uid else None,
+            )
+        except Exception:
+            prepared = None
+        if not prepared:
+            return False
+        prepared_song, prepared_url = prepared
+        playback_queue.add_ready(
+            prepared_song,
+            prepared_url,
+            prepared_song.get("selection_reason", {}),
+        )
+        return True
 
     async def remember_current_song(song: dict):
         nonlocal current_song, current_song_id, track_index
@@ -316,6 +376,11 @@ async def ws_handler(websocket: WebSocket):
                 settings_payload = msg.get("settings") or {}
                 stored_settings = await store.get_user_settings(str(uid)) if uid else None
                 user_settings = stored_settings or settings_payload or {}
+                if not isinstance(user_settings, dict):
+                    user_settings = {}
+                for key in ("timezone_name", "locale", "region_hint"):
+                    if msg.get(key):
+                        user_settings[key] = msg.get(key)
                 scene = dj_engine.detect_scene(msg.get("utc_offset", 480))
                 try:
                     profile = await store.get_profile(str(uid))
@@ -395,6 +460,175 @@ async def ws_handler(websocket: WebSocket):
                     pass
                 await send_prepared_next(previous_event="skipped")
 
+            elif msg_type == "song_request":
+                request_text = " ".join(str(msg.get("text") or "").split())[:120]
+                if not request_text:
+                    continue
+                if prewarm_task and not prewarm_task.done():
+                    prewarm_task.cancel()
+                    try:
+                        await prewarm_task
+                    except asyncio.CancelledError:
+                        pass
+                    except Exception:
+                        pass
+                    prewarm_task = None
+                clear_ready_queue()
+                try:
+                    await store.log_playback_event(
+                        "song_request",
+                        song_id=current_song_id,
+                        uid=str(uid) if uid else None,
+                        reason=request_text,
+                    )
+                except Exception:
+                    pass
+
+                brain_decision = None
+                if radio_brain:
+                    try:
+                        brain_decision = radio_brain.interpret_user_text(
+                            request_text,
+                            profile=profile,
+                            user_settings=user_settings,
+                        )
+                    except Exception:
+                        brain_decision = None
+
+                agent_pick = None
+                if (
+                    request_agent
+                    and (
+                        brain_decision is None
+                        or getattr(brain_decision, "intent_type", "") == "specific_song"
+                    )
+                ):
+                    try:
+                        agent_pick = await asyncio.wait_for(
+                            request_agent.resolve(
+                                request_text,
+                                profile=profile,
+                                user_settings=user_settings,
+                            ),
+                            timeout=28.0,
+                        )
+                    except Exception:
+                        agent_pick = None
+                if agent_pick and await queue_agent_pick(agent_pick):
+                    item = playback_queue.promote_next(previous_event="skipped")
+                    if not item:
+                        continue
+                    next_song = item.song
+                    intro_text = agent_pick.dj_intro or f"我先给你定这一版：{_track_info(next_song)['name']}。"
+                    tts_hash_val = await synthesize_intro_text(intro_text)
+                    await websocket.send_json({
+                        "type": "segue",
+                        "text": intro_text,
+                        "tts_ready": bool(tts_hash_val),
+                        "tts_hash": tts_hash_val,
+                        "next_track": _track_info(next_song),
+                        "url": item.url,
+                    })
+                    await remember_current_song(next_song)
+                    try:
+                        compressor.add_round({
+                            "round": 0,
+                            "type": "request_pick",
+                            "speaker": "memo",
+                            "text": intro_text,
+                            "song": _track_info(next_song),
+                            "timestamp": "",
+                        })
+                    except Exception:
+                        pass
+                    await fill_queue(max_items=1)
+                    continue
+
+                if brain_decision and getattr(brain_decision, "intent_type", "") in {
+                    "negative_feedback",
+                    "taste_direction",
+                    "skip_variant",
+                    "profile_correction",
+                }:
+                    user_settings["radio_brain"] = {
+                        "decision": brain_decision.to_dict()
+                        if hasattr(brain_decision, "to_dict")
+                        else dict(brain_decision),
+                    }
+                    try:
+                        scheduler.apply_listening_intent(
+                            scheduler_state,
+                            request_text,
+                            user_settings=user_settings,
+                        )
+                    except Exception:
+                        user_settings["listening_intent"] = {
+                            "raw_text": request_text,
+                            "keywords": request_text,
+                            "mood": "",
+                        }
+                    ack_text = getattr(brain_decision, "ack_text", "") or f"好，我往“{request_text}”这个方向给你找。"
+                    tts_hash_val = await synthesize_intro_text(ack_text)
+                    await websocket.send_json({
+                        "type": "dj_message",
+                        "text": ack_text,
+                        "tts_ready": bool(tts_hash_val),
+                        "tts_hash": tts_hash_val,
+                    })
+                    await fill_queue(max_items=1, allow_program_break=False)
+                    await websocket.send_json(request_status_for_ready_item(request_text))
+                    continue
+
+                if _looks_like_specific_song_request(request_text):
+                    interpreted = (
+                        getattr(agent_pick, "interpreted_request", "") if agent_pick else ""
+                    )
+                    miss_target = interpreted or request_text
+                    await websocket.send_json({
+                        "type": "request_status",
+                        "status": "not_found",
+                        "text": (
+                            f"我刚才没接准“{miss_target}”这一版，先不乱放。"
+                            "你换个说法，或者加上歌手、专辑、英文名，我再帮你找。"
+                        ),
+                    })
+                    continue
+
+                try:
+                    scheduler.apply_listening_intent(
+                        scheduler_state,
+                        request_text,
+                        user_settings=user_settings,
+                    )
+                except Exception:
+                    user_settings["listening_intent"] = {
+                        "raw_text": request_text,
+                        "keywords": request_text,
+                        "mood": "",
+                    }
+                ack_text = f"好，我往“{request_text}”这个方向给你找。"
+                try:
+                    ack_text = await asyncio.wait_for(
+                        dj_engine.generate_request_ack(
+                            profile,
+                            scene,
+                            request_text,
+                            user_settings=user_settings,
+                        ),
+                        timeout=8.0,
+                    )
+                except Exception:
+                    pass
+                tts_hash_val = await synthesize_intro_text(ack_text)
+                await websocket.send_json({
+                    "type": "dj_message",
+                    "text": ack_text,
+                    "tts_ready": bool(tts_hash_val),
+                    "tts_hash": tts_hash_val,
+                })
+                await fill_queue(max_items=1, allow_program_break=False)
+                await websocket.send_json(request_status_for_ready_item(request_text))
+
     except WebSocketDisconnect:
         if session_id and store:
             try:
@@ -432,6 +666,87 @@ def _fallback_track_to_song(track: dict) -> dict:
         "artist": artist,
         "ar": [{"name": artist}] if artist else [],
     }
+
+
+def _looks_like_specific_song_request(text: str) -> bool:
+    raw = " ".join(str(text or "").split())
+    if not raw:
+        return False
+
+    lowered = raw.lower()
+    target = raw
+    for marker in ("我想听", "想听", "播放", "点一首"):
+        if marker in target:
+            target = target.rsplit(marker, 1)[-1]
+    target = target.strip(" ，,。.!！?？")
+    generic_direction = any(
+        phrase in target
+        for phrase in (
+            "的歌",
+            "的音乐",
+            "的曲子",
+            "的歌曲",
+            "这类歌",
+            "这种歌",
+            "这类音乐",
+            "这种音乐",
+        )
+    ) or target.endswith(("歌", "音乐", "曲子", "歌曲", "歌单"))
+    explicit_song_command = any(
+        marker in raw
+        for marker in ("我想听", "想听", "播放", "点一首")
+    )
+    short_specific_title = (
+        explicit_song_command
+        and not generic_direction
+        and 1 <= len(target) <= 12
+        and any(ch.isalnum() for ch in target)
+    )
+    mood_tokens = (
+        "emo",
+        "不开心",
+        "难过",
+        "低落",
+        "伤心",
+        "开心",
+        "兴奋",
+        "放松",
+        "放空",
+        "安静",
+        "睡前",
+        "夜路",
+        "开车",
+        "工作",
+        "学习",
+        "古典",
+        "摇滚",
+        "爵士",
+        "电子",
+        "民谣",
+    )
+    if short_specific_title:
+        return True
+    if any(token in lowered or token in raw for token in mood_tokens):
+        specific_after_mood = any(
+            marker in raw
+            for marker in ("我想听", "想听", "播放", "点一首")
+        ) and any(
+            marker in raw
+            for marker in ("《", "》", "专辑", "版本", " by ")
+        )
+        if "的" in target and not generic_direction:
+            specific_after_mood = True
+        if not specific_after_mood:
+            return False
+
+    if any(marker in raw for marker in ("《", "》", "专辑", "版本")):
+        return True
+    if explicit_song_command:
+        if generic_direction:
+            return False
+        if len(target) >= 3 and any(ch.isalnum() for ch in target):
+            return True
+    return bool(re.search(r"[A-Za-z].*\s+[-A-Za-z0-9'. ]{2,}", raw))
 
 
 def _artist_name(song: dict | None) -> str:

@@ -40,6 +40,71 @@ class ProfileEngine:
             "source": source,
         }
 
+    def _ensure_radio_insights(
+        self,
+        profile: dict,
+        music_notes: str,
+        anchor_tracks: list[dict],
+        recent_tracks: list[dict],
+    ) -> dict:
+        insights = profile.get("radio_insights")
+        if not isinstance(insights, dict):
+            insights = {}
+
+        traits = profile.get("personality", {}).get("traits", [])
+        if not isinstance(traits, list):
+            traits = []
+        trait_text = "、".join(str(item) for item in traits[:3] if item)
+        anchor_names = [
+            track.get("name", "")
+            for track in anchor_tracks[:3]
+            if isinstance(track, dict) and track.get("name")
+        ]
+        recent_names = [
+            track.get("name", "")
+            for track in recent_tracks[:3]
+            if isinstance(track, dict) and track.get("name")
+        ]
+
+        fallback_summary = "用户的听歌口味偏向熟悉、有人声温度、能承接情绪的歌曲。"
+        if anchor_names:
+            fallback_summary = (
+                f"用户常回到 {('、'.join(anchor_names))} 这类熟悉旋律，"
+                "这些歌更像情绪上的安全地带。"
+            )
+        if trait_text:
+            fallback_summary = f"{fallback_summary} 听感性格可以概括为：{trait_text}。"
+
+        insights.setdefault("taste_summary", fallback_summary)
+        insights.setdefault(
+            "comfort_zone",
+            anchor_names or ["熟悉旋律", "温暖人声", "中低能量情绪歌"],
+        )
+        insights.setdefault(
+            "discovery_direction",
+            [
+                "保持人声温度，但给编曲或语种一点新鲜感",
+                "从熟悉歌手延伸到气质相近的新歌",
+            ],
+        )
+        insights.setdefault(
+            "emotional_hooks",
+            recent_names or anchor_names or ["安静陪伴", "夜晚放松"],
+        )
+        insights.setdefault(
+            "dj_talking_points",
+            [
+                "熟悉的旋律对用户来说不只是怀旧，更像把心放稳的方式。",
+                "介绍新歌时先讲声音质感和情绪落点，比讲大道理更贴近。",
+            ],
+        )
+        if music_notes and "music_notes_read" not in insights:
+            insights["music_notes_read"] = (
+                f"用户补充过：{music_notes[:120]}。主播只把它理解为偏好，不要原句复读。"
+            )
+        profile["radio_insights"] = insights
+        return profile
+
     async def _playlist_tracks(
         self, playlists: list[dict], max_playlists: int = 6
     ) -> list[dict]:
@@ -133,7 +198,14 @@ class ProfileEngine:
     "peak_hours": ["高峰期"],
     "avg_session_guess": "估计平均时长分钟数"
   }},
-  "dj_style_suggestion": "建议的主播风格（一句话）"
+  "dj_style_suggestion": "建议的主播风格（一句话）",
+  "radio_insights": {{
+    "taste_summary": "一句像真人主播会说的听感洞察，不要像标签报告",
+    "comfort_zone": ["用户最容易觉得被懂到的熟悉听感"],
+    "discovery_direction": ["适合从熟悉区往外扩的方向"],
+    "emotional_hooks": ["哪些歌或声音可能对用户有情绪意义"],
+    "dj_talking_points": ["主播可以自然引用的具体观察，禁止说根据画像"]
+  }}
 }}"""
 
         response = await self.llm.chat(prompt, max_tokens=800)
@@ -164,13 +236,21 @@ class ProfileEngine:
                 "dj_style_suggestion": "自然温暖",
             }
 
-        profile["anchor_tracks"] = [
+        anchor_tracks = [
             self._compact_track(song, "playlist") for song in valid_playlist_tracks[:40]
         ]
-        profile["recent_tracks"] = [
+        recent_tracks = [
             self._compact_track(song, "recent") for song in recent_song_items[:30]
         ]
+        profile["anchor_tracks"] = anchor_tracks
+        profile["recent_tracks"] = recent_tracks
         profile["liked_track_ids"] = [str(song_id) for song_id in (liked or [])[:500]]
+        profile = self._ensure_radio_insights(
+            profile,
+            music_notes,
+            anchor_tracks,
+            recent_tracks,
+        )
 
         await self.store.save_profile(str(uid), profile)
         return profile

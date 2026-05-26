@@ -26,6 +26,8 @@ const onboardingSteps = ['voice', 'notes', 'mode'];
 const audioMain = document.getElementById('audio-main');
 const audioTTS = document.getElementById('audio-tts');
 const volumeSlider = document.getElementById('volume-slider');
+const requestForm = document.getElementById('request-form');
+const requestInput = document.getElementById('request-input');
 
 audioMain.volume = userVolume;
 audioTTS.volume = 0.9;
@@ -456,6 +458,9 @@ function connectWebSocket() {
       type: 'handshake',
       uid: uid,
       utc_offset: -new Date().getTimezoneOffset(),
+      timezone_name: Intl.DateTimeFormat().resolvedOptions().timeZone || '',
+      locale: navigator.language || 'zh-CN',
+      region_hint: inferRegionHint(),
       settings: onboardingSettings,
     }));
   };
@@ -555,7 +560,40 @@ async function handleMessage(msg) {
       }, 5000);
       break;
     }
+
+    case 'dj_message': {
+      if (msg.text) {
+        if (msg.tts_ready && msg.tts_hash) {
+          playTTS(msg.tts_hash, msg.text);
+        } else {
+          document.getElementById('dj-text').textContent = msg.text;
+        }
+      }
+      break;
+    }
+
+    case 'request_status': {
+      if (msg.text) {
+        document.getElementById('dj-text').textContent = msg.text;
+      }
+      break;
+    }
   }
+}
+
+function inferRegionHint() {
+  const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || '';
+  const language = navigator.language || '';
+  if (timezone === 'Asia/Shanghai' || language.toLowerCase().includes('cn')) {
+    return '中国大陆';
+  }
+  if (timezone === 'Asia/Hong_Kong') return '香港';
+  if (timezone === 'Asia/Taipei') return '台湾';
+  if (timezone === 'Asia/Tokyo') return '日本';
+  if (timezone === 'Asia/Seoul') return '韩国';
+  if (timezone.startsWith('America/')) return '北美';
+  if (timezone.startsWith('Europe/')) return '欧洲';
+  return '';
 }
 
 // ---- Audio Events ----
@@ -604,6 +642,19 @@ document.getElementById('btn-skip').addEventListener('click', () => {
     ws.send(JSON.stringify({ type: 'skip' }));
   }
 });
+
+if (requestForm && requestInput) {
+  requestForm.addEventListener('submit', (event) => {
+    event.preventDefault();
+    const text = requestInput.value.trim();
+    if (!text) return;
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'song_request', text }));
+      requestInput.value = '';
+      document.getElementById('dj-text').textContent = '我听到了，正在把频率往这个方向调。';
+    }
+  });
+}
 
 volumeSlider.addEventListener('input', (e) => {
   userVolume = clampVolume(e.target.value / 100);

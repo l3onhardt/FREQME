@@ -8,6 +8,8 @@ class FakeNetease:
         self.similar = []
         self.daily = []
         self.fm = []
+        self.search_results = []
+        self.search_calls = []
         self.raw_similar = None
         self.raw_daily = None
         self.raw_fm = None
@@ -36,6 +38,10 @@ class FakeNetease:
         if self.raw_fm is not None:
             return self.raw_fm
         return list(self.fm)
+
+    async def search(self, keywords, limit=5):
+        self.search_calls.append({"keywords": keywords, "limit": limit})
+        return list(self.search_results)
 
     async def song_url(self, song_id):
         return self.urls.get(str(song_id), "")
@@ -81,6 +87,137 @@ class SchedulerPersonalizedPickTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(song["ar"][0]["name"], "Anchor Artist")
         self.assertEqual(song["selection_reason"]["type"], "familiar_anchor")
         self.assertIn("Anchor One", song["selection_reason"]["text"])
+
+    async def test_request_intent_searches_before_profile_anchor_and_keeps_short_term_direction(self):
+        netease = FakeNetease()
+        netease.search_results = [
+            {"id": "request-1", "name": "Night Drive", "ar": [{"name": "City Singer"}]},
+        ]
+        scheduler = self.make_scheduler(netease=netease)
+        state = scheduler.new_session_state()
+        profile = self.profile_with_anchors(
+            {"id": "anchor-1", "name": "Anchor One", "artist": "Anchor Artist"}
+        )
+
+        song = await scheduler.pick_next(
+            profile=profile,
+            user_settings={
+                "listening_intent": {
+                    "raw_text": "想听夜路上放空的歌",
+                    "keywords": "夜路 放空",
+                    "mood": "城市夜行",
+                }
+            },
+            session_state=state,
+        )
+
+        self.assertEqual(song["id"], "request-1")
+        self.assertEqual(netease.search_calls[0]["keywords"], "夜晚 放空 开车")
+        self.assertEqual(song["selection_reason"]["type"], "request_intent")
+        self.assertIn("想听夜路上放空的歌", song["selection_reason"]["text"])
+        self.assertEqual(state.intent_picks_remaining, 3)
+
+    async def test_request_intent_falls_back_to_normal_flow_when_search_has_no_candidates(self):
+        netease = FakeNetease()
+        scheduler = self.make_scheduler(netease=netease)
+        profile = self.profile_with_anchors(
+            {"id": "anchor-1", "name": "Anchor One", "artist": "Anchor Artist"}
+        )
+
+        song = await scheduler.pick_next(
+            profile=profile,
+            user_settings={"listening_intent": {"raw_text": "想听海边", "keywords": "海边"}},
+        )
+
+        self.assertEqual(song["id"], "anchor-1")
+        self.assertEqual(netease.search_calls[0]["keywords"], "海边")
+        self.assertEqual(song["selection_reason"]["type"], "familiar_anchor")
+
+    async def test_request_intent_turns_emo_sentence_into_focused_search_terms(self):
+        netease = FakeNetease()
+        netease.search_results = [
+            {"id": "emo-1", "name": "Sad Song", "ar": [{"name": "Soft Singer"}]},
+        ]
+        scheduler = self.make_scheduler(netease=netease)
+
+        song = await scheduler.pick_next(
+            profile={},
+            user_settings={
+                "listening_intent": {
+                    "raw_text": "我不是很开心，放点emo的",
+                    "keywords": "我不是很开心，放点emo的",
+                }
+            },
+            session_state=scheduler.new_session_state(),
+        )
+
+        self.assertEqual(song["id"], "emo-1")
+        self.assertEqual(netease.search_calls[0]["keywords"], "emo 伤感 不开心")
+
+    async def test_request_intent_does_not_search_raw_i_want_sentence(self):
+        netease = FakeNetease()
+        scheduler = self.make_scheduler(netease=netease)
+        scheduler._fallback_queue = [
+            {"id": "fallback-ok", "name": "Fallback OK", "ar": [{"name": "Fallback Artist"}]}
+        ]
+
+        song = await scheduler.pick_next(
+            profile={},
+            user_settings={
+                "listening_intent": {
+                    "raw_text": "我想听李云迪的普2",
+                    "keywords": "我想听李云迪的普2",
+                }
+            },
+            session_state=scheduler.new_session_state(),
+        )
+
+        self.assertEqual(song["id"], "fallback-ok")
+        self.assertNotIn(
+            "我想听李云迪的普2",
+            [call["keywords"] for call in netease.search_calls],
+        )
+
+    async def test_brain_negative_feedback_prefers_profile_candidate_without_search(self):
+        netease = FakeNetease()
+        scheduler = self.make_scheduler(netease=netease)
+        state = scheduler.new_session_state()
+        profile = self.profile_with_anchors(
+            {
+                "id": "anchor-cn",
+                "name": "中文歌",
+                "artist": "华语歌手",
+                "language": "中文",
+            },
+            {
+                "id": "anchor-en",
+                "name": "Exit Music",
+                "artist": "Radiohead",
+                "language": "英文",
+            },
+        )
+
+        song = await scheduler.pick_next(
+            profile=profile,
+            user_settings={
+                "radio_brain": {
+                    "decision": {
+                        "intent_type": "negative_feedback",
+                        "raw_text": "能不能不要放这些中文歌了",
+                        "candidate_strategy": "profile_first",
+                        "allow_search": False,
+                        "avoid_languages": ["中文"],
+                        "avoid_styles": ["华语流行", "热门流行", "口水歌"],
+                        "duration_tracks": 5,
+                    }
+                }
+            },
+            session_state=state,
+        )
+
+        self.assertEqual(song["id"], "anchor-en")
+        self.assertEqual(song["selection_reason"]["type"], "radio_brain_profile")
+        self.assertEqual(netease.search_calls, [])
 
     async def test_recent_or_session_played_anchors_are_skipped_before_discovery(self):
         netease = FakeNetease()

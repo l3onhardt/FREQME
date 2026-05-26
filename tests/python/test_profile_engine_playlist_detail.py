@@ -246,6 +246,9 @@ class ProfileEnginePlaylistDetailTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("最近想听安静、熟悉一点的歌。", llm.prompts[0])
         self.assertIn("晴天", llm.prompts[0])
         self.assertIn("The Scientist", llm.prompts[0])
+        self.assertIn("taste_summary", llm.prompts[0])
+        self.assertIn("dj_talking_points", llm.prompts[0])
+        self.assertIn("comfort_zone", llm.prompts[0])
 
         self.assertEqual(
             profile["anchor_tracks"],
@@ -288,6 +291,11 @@ class ProfileEnginePlaylistDetailTest(unittest.IsolatedAsyncioTestCase):
             ],
         )
         self.assertEqual(profile["liked_track_ids"], ["3001", "4002"])
+        self.assertIn("radio_insights", profile)
+        self.assertIn("taste_summary", profile["radio_insights"])
+        self.assertIn("comfort_zone", profile["radio_insights"])
+        self.assertIn("discovery_direction", profile["radio_insights"])
+        self.assertIn("dj_talking_points", profile["radio_insights"])
         self.assertNotIn("", [track["id"] for track in profile["anchor_tracks"]])
         self.assertNotIn("", [track["id"] for track in profile["recent_tracks"]])
         self.assertNotIn("Missing Playlist Id", llm.prompts[0])

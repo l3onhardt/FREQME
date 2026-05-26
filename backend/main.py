@@ -18,6 +18,8 @@ from backend.engines.profile import ProfileEngine
 from backend.engines.dj import DJEngine
 from backend.engines.scheduler import StreamScheduler
 from backend.engines.audio_resolver import AudioResolver
+from backend.engines.song_request_agent import SongRequestAgent
+from backend.engines.radio_brain import RadioBrain
 from backend.api import auth, radio, ws
 
 settings = get_settings()
@@ -64,6 +66,8 @@ async def lifespan(app: FastAPI):
     dj_eng = DJEngine(llm_router, store)
     sched = StreamScheduler(netease_adapter, store, bus)
     audio_resolver = AudioResolver(netease_adapter, store)
+    request_agent = SongRequestAgent(llm_router, netease_adapter, llm_timeout_s=5.0)
+    radio_brain = RadioBrain()
     comp = ContextCompressor()
 
     # Wire module globals
@@ -86,6 +90,8 @@ async def lifespan(app: FastAPI):
     ws.dj_engine = dj_eng
     ws.scheduler = sched
     ws.audio_resolver = audio_resolver
+    ws.request_agent = request_agent
+    ws.radio_brain = radio_brain
     ws.store = store
     ws.bus = bus
     ws.compressor = comp

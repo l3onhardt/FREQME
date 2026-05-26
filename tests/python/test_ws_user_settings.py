@@ -3,6 +3,7 @@ import json
 import unittest
 
 from backend.api import auth, ws
+from backend.engines.radio_brain import RadioBrain
 
 
 class FakeWebSocket:
@@ -27,6 +28,7 @@ class FakeStore:
         self.stored_settings = stored_settings
         self.logged_tracks = []
         self.recent_playable_tracks = []
+        self.playback_events = []
 
     async def get_user_settings(self, uid):
         return self.stored_settings
@@ -43,6 +45,20 @@ class FakeStore:
     async def log_track(self, track_id, name, artist, source, uid=None):
         self.logged_tracks.append((track_id, name, artist, source, uid))
 
+    async def log_playback_event(
+        self,
+        event_type,
+        song_id=None,
+        uid=None,
+        reason="",
+    ):
+        self.playback_events.append({
+            "event_type": event_type,
+            "song_id": song_id,
+            "uid": uid,
+            "reason": reason,
+        })
+
     async def get_recent_playable_tracks(self, uid=None, limit=20):
         return self.recent_playable_tracks[:limit]
 
@@ -51,6 +67,7 @@ class FakeDJEngine:
     def __init__(self):
         self.intro_calls = []
         self.segue_calls = []
+        self.request_ack_calls = []
 
     def detect_scene(self, utc_offset):
         return "daily"
@@ -99,6 +116,15 @@ class FakeDJEngine:
         })
         return "program break"
 
+    async def generate_request_ack(self, profile, scene, request_text, user_settings=None):
+        self.request_ack_calls.append({
+            "profile": profile,
+            "scene": scene,
+            "request_text": request_text,
+            "user_settings": user_settings,
+        })
+        return f"好，我往{request_text}这个方向找。"
+
 
 class FailingIntroDJEngine(FakeDJEngine):
     async def generate_intro(self, profile, scene, user_settings=None):
@@ -140,6 +166,41 @@ class FakeTTS:
         return f"hash-{text}"
 
 
+class FakeRequestPick:
+    def __init__(self, found=True, song=None, dj_intro="", interpreted_request=""):
+        self.found = found
+        self.song = song or {}
+        self.dj_intro = dj_intro
+        self.interpreted_request = interpreted_request
+
+
+class FakeRequestAgent:
+    def __init__(self, result):
+        self.result = result
+        self.calls = []
+
+    async def resolve(self, request_text, profile=None, user_settings=None):
+        self.calls.append({
+            "request_text": request_text,
+            "profile": profile,
+            "user_settings": user_settings,
+        })
+        return self.result
+
+
+class RecordingRadioBrain(RadioBrain):
+    def __init__(self):
+        self.calls = []
+
+    def interpret_user_text(self, text, profile=None, user_settings=None):
+        self.calls.append({
+            "text": text,
+            "profile": profile,
+            "user_settings": user_settings,
+        })
+        return super().interpret_user_text(text, profile=profile, user_settings=user_settings)
+
+
 class FailingSegueTTS(FakeTTS):
     async def synthesize(
         self,
@@ -170,6 +231,7 @@ class FakeScheduler:
             {"id": "fourth", "name": "Fourth Song", "ar": [{"name": "Fourth Artist"}]},
             {"id": "fifth", "name": "Fifth Song", "ar": [{"name": "Fifth Artist"}]},
         ]
+        self.intent_updates = []
 
     def new_session_state(self):
         state = {"fake_scheduler_state": len(self.session_states) + 1}
@@ -191,7 +253,34 @@ class FakeScheduler:
             "session_state": session_state,
             "uid": uid,
         })
-        return self.songs.pop(0)
+        song = self.songs.pop(0)
+        if (
+            isinstance(user_settings, dict)
+            and isinstance(user_settings.get("listening_intent"), dict)
+        ):
+            song = dict(song)
+            song["selection_reason"] = {
+                "type": "request_intent",
+                "text": "回应刚刚点歌的方向。",
+            }
+        return song
+
+    def apply_listening_intent(self, session_state, request_text, user_settings=None):
+        intent = {
+            "raw_text": request_text,
+            "keywords": request_text,
+            "mood": "",
+        }
+        self.intent_updates.append({
+            "session_state": session_state,
+            "request_text": request_text,
+            "user_settings": user_settings,
+        })
+        if isinstance(user_settings, dict):
+            user_settings["listening_intent"] = intent
+        if isinstance(session_state, dict):
+            session_state["listening_intent"] = intent
+        return intent
 
     async def get_song_url(self, song):
         return f"https://example.test/{song['id']}.mp3"
@@ -218,6 +307,49 @@ class EndlessUnplayableScheduler(FakeScheduler):
             "name": "Unplayable",
             "ar": [{"name": "No Audio"}],
         }
+
+
+class BlockingPrewarmScheduler(FakeScheduler):
+    def __init__(self):
+        super().__init__()
+        self.songs = [
+            {"id": "first", "name": "First Song", "ar": [{"name": "First Artist"}]},
+            {"id": "second", "name": "Second Song", "ar": [{"name": "Second Artist"}]},
+            {"id": "third", "name": "Third Song", "ar": [{"name": "Third Artist"}]},
+            {"id": "intent", "name": "Intent Song", "ar": [{"name": "Intent Artist"}]},
+        ]
+        self.blocking_started = asyncio.Event()
+        self.release_block = asyncio.Event()
+        self.cancelled_old_prewarm = False
+
+    async def pick_next(
+        self,
+        current_song_id=None,
+        profile=None,
+        user_settings=None,
+        session_state=None,
+        uid=None,
+    ):
+        self.pick_next_calls.append({
+            "current_song_id": current_song_id,
+            "profile": profile,
+            "user_settings": user_settings,
+            "session_state": session_state,
+            "uid": uid,
+        })
+        if len(self.pick_next_calls) == 4:
+            self.blocking_started.set()
+            try:
+                await self.release_block.wait()
+            except asyncio.CancelledError:
+                self.cancelled_old_prewarm = True
+                raise
+            return {
+                "id": "stale",
+                "name": "Stale Prewarm",
+                "ar": [{"name": "Old Direction"}],
+            }
+        return self.songs.pop(0)
 
 
 class MostlyFailingResolver:
@@ -293,6 +425,8 @@ class WebSocketUserSettingsTests(unittest.IsolatedAsyncioTestCase):
             "compressor": ws.compressor,
             "profile_engine": ws.profile_engine,
             "audio_resolver": ws.audio_resolver,
+            "request_agent": ws.request_agent,
+            "radio_brain": ws.radio_brain,
             "auth_netease": auth.netease,
         }
         self.addCleanup(self._restore_ws_globals)
@@ -563,6 +697,279 @@ class WebSocketUserSettingsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(segue["text"], "program break")
         self.assertFalse(segue["tts_ready"])
         self.assertEqual(segue["tts_hash"], "")
+
+    async def test_ws_song_request_updates_intent_and_sends_dj_ack_without_restarting_playback(self):
+        fake_store = FakeStore({"voice_preset": "warm_male"})
+        fake_dj = FakeDJEngine()
+        fake_tts = FakeTTS()
+        fake_scheduler = FakeScheduler()
+        fake_websocket = FakeWebSocket([
+            {"type": "handshake", "uid": "42", "settings": {}},
+            {"type": "song_request", "text": "想听夜路上放空的歌"},
+            {"type": "track_ended"},
+        ])
+
+        ws.store = fake_store
+        ws.dj_engine = fake_dj
+        ws.tts = fake_tts
+        ws.scheduler = fake_scheduler
+        ws.compressor = FakeCompressor()
+        ws.profile_engine = None
+
+        await ws.ws_handler(fake_websocket)
+
+        self.assertEqual(fake_scheduler.intent_updates[0]["request_text"], "想听夜路上放空的歌")
+        self.assertEqual(
+            fake_scheduler.pick_next_calls[-1]["user_settings"]["listening_intent"]["raw_text"],
+            "想听夜路上放空的歌",
+        )
+        self.assertEqual(fake_dj.request_ack_calls[0]["request_text"], "想听夜路上放空的歌")
+        intent_messages = [
+            payload for payload in fake_websocket.sent
+            if payload["type"] == "dj_message"
+        ]
+        self.assertEqual(intent_messages[0]["text"], "好，我往想听夜路上放空的歌这个方向找。")
+        request_statuses = [
+            payload for payload in fake_websocket.sent
+            if payload["type"] == "request_status"
+        ]
+        self.assertEqual(request_statuses[0]["status"], "ready")
+        self.assertIn(request_statuses[0]["next_track"]["id"], {"second", "third"})
+        self.assertIn("下一首", request_statuses[0]["text"])
+        request_events = [
+            event for event in fake_store.playback_events
+            if event["event_type"] == "song_request"
+        ]
+        self.assertEqual(request_events[0]["reason"], "想听夜路上放空的歌")
+
+    async def test_ws_negative_feedback_uses_radio_brain_without_specific_search(self):
+        fake_store = FakeStore({"voice_preset": "warm_male"})
+        fake_dj = FakeDJEngine()
+        fake_tts = FakeTTS()
+        fake_scheduler = FakeScheduler()
+        fake_agent = FakeRequestAgent(FakeRequestPick(
+            found=True,
+            song={
+                "id": "wrong",
+                "name": "能不能不要说再见",
+                "ar": [{"name": "Wrong Artist"}],
+            },
+            dj_intro="错误的点歌结果。",
+        ))
+        fake_brain = RecordingRadioBrain()
+        fake_websocket = FakeWebSocket([
+            {"type": "handshake", "uid": "42", "settings": {}},
+            {"type": "song_request", "text": "能不能不要放这些中文歌了"},
+        ])
+
+        ws.store = fake_store
+        ws.dj_engine = fake_dj
+        ws.tts = fake_tts
+        ws.scheduler = fake_scheduler
+        ws.request_agent = fake_agent
+        ws.radio_brain = fake_brain
+        ws.compressor = FakeCompressor()
+        ws.profile_engine = None
+
+        await ws.ws_handler(fake_websocket)
+
+        self.assertEqual(fake_agent.calls, [])
+        self.assertEqual(fake_brain.calls[0]["text"], "能不能不要放这些中文歌了")
+        brain_settings = fake_scheduler.pick_next_calls[-1]["user_settings"]["radio_brain"]
+        self.assertEqual(brain_settings["decision"]["intent_type"], "negative_feedback")
+        self.assertIn("中文", brain_settings["decision"]["avoid_languages"])
+        dj_messages = [
+            payload for payload in fake_websocket.sent
+            if payload["type"] == "dj_message"
+        ]
+        self.assertIn("中文", dj_messages[0]["text"])
+
+    async def test_ws_song_request_plays_agent_selected_version_with_dj_intro(self):
+        fake_store = FakeStore({"voice_preset": "warm_male"})
+        fake_dj = FakeDJEngine()
+        fake_tts = FakeTTS()
+        fake_scheduler = FakeScheduler()
+        fake_agent = FakeRequestAgent(FakeRequestPick(
+            found=True,
+            song={
+                "id": "p2-yundi",
+                "name": "Piano Concerto No. 2 in G minor",
+                "ar": [{"name": "李云迪"}],
+                "selection_reason": {
+                    "type": "request_agent",
+                    "text": "AI 主播选择的李云迪版本。",
+                },
+            },
+            dj_intro="我给你选李云迪这个版本的普罗科菲耶夫第二钢琴协奏曲。这个录音的钢琴颗粒很硬，适合现在这种想往古典里沉一下的时刻。",
+            interpreted_request="普罗科菲耶夫第二钢琴协奏曲，偏李云迪版本",
+        ))
+        fake_websocket = FakeWebSocket([
+            {"type": "handshake", "uid": "42", "settings": {}},
+            {"type": "song_request", "text": "放点古典，我想听李云迪的普2"},
+        ])
+
+        ws.store = fake_store
+        ws.dj_engine = fake_dj
+        ws.tts = fake_tts
+        ws.scheduler = fake_scheduler
+        ws.request_agent = fake_agent
+        ws.compressor = FakeCompressor()
+        ws.profile_engine = None
+
+        await ws.ws_handler(fake_websocket)
+
+        self.assertEqual(
+            fake_agent.calls[0]["request_text"],
+            "放点古典，我想听李云迪的普2",
+        )
+        self.assertEqual(fake_scheduler.intent_updates, [])
+        self.assertEqual(fake_dj.request_ack_calls, [])
+        segues = [
+            payload for payload in fake_websocket.sent
+            if payload["type"] == "segue"
+        ]
+        self.assertEqual(segues[0]["text"], fake_agent.result.dj_intro)
+        self.assertEqual(segues[0]["next_track"]["id"], "p2-yundi")
+        self.assertEqual(segues[0]["url"], "https://example.test/p2-yundi.mp3")
+        self.assertTrue(segues[0]["tts_ready"])
+        self.assertEqual(fake_store.logged_tracks[-1][0], "p2-yundi")
+
+    async def test_ws_specific_song_request_does_not_fall_back_to_raw_search_when_agent_misses(self):
+        fake_store = FakeStore({"voice_preset": "warm_male"})
+        fake_dj = FakeDJEngine()
+        fake_tts = FakeTTS()
+        fake_scheduler = FakeScheduler()
+        fake_scheduler.songs = [
+            {"id": "first", "name": "First Song", "ar": [{"name": "First Artist"}]},
+            {"id": "wrong", "name": "想听", "ar": [{"name": "Wrong Artist"}]},
+        ]
+        fake_agent = FakeRequestAgent(FakeRequestPick(
+            found=False,
+            interpreted_request="李云迪演奏的普罗科菲耶夫第二钢琴协奏曲",
+        ))
+        fake_websocket = FakeWebSocket([
+            {"type": "handshake", "uid": "42", "settings": {}},
+            {"type": "song_request", "text": "我想听李云迪的普2"},
+        ])
+
+        ws.store = fake_store
+        ws.dj_engine = fake_dj
+        ws.tts = fake_tts
+        ws.scheduler = fake_scheduler
+        ws.request_agent = fake_agent
+        ws.compressor = FakeCompressor()
+        ws.profile_engine = None
+
+        await ws.ws_handler(fake_websocket)
+
+        self.assertEqual(fake_agent.calls[0]["request_text"], "我想听李云迪的普2")
+        self.assertEqual(fake_scheduler.intent_updates, [])
+        self.assertEqual(fake_dj.request_ack_calls, [])
+        request_statuses = [
+            payload for payload in fake_websocket.sent
+            if payload["type"] == "request_status"
+        ]
+        self.assertEqual(request_statuses[0]["status"], "not_found")
+        self.assertNotIn("找到了", request_statuses[0]["text"])
+        self.assertNotIn("想听", request_statuses[0].get("next_track", {}).get("name", ""))
+
+    async def test_ws_short_title_request_does_not_become_mood_direction_when_agent_misses(self):
+        fake_store = FakeStore({"voice_preset": "warm_male"})
+        fake_dj = FakeDJEngine()
+        fake_tts = FakeTTS()
+        fake_scheduler = FakeScheduler()
+        fake_scheduler.songs = [
+            {"id": "first", "name": "First Song", "ar": [{"name": "First Artist"}]},
+            {"id": "wrong", "name": "Вечера", "ar": [{"name": "Wrong Artist"}]},
+        ]
+        fake_agent = FakeRequestAgent(FakeRequestPick(
+            found=False,
+            interpreted_request="夜曲",
+        ))
+        fake_websocket = FakeWebSocket([
+            {"type": "handshake", "uid": "42", "settings": {}},
+            {"type": "song_request", "text": "我想听夜曲"},
+        ])
+
+        ws.store = fake_store
+        ws.dj_engine = fake_dj
+        ws.tts = fake_tts
+        ws.scheduler = fake_scheduler
+        ws.request_agent = fake_agent
+        ws.compressor = FakeCompressor()
+        ws.profile_engine = None
+
+        await ws.ws_handler(fake_websocket)
+
+        self.assertEqual(fake_agent.calls[0]["request_text"], "我想听夜曲")
+        self.assertEqual(fake_scheduler.intent_updates, [])
+        request_statuses = [
+            payload for payload in fake_websocket.sent
+            if payload["type"] == "request_status"
+        ]
+        self.assertEqual(request_statuses[0]["status"], "not_found")
+        self.assertNotIn("往这个方向靠", request_statuses[0]["text"])
+        self.assertNotIn("Вечера", request_statuses[0].get("next_track", {}).get("name", ""))
+
+    async def test_ws_song_request_tells_user_when_no_matching_song_is_ready(self):
+        fake_store = FakeStore({"voice_preset": "warm_male"})
+        fake_scheduler = EndlessUnplayableScheduler()
+        fake_resolver = MostlyFailingResolver()
+        fake_websocket = FakeWebSocket([
+            {"type": "handshake", "uid": "42", "settings": {}},
+            {"type": "song_request", "text": "我不是很开心，放点emo的"},
+        ])
+
+        ws.store = fake_store
+        ws.dj_engine = FakeDJEngine()
+        ws.tts = FakeTTS()
+        ws.scheduler = fake_scheduler
+        ws.compressor = FakeCompressor()
+        ws.profile_engine = None
+        ws.audio_resolver = fake_resolver
+
+        await asyncio.wait_for(ws.ws_handler(fake_websocket), timeout=1.0)
+
+        request_statuses = [
+            payload for payload in fake_websocket.sent
+            if payload["type"] == "request_status"
+        ]
+        self.assertEqual(request_statuses[0]["status"], "fallback")
+        self.assertIn("没找到特别准", request_statuses[0]["text"])
+
+    async def test_ws_song_request_cancels_old_background_prewarm_before_refilling(self):
+        fake_store = FakeStore({"voice_preset": "warm_male"})
+        fake_scheduler = BlockingPrewarmScheduler()
+
+        class RequestDuringPrewarmWebSocket(FakeWebSocket):
+            async def iter_text(self):
+                yield json.dumps({"type": "handshake", "uid": "42", "settings": {}})
+                yield json.dumps({"type": "track_ended"})
+                yield json.dumps({"type": "track_ended"})
+                await asyncio.wait_for(fake_scheduler.blocking_started.wait(), timeout=1.0)
+                yield json.dumps({"type": "song_request", "text": "想听夜路上放空的歌"})
+                fake_scheduler.release_block.set()
+                yield json.dumps({"type": "track_ended"})
+
+        fake_websocket = RequestDuringPrewarmWebSocket([])
+
+        ws.store = fake_store
+        ws.dj_engine = FakeDJEngine()
+        ws.tts = FakeTTS()
+        ws.scheduler = fake_scheduler
+        ws.compressor = FakeCompressor()
+        ws.profile_engine = None
+
+        await asyncio.wait_for(ws.ws_handler(fake_websocket), timeout=1.0)
+
+        self.assertTrue(fake_scheduler.cancelled_old_prewarm)
+        played_ids = [
+            payload["track"]["id"]
+            for payload in fake_websocket.sent
+            if payload["type"] == "play_track"
+        ]
+        self.assertIn("intent", played_ids)
+        self.assertNotIn("stale", played_ids)
 
     async def test_ws_rejects_handshake_uid_that_does_not_match_active_login(self):
         async def login_status():

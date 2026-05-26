@@ -1,9 +1,11 @@
 import random
+import re
 from dataclasses import dataclass, field
 
 from backend.adapters.netease import NeteaseAdapter
 from backend.memory.store import MemoryStore
 from backend.core.event_bus import EventBus
+from backend.engines.radio_brain import RadioBrain
 
 
 # 兜底歌单 — 网易云歌曲ID，无需登录即可播放
@@ -36,6 +38,8 @@ class SchedulerSessionState:
     played_song_ids: set[str] = field(default_factory=set)
     artist_names: list[str] = field(default_factory=list)
     pick_count: int = 0
+    listening_intent: dict = field(default_factory=dict)
+    intent_picks_remaining: int = 0
 
 
 class StreamScheduler:
@@ -44,6 +48,7 @@ class StreamScheduler:
         self.store = store
         self.bus = bus
         self._fallback_queue: list[dict] = []
+        self.radio_brain = RadioBrain()
 
     def _shuffle_fallback(self):
         self._fallback_queue = random.sample(FALLBACK_PLAYLIST, len(FALLBACK_PLAYLIST))
@@ -98,6 +103,8 @@ class StreamScheduler:
         }
         if track.get("source"):
             song["source"] = track.get("source")
+        if track.get("language"):
+            song["language"] = track.get("language")
         return song
 
     def _with_reason(self, song: dict, reason_type: str, text: str) -> dict:
@@ -178,6 +185,147 @@ class StreamScheduler:
     ) -> bool:
         return not current_song_id or state.pick_count % 4 == 0
 
+    def apply_listening_intent(
+        self,
+        session_state: SchedulerSessionState,
+        request_text: str,
+        user_settings: dict | None = None,
+    ) -> dict:
+        clean_text = " ".join(str(request_text or "").strip().split())[:120]
+        keywords = self._normalize_request_keywords(clean_text)
+        intent = {
+            "raw_text": clean_text,
+            "keywords": keywords,
+            "mood": "",
+        }
+        if session_state:
+            session_state.listening_intent = intent
+            session_state.intent_picks_remaining = 4
+        if isinstance(user_settings, dict):
+            user_settings["listening_intent"] = intent
+        return intent
+
+    def _normalize_request_keywords(self, text: str) -> str:
+        raw = " ".join(str(text or "").strip().split())[:120]
+        lowered = raw.lower()
+        terms = []
+
+        def add(term: str) -> None:
+            if term and term not in terms:
+                terms.append(term)
+
+        if "emo" in lowered:
+            add("emo")
+            add("伤感")
+        if any(token in raw for token in ("不开心", "难过", "低落", "emo", "伤心")):
+            add("不开心")
+        if any(token in raw for token in ("夜", "深夜", "夜路", "晚上")):
+            add("夜晚")
+        if any(token in raw for token in ("放空", "发呆", "安静")):
+            add("放空")
+        if any(token in raw for token in ("开车", "路上", "夜路")):
+            add("开车")
+
+        if terms:
+            return " ".join(terms)[:120]
+        if self._looks_like_specific_song_request(raw):
+            return ""
+        return raw
+
+    def _looks_like_specific_song_request(self, text: str) -> bool:
+        raw = str(text or "").strip()
+        if not raw:
+            return False
+        request_markers = ("我想听", "想听", "放点", "来点", "播放", "点一首")
+        specific_markers = ("的", "《", "》", "专辑", "版本")
+        if any(marker in raw for marker in request_markers) and any(
+            marker in raw for marker in specific_markers
+        ):
+            return True
+        return bool(re.search(r"[A-Za-z].*\s+[-A-Za-z0-9'. ]{2,}", raw))
+
+    def _intent_from_settings(
+        self,
+        user_settings: dict | None,
+        state: SchedulerSessionState,
+    ) -> dict:
+        if state.listening_intent:
+            return state.listening_intent
+        if isinstance(user_settings, dict) and isinstance(
+            user_settings.get("listening_intent"),
+            dict,
+        ):
+            state.listening_intent = user_settings["listening_intent"]
+            if state.intent_picks_remaining <= 0:
+                state.intent_picks_remaining = 4
+            return state.listening_intent
+        return {}
+
+    def _intent_keywords(self, intent: dict) -> str:
+        if not isinstance(intent, dict):
+            return ""
+        keywords = intent.get("keywords") or intent.get("raw_text") or ""
+        return self._normalize_request_keywords(str(keywords))
+
+    def _intent_reason_text(self, intent: dict) -> str:
+        raw_text = ""
+        if isinstance(intent, dict):
+            raw_text = str(intent.get("raw_text") or "").strip()
+        if raw_text:
+            return f"回应你刚刚说“{raw_text}”，先沿着这个方向找一首贴近的歌。"
+        return "先沿着你刚刚点的方向找一首贴近的歌。"
+
+    def _radio_brain_decision(self, user_settings: dict | None) -> dict:
+        if not isinstance(user_settings, dict):
+            return {}
+        brain_state = user_settings.get("radio_brain")
+        if not isinstance(brain_state, dict):
+            return {}
+        decision = brain_state.get("decision")
+        return decision if isinstance(decision, dict) else {}
+
+    def _profile_brain_candidates(self, profile: dict | None) -> list[dict]:
+        if not isinstance(profile, dict):
+            return []
+        candidates = []
+        for source_key, source in (
+            ("anchor_tracks", "profile_anchor"),
+            ("recent_tracks", "profile_recent"),
+        ):
+            for track in self._pool_list(profile.get(source_key)):
+                song = self._profile_track_to_song(track)
+                if not song:
+                    continue
+                song["source"] = source
+                candidates.append(song)
+        return candidates
+
+    async def _choose_radio_brain_profile_candidate(
+        self,
+        profile: dict | None,
+        decision: dict,
+        recent_ids: set[str],
+        recent_artists: set[str],
+        uid: str | None = None,
+    ) -> dict | None:
+        if decision.get("candidate_strategy") != "profile_first":
+            return None
+        candidates = self._profile_brain_candidates(profile)
+        if not candidates:
+            return None
+        taste = self.radio_brain.distill_taste(profile)
+        ranked = self.radio_brain.rank_candidates(candidates, taste, decision)
+        return await self._choose_candidate_async(ranked, recent_ids, recent_artists, uid=uid)
+
+    def _radio_brain_reason_text(self, decision: dict) -> str:
+        ack = str(decision.get("ack_text") or "").strip()
+        if ack:
+            return ack
+        raw_text = str(decision.get("raw_text") or "").strip()
+        if raw_text:
+            return f"回应你刚刚说“{raw_text}”，先从你的歌单里换一条更贴近的线。"
+        return "先按你的听感反馈，从你的歌单里换一条更贴近的线。"
+
     async def pick_next(
         self,
         current_song_id: str | None = None,
@@ -202,7 +350,45 @@ class StreamScheduler:
             selected = self._with_reason(song, reason_type, text)
             self._remember_played(selected, state)
             state.pick_count += 1
+            if reason_type == "request_intent" and state.intent_picks_remaining > 0:
+                state.intent_picks_remaining -= 1
             return selected
+
+        brain_decision = self._radio_brain_decision(user_settings)
+        if brain_decision:
+            song = await self._choose_radio_brain_profile_candidate(
+                profile,
+                brain_decision,
+                recent,
+                recent_artists,
+                uid=uid,
+            )
+            if song:
+                return _select(
+                    song,
+                    "radio_brain_profile",
+                    self._radio_brain_reason_text(brain_decision),
+                )
+
+        intent = self._intent_from_settings(user_settings, state)
+        intent_keywords = self._intent_keywords(intent)
+        if intent_keywords and state.intent_picks_remaining > 0:
+            try:
+                request_candidates = await self.netease.search(intent_keywords, limit=8)
+            except Exception:
+                request_candidates = []
+            song = await self._choose_candidate_async(
+                self._pool_list(request_candidates)[:8],
+                recent,
+                recent_artists,
+                uid=uid,
+            )
+            if song:
+                return _select(
+                    song,
+                    "request_intent",
+                    self._intent_reason_text(intent),
+                )
 
         if self._anchor_due(current_song_id, state) and isinstance(profile, dict):
             anchors = [

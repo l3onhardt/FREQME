@@ -26,7 +26,12 @@ function createElement(id = '') {
     },
     dispatch(type) {
       const handler = listeners.get(type);
-      if (handler) return handler({ target: this });
+      if (handler) {
+        return handler({
+          target: this,
+          preventDefault() {},
+        });
+      }
       return undefined;
     },
     click() {
@@ -85,6 +90,8 @@ function loadRadio({ fetchImpl } = {}) {
     'player-bg',
     'player-screen',
     'qr-status',
+    'request-form',
+    'request-input',
     'scene-label',
     'start-radio-btn',
     'track-artist',
@@ -148,6 +155,9 @@ function loadRadio({ fetchImpl } = {}) {
     location: {
       host: 'example.test',
       protocol: 'http:',
+    },
+    navigator: {
+      language: 'zh-CN',
     },
     setInterval() {
       return 1;
@@ -519,4 +529,59 @@ test('intro message updates DJ text after playback has started', async () => {
   });
 
   assert.equal(elements.get('dj-text').textContent, '今晚先把声音放低一点。');
+});
+
+test('handshake includes local time context for time-aware radio', async () => {
+  const { elements, sockets } = loadRadio();
+  const startButton = elements.get('start-radio-btn');
+
+  await startButton.click();
+  sockets[0].readyState = sockets[0].constructor.OPEN;
+  sockets[0].onopen();
+
+  const sent = JSON.parse(sockets[0].sent[0]);
+  assert.equal(sent.type, 'handshake');
+  assert.equal(typeof sent.utc_offset, 'number');
+  assert.equal(sent.locale, 'zh-CN');
+  assert.equal(typeof sent.timezone_name, 'string');
+  assert.equal(typeof sent.region_hint, 'string');
+});
+
+test('request form sends song request text without changing playback locally', async () => {
+  const { elements, sockets } = loadRadio();
+  const startButton = elements.get('start-radio-btn');
+  const requestInput = elements.get('request-input');
+  const requestForm = elements.get('request-form');
+
+  await startButton.click();
+  sockets[0].readyState = sockets[0].constructor.OPEN;
+  requestInput.value = '想听夜路上放空的歌';
+
+  requestForm.dispatch('submit');
+
+  const sent = JSON.parse(sockets[0].sent[0]);
+  assert.equal(sent.type, 'song_request');
+  assert.equal(sent.text, '想听夜路上放空的歌');
+  assert.equal(requestInput.value, '');
+});
+
+test('request status tells listener whether the requested direction is queued', async () => {
+  const { context, elements } = loadRadio();
+
+  await context.handleMessage({
+    type: 'request_status',
+    status: 'ready',
+    text: '找到了，下一首先给你接这首。',
+    next_track: { name: 'Emo Song', artist: 'Singer' },
+  });
+
+  assert.equal(elements.get('dj-text').textContent, '找到了，下一首先给你接这首。');
+
+  await context.handleMessage({
+    type: 'request_status',
+    status: 'fallback',
+    text: '没找到特别准的，我先往这个情绪靠。',
+  });
+
+  assert.equal(elements.get('dj-text').textContent, '没找到特别准的，我先往这个情绪靠。');
 });

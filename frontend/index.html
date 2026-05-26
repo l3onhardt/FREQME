@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>小米memo电台</title>
-<link rel="stylesheet" href="css/radio.css?v=20260525-onboarding-controls">
+<link rel="stylesheet" href="css/radio.css?v=20260526-smart-dj-request">
 </head>
 <body>
 <div id="app">
@@ -74,6 +74,16 @@
       <div class="dj-message" id="dj-message">
         <p id="dj-text"></p>
       </div>
+      <form class="request-form" id="request-form">
+        <input
+          id="request-input"
+          class="request-input"
+          maxlength="120"
+          autocomplete="off"
+          placeholder="想听什么，直接跟主播说"
+        >
+        <button class="request-button" type="submit">点歌</button>
+      </form>
       <div class="player-controls">
         <button id="btn-skip" class="ctrl-btn" title="下一首">⏭</button>
         <button id="btn-play" class="ctrl-btn ctrl-main" title="暂停/播放">⏸</button>
@@ -86,6 +96,6 @@
 <audio id="audio-main" preload="auto"></audio>
 <audio id="audio-tts" preload="auto"></audio>
 
-<script src="js/radio.js?v=20260526-radio-smooth-ducking"></script>
+<script src="js/radio.js?v=20260526-smart-dj-request"></script>
 </body>
 </html>
