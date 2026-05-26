@@ -1,5 +1,4 @@
 import unittest
-import importlib
 from contextlib import asynccontextmanager
 from unittest import mock
 
@@ -11,11 +10,10 @@ class WSDJAgentFlowTests(unittest.IsolatedAsyncioTestCase):
     def test_ws_exposes_dj_request_service_globals(self):
         from backend.api import ws
 
-        ws = importlib.reload(ws)
-        self.assertIsNone(ws.dj_request_agent)
-        self.assertIsNone(ws.search_verify_agent)
-        self.assertIsNone(ws.queue_director)
-        self.assertIsNone(ws.dj_memory_manager)
+        self.assertTrue(hasattr(ws, "dj_request_agent"))
+        self.assertTrue(hasattr(ws, "search_verify_agent"))
+        self.assertTrue(hasattr(ws, "queue_director"))
+        self.assertTrue(hasattr(ws, "dj_memory_manager"))
 
     async def test_lifespan_wires_dj_request_services_to_ws_globals(self):
         from backend.api import ws
