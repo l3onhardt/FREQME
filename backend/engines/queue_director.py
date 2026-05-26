@@ -24,6 +24,17 @@ class QueueDirectorResult:
     verification: dict = field(default_factory=dict)
     recovery_options: list[dict] = field(default_factory=list)
 
+    def to_dict(self) -> dict:
+        return {
+            "status": self.status,
+            "dj_text": self.dj_text,
+            "next_song": self.next_song or None,
+            "url": self.url,
+            "decision": dict(self.decision or {}),
+            "verification": dict(self.verification or {}),
+            "recovery_options": list(self.recovery_options or []),
+        }
+
 
 class QueueDirector:
     def __init__(self, dj_request_agent, search_verify_agent, memory_manager):
@@ -42,19 +53,29 @@ class QueueDirector:
         playback_context: dict | None,
         recent_turns: list[dict] | None = None,
     ) -> QueueDirectorResult:
-        context_pack = await self.memory_manager.build_context_pack(
+        context_pack = await self._build_context_pack(
             uid,
             session_id,
             request_text,
-            profile=profile,
-            user_settings=user_settings,
-            playback_context=playback_context,
-            recent_turns=recent_turns,
+            profile,
+            user_settings,
+            playback_context,
+            recent_turns,
         )
-        decision = await self.dj_agent.decide(request_text, context_pack)
-        await self.memory_manager.apply_decision_update(uid, session_id, request_text, decision)
+        try:
+            decision = await self.dj_agent.decide(request_text, context_pack)
+        except Exception:
+            return QueueDirectorResult(
+                status="needs_recovery",
+                dj_text="I could not safely understand that music request.",
+                decision={},
+                verification={},
+                recovery_options=[],
+            )
 
-        decision_dict = self._to_dict(decision)
+        await self._apply_decision_update(uid, session_id, request_text, decision)
+
+        decision_dict = self._safe_dict(decision, request_text)
         action = self._field(decision, "action", "")
         if action == "ask_clarifying_question":
             return QueueDirectorResult(
@@ -81,6 +102,11 @@ class QueueDirector:
                     "understood_intent": str(self._field(decision, "understood_intent", "") or ""),
                     "verification_note": self._verification_note(verification),
                 }
+                selection_reason["text"] = (
+                    selection_reason["verification_note"]
+                    or selection_reason["understood_intent"]
+                    or "DJ request verified"
+                )
                 playback_queue.add_ready(song, url, selection_reason=selection_reason)
                 return QueueDirectorResult(
                     status="queued",
@@ -88,14 +114,14 @@ class QueueDirector:
                     next_song=song,
                     url=url,
                     decision=decision_dict,
-                    verification=self._to_dict(verification),
+                    verification=self._safe_dict(verification, request_text),
                 )
 
             return QueueDirectorResult(
                 status="needs_recovery",
                 dj_text=self._recovery_text(decision, request_text),
                 decision=decision_dict,
-                verification=self._to_dict(verification),
+                verification=self._safe_dict(verification, request_text),
                 recovery_options=self._bounded_recovery_options(verification),
             )
 
@@ -129,6 +155,45 @@ class QueueDirector:
             recent_turns=recent_turns,
         )
 
+    async def _build_context_pack(
+        self,
+        uid,
+        session_id,
+        request_text,
+        profile,
+        user_settings,
+        playback_context,
+        recent_turns,
+    ) -> dict:
+        try:
+            return await self.memory_manager.build_context_pack(
+                uid,
+                session_id,
+                request_text,
+                profile=profile,
+                user_settings=user_settings,
+                playback_context=playback_context,
+                recent_turns=recent_turns,
+            )
+        except Exception:
+            return {
+                "user_profile_digest": "",
+                "session_working_memory": {},
+                "recent_turns": list(recent_turns or [])[-3:],
+                "playback_context": playback_context or {},
+                "user_settings": user_settings or {},
+                "hard_constraints": [
+                    "Do not expose system internals.",
+                    "Do not search the literal user sentence unless it is a canonical title.",
+                ],
+            }
+
+    async def _apply_decision_update(self, uid, session_id, request_text, decision) -> None:
+        try:
+            await self.memory_manager.apply_decision_update(uid, session_id, request_text, decision)
+        except Exception:
+            return None
+
     async def _verify(self, decision, uid: str | None, request_text: str):
         try:
             return await self.verifier.verify(
@@ -136,10 +201,10 @@ class QueueDirector:
                 uid=uid,
                 raw_user_text=request_text,
             )
-        except Exception as exc:
+        except Exception:
             return {
                 "status": "error",
-                "failure_reason": str(exc),
+                "failure_reason": "Search verification failed safely.",
                 "recovery_options": [],
             }
 
@@ -207,6 +272,29 @@ class QueueDirector:
         raw = " ".join(str(request_text or "").split())
         text = " ".join(str(candidate or "").split())
         return bool(raw and text and (raw in text or text in raw))
+
+    def _safe_dict(self, value, request_text: str) -> dict:
+        data = self._to_dict(value)
+        return self._sanitize_value(data, request_text) if isinstance(data, dict) else {}
+
+    def _sanitize_value(self, value, request_text: str):
+        if isinstance(value, Mapping):
+            clean = {}
+            for key, item in value.items():
+                key_text = str(key)
+                if key_text == "raw_text":
+                    continue
+                clean[key_text] = self._sanitize_value(item, request_text)
+            return clean
+        if isinstance(value, list):
+            return [self._sanitize_value(item, request_text) for item in value]
+        if isinstance(value, tuple):
+            return [self._sanitize_value(item, request_text) for item in value]
+        if isinstance(value, str):
+            return "[redacted]" if self._contains_raw_text(value, request_text) else value
+        if isinstance(value, (int, float, bool)) or value is None:
+            return value
+        return str(value)
 
     def _to_dict(self, value) -> dict:
         if value is None:
