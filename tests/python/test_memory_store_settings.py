@@ -147,6 +147,66 @@ class MemoryStoreSettingsTest(unittest.TestCase):
 
             asyncio.run(run())
 
+    def test_dj_user_memories_filter_by_tags_before_applying_limit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            os.environ["RADIO_DB_PATH"] = str(Path(tmp) / "radio-test.db")
+
+            from backend.memory.models import init_db
+            from backend.memory.store import MemoryStore
+
+            async def run():
+                await init_db()
+                store = MemoryStore()
+
+                await store.upsert_dj_user_memory(
+                    uid="42",
+                    memory_key="high_confidence_unrelated",
+                    memory_text="User likes high confidence unrelated songs.",
+                    confidence=0.99,
+                    evidence_count=3,
+                    tags=["unrelated"],
+                )
+                await store.upsert_dj_user_memory(
+                    uid="42",
+                    memory_key="lower_confidence_taste",
+                    memory_text="User prefers late-night piano.",
+                    confidence=0.4,
+                    evidence_count=2,
+                    tags=["taste"],
+                )
+
+                memories = await store.get_dj_user_memories("42", tags=["taste"], limit=1)
+
+                self.assertEqual(len(memories), 1)
+                self.assertEqual(memories[0]["memory_key"], "lower_confidence_taste")
+
+            asyncio.run(run())
+
+    def test_dj_memory_event_preserves_zero_payload_importance(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            os.environ["RADIO_DB_PATH"] = str(Path(tmp) / "radio-test.db")
+
+            from backend.memory.models import init_db
+            from backend.memory.store import MemoryStore
+
+            async def run():
+                await init_db()
+                store = MemoryStore()
+
+                await store.log_dj_memory_event(
+                    uid="42",
+                    session_id=7,
+                    event_type="user_request",
+                    payload={"importance": 0},
+                )
+
+                events = await store.get_recent_dj_memory_events("42", limit=1)
+
+                self.assertEqual(events[0]["payload"]["importance"], 0)
+                self.assertEqual(events[0]["importance"], 0)
+
+            asyncio.run(run())
+
     def test_recent_tracks_are_scoped_by_uid_with_legacy_fallback(self):
         with tempfile.TemporaryDirectory() as tmp:
             os.environ["RADIO_DB_PATH"] = str(Path(tmp) / "radio-test.db")

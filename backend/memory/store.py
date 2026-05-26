@@ -70,7 +70,9 @@ class MemoryStore:
         payload = payload or {}
         event_importance = importance
         if event_importance is None:
-            event_importance = float(payload.get("importance", 0.5) or 0.5)
+            event_importance = float(
+                payload["importance"] if "importance" in payload else 0.5
+            )
         async with connect_db() as db:
             cursor = await db.execute(
                 "INSERT INTO dj_memory_event "
@@ -166,11 +168,12 @@ class MemoryStore:
         tags: list[str] | None = None,
         limit: int = 10,
     ) -> list[dict]:
+        query_limit = -1 if tags else int(limit)
         async with connect_db() as db:
             async with db.execute(
                 "SELECT memory_key, memory_text, confidence, evidence_count, tags_json, updated_at "
                 "FROM dj_user_memory WHERE uid=? ORDER BY confidence DESC, updated_at DESC LIMIT ?",
-                (str(uid), int(limit)),
+                (str(uid), query_limit),
             ) as cursor:
                 rows = await cursor.fetchall()
         wanted = set(tags or [])
@@ -187,7 +190,7 @@ class MemoryStore:
                 "tags": row_tags,
                 "updated_at": row[5],
             })
-        return memories
+        return memories[:limit]
 
     async def log_track(
         self,
