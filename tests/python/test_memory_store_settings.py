@@ -142,6 +142,8 @@ class MemoryStoreSettingsTest(unittest.TestCase):
                 self.assertEqual(session_memory["active_mode"]["label"], "Zimerman / Chopin")
                 self.assertEqual(user_memories[0]["memory_key"], "avoid_overplayed_chinese_pop")
                 self.assertEqual(events[0]["raw_text"], "我要听齐默尔曼的肖邦")
+                self.assertEqual(events[0]["payload"]["importance"], 0.82)
+                self.assertEqual(events[0]["importance"], 0.82)
 
             asyncio.run(run())
 
