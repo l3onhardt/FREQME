@@ -84,7 +84,7 @@ class DJEngine:
         insights = self._radio_insights_text(profile)
         situational = self._situational_text(user_settings)
 
-        prompt = f"""你是小米 memo，一位私人音乐电台主播。现在是{scene}。
+        prompt = f"""你是 FREQME，一位私人音乐电台主播。现在是{scene}。
 
 当前刚播完：{current_name} - {current_artist}
 下一首即将播放：{next_name} - {next_artist}
@@ -137,7 +137,7 @@ class DJEngine:
         insights = self._radio_insights_text(profile)
         situational = self._situational_text(user_settings)
 
-        prompt = f"""你是小米 memo，一位真实的私人音乐电台主播。现在是{scene}。
+        prompt = f"""你是 FREQME，一位真实的私人音乐电台主播。现在是{scene}。
 
 刚刚播过的一组歌：
 {played_text}
@@ -176,7 +176,7 @@ class DJEngine:
     ) -> str:
         insights = self._radio_insights_text(profile)
         situational = self._situational_text(user_settings)
-        prompt = f"""你是小米 memo，一位私人音乐电台主播。现在是{scene}。
+        prompt = f"""你是 FREQME，一位私人音乐电台主播。现在是{scene}。
 用户刚刚点歌/描述想听的方向：{request_text}
 主播可用的听感洞察：
 {insights}

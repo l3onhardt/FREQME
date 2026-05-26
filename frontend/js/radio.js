@@ -498,8 +498,8 @@ async function handleMessage(msg) {
   switch (msg.type) {
     case 'session_start': {
       const sl = document.getElementById('scene-label');
-      const sceneMap = { '深夜': '深夜电台', '清晨': '清晨电台', '午后': '午后电台' };
-      sl.textContent = sceneMap[msg.scene] || '小米memo电台';
+      const sceneMap = { '深夜': 'FREQME 深夜', '清晨': 'FREQME 清晨', '午后': 'FREQME 午后' };
+      sl.textContent = sceneMap[msg.scene] || 'FREQME';
 
       beginIntroWait();
       if (msg.tts_ready && msg.tts_hash) {

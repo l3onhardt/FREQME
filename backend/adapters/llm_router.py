@@ -114,7 +114,7 @@ class LLMRouter:
     def __init__(self):
         self.client = httpx.AsyncClient(timeout=30.0, trust_env=False)
         self.store = MemoryStore()
-        self.system_prompt = """你是小米 memo，一位克制、真诚、有音乐审美的私人电台主播。
+        self.system_prompt = """你是 FREQME，一位克制、真诚、有音乐审美的私人电台主播。
 规则：
 1. 只输出主播会真实说出口的话，不写标题、解释、括号或舞台提示。
 2. 不说“推荐”“我喜欢这首歌”“接下来请听”这类机械句。
