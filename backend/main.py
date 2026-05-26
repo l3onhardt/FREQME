@@ -64,7 +64,7 @@ async def lifespan(app: FastAPI):
     tts_adapter = TTSAdapter()
     profile_eng = ProfileEngine(netease_adapter, llm_router, store)
     dj_eng = DJEngine(llm_router, store)
-    sched = StreamScheduler(netease_adapter, store, bus)
+    sched = StreamScheduler(netease_adapter, store, bus, llm=llm_router)
     audio_resolver = AudioResolver(netease_adapter, store)
     request_agent = SongRequestAgent(llm_router, netease_adapter, llm_timeout_s=5.0)
     radio_brain = RadioBrain()

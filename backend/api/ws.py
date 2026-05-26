@@ -86,7 +86,25 @@ async def ws_handler(websocket: WebSocket):
 
     def request_status_for_ready_item(request_text: str) -> dict:
         ready = playback_queue.ready_items()
+        brain_decision = {}
+        if isinstance(user_settings, dict):
+            brain_state = user_settings.get("radio_brain")
+            if isinstance(brain_state, dict) and isinstance(brain_state.get("decision"), dict):
+                brain_decision = brain_state["decision"]
         if not ready:
+            if brain_decision.get("intent_type") in {
+                "taste_direction",
+                "artist_direction",
+                "negative_feedback",
+                "skip_variant",
+                "profile_correction",
+            }:
+                return {
+                    "type": "request_status",
+                    "status": "queued",
+                    "text": str(brain_decision.get("ack_text") or "").strip()
+                    or f"收到，我会往“{request_text}”这个方向调整。",
+                }
             return {
                 "type": "request_status",
                 "status": "fallback",
@@ -99,11 +117,46 @@ async def ws_handler(websocket: WebSocket):
             else ""
         )
         track = _track_info(item.song)
+        if brain_decision.get("intent_type") in {
+            "negative_feedback",
+            "skip_variant",
+            "profile_correction",
+        }:
+            ack_text = str(brain_decision.get("ack_text") or "").strip()
+            return {
+                "type": "request_status",
+                "status": "queued",
+                "text": ack_text or "懂了，这批先避开。我重新按你的听感找。",
+            }
+        if brain_decision.get("intent_type") in {"taste_direction", "artist_direction"}:
+            ack_text = str(brain_decision.get("ack_text") or "").strip()
+            return {
+                "type": "request_status",
+                "status": "ready",
+                "text": (
+                    f"{ack_text} 下一首先接：{track['name']}。"
+                    if ack_text
+                    else f"收到，我会往“{request_text}”这个方向调整。"
+                ),
+                "next_track": track,
+            }
         if reason_type == "request_intent":
             return {
                 "type": "request_status",
                 "status": "ready",
                 "text": f"我先把下一首往这个方向靠：{track['name']}。如果你想现在切过去，点下一首就好。",
+                "next_track": track,
+            }
+        if reason_type in {"radio_brain_profile", "radio_brain_search"}:
+            ack_text = str(brain_decision.get("ack_text") or "").strip()
+            if ack_text:
+                text = f"{ack_text} 下一首先接：{track['name']}。"
+            else:
+                text = f"收到，我按你的听感换线。下一首先接：{track['name']}。"
+            return {
+                "type": "request_status",
+                "status": "ready",
+                "text": text,
                 "next_track": track,
             }
         return {
@@ -458,6 +511,19 @@ async def ws_handler(websocket: WebSocket):
                         )
                 except Exception:
                     pass
+                if radio_brain and current_song:
+                    try:
+                        profile = radio_brain.apply_learning_signal(
+                            profile,
+                            {
+                                "event_type": "skipped",
+                                "song": _track_info(current_song),
+                            },
+                        )
+                        if uid:
+                            await store.save_profile(str(uid), profile)
+                    except Exception:
+                        pass
                 await send_prepared_next(previous_event="skipped")
 
             elif msg_type == "song_request":
@@ -503,6 +569,18 @@ async def ws_handler(websocket: WebSocket):
                         or getattr(brain_decision, "intent_type", "") == "specific_song"
                     )
                 ):
+                    thinking_text = _specific_request_thinking_text(
+                        request_text,
+                        brain_decision,
+                    )
+                    if thinking_text:
+                        tts_hash_val = await synthesize_intro_text(thinking_text)
+                        await websocket.send_json({
+                            "type": "dj_message",
+                            "text": thinking_text,
+                            "tts_ready": bool(tts_hash_val),
+                            "tts_hash": tts_hash_val,
+                        })
                     try:
                         agent_pick = await asyncio.wait_for(
                             request_agent.resolve(
@@ -547,6 +625,7 @@ async def ws_handler(websocket: WebSocket):
                 if brain_decision and getattr(brain_decision, "intent_type", "") in {
                     "negative_feedback",
                     "taste_direction",
+                    "artist_direction",
                     "skip_variant",
                     "profile_correction",
                 }:
@@ -567,6 +646,34 @@ async def ws_handler(websocket: WebSocket):
                             "keywords": request_text,
                             "mood": "",
                         }
+                    if getattr(brain_decision, "intent_type", "") == "negative_feedback":
+                        user_settings["listening_intent"] = {
+                            "raw_text": request_text,
+                            "keywords": "",
+                            "mood": "",
+                        }
+                    if (
+                        radio_brain
+                        and getattr(brain_decision, "intent_type", "") in {
+                            "negative_feedback",
+                            "profile_correction",
+                        }
+                    ):
+                        try:
+                            profile = radio_brain.apply_learning_signal(
+                                profile,
+                                {
+                                    "event_type": getattr(brain_decision, "intent_type", ""),
+                                    "decision": brain_decision.to_dict()
+                                    if hasattr(brain_decision, "to_dict")
+                                    else dict(brain_decision),
+                                    "song": _track_info(current_song) if current_song else {},
+                                },
+                            )
+                            if uid:
+                                await store.save_profile(str(uid), profile)
+                        except Exception:
+                            pass
                     ack_text = getattr(brain_decision, "ack_text", "") or f"好，我往“{request_text}”这个方向给你找。"
                     tts_hash_val = await synthesize_intro_text(ack_text)
                     await websocket.send_json({
@@ -722,6 +829,10 @@ def _looks_like_specific_song_request(text: str) -> bool:
         "摇滚",
         "爵士",
         "电子",
+        "电音",
+        "炸场",
+        "蹦迪",
+        "edm",
         "民谣",
     )
     if short_specific_title:
@@ -747,6 +858,18 @@ def _looks_like_specific_song_request(text: str) -> bool:
         if len(target) >= 3 and any(ch.isalnum() for ch in target):
             return True
     return bool(re.search(r"[A-Za-z].*\s+[-A-Za-z0-9'. ]{2,}", raw))
+
+
+def _specific_request_thinking_text(request_text: str, brain_decision=None) -> str:
+    intent_type = getattr(brain_decision, "intent_type", "")
+    raw = " ".join(str(request_text or "").split())
+    if not raw:
+        return ""
+    if "我说的是" in raw or "说的是" in raw:
+        return "明白，我先按你纠正的作品或人名确认版本，不再按泛风格乱接。"
+    if intent_type == "specific_song" or _looks_like_specific_song_request(raw):
+        return "我先按具体歌名、作品或人名确认一下版本，再接播放源。"
+    return ""
 
 
 def _artist_name(song: dict | None) -> str:

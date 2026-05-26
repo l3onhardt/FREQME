@@ -1,5 +1,6 @@
 import unittest
 
+from backend.engines.radio_brain import RadioBrain
 from backend.engines.scheduler import StreamScheduler
 
 
@@ -9,6 +10,7 @@ class FakeNetease:
         self.daily = []
         self.fm = []
         self.search_results = []
+        self.search_results_by_query = {}
         self.search_calls = []
         self.raw_similar = None
         self.raw_daily = None
@@ -41,6 +43,8 @@ class FakeNetease:
 
     async def search(self, keywords, limit=5):
         self.search_calls.append({"keywords": keywords, "limit": limit})
+        if keywords in self.search_results_by_query:
+            return list(self.search_results_by_query[keywords])
         return list(self.search_results)
 
     async def song_url(self, song_id):
@@ -67,9 +71,23 @@ class NonListRecentStore(FakeStore):
         return {"fallback-ok": True}
 
 
+class FakeLLM:
+    def __init__(self, responses):
+        self.responses = list(responses)
+        self.calls = []
+
+    async def chat(self, prompt, max_tokens=300, system=None):
+        self.calls.append({
+            "prompt": prompt,
+            "max_tokens": max_tokens,
+            "system": system,
+        })
+        return self.responses.pop(0) if self.responses else "{}"
+
+
 class SchedulerPersonalizedPickTests(unittest.IsolatedAsyncioTestCase):
-    def make_scheduler(self, netease=None, store=None):
-        return StreamScheduler(netease or FakeNetease(), store or FakeStore(), bus=None)
+    def make_scheduler(self, netease=None, store=None, llm=None):
+        return StreamScheduler(netease or FakeNetease(), store or FakeStore(), bus=None, llm=llm)
 
     def profile_with_anchors(self, *tracks):
         return {"anchor_tracks": list(tracks)}
@@ -218,6 +236,282 @@ class SchedulerPersonalizedPickTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(song["id"], "anchor-en")
         self.assertEqual(song["selection_reason"]["type"], "radio_brain_profile")
         self.assertEqual(netease.search_calls, [])
+
+    async def test_brain_taste_direction_uses_semantic_search_not_raw_text(self):
+        netease = FakeNetease()
+        netease.search_results = [
+            {
+                "id": "edm-1",
+                "name": "High Energy Set",
+                "ar": [{"name": "Club Artist"}],
+                "source": "search",
+            }
+        ]
+        scheduler = self.make_scheduler(netease=netease)
+        state = scheduler.new_session_state()
+        decision = RadioBrain().interpret_user_text(
+            "我想听点炸场电音",
+            profile={},
+            user_settings={"local_time_block": "afternoon"},
+        )
+
+        song = await scheduler.pick_next(
+            profile={},
+            user_settings={"radio_brain": {"decision": decision.to_dict()}},
+            session_state=state,
+        )
+
+        self.assertEqual(song["id"], "edm-1")
+        self.assertEqual(song["selection_reason"]["type"], "radio_brain_search")
+        self.assertEqual(netease.search_calls[0]["keywords"], "电子 舞曲 高能")
+        self.assertNotIn(
+            "我想听点炸场电音",
+            [call["keywords"] for call in netease.search_calls],
+        )
+
+    async def test_brain_taste_direction_asks_llm_for_concrete_song_before_style_search(self):
+        netease = FakeNetease()
+        netease.search_results_by_query = {
+            "SZA Good Days": [
+                {
+                    "id": "rnb-1",
+                    "name": "Good Days",
+                    "ar": [{"name": "SZA"}],
+                    "al": {"name": "Good Days"},
+                    "source": "search",
+                }
+            ],
+            "R&B 午后 松弛": [
+                {
+                    "id": "junk",
+                    "name": "【大悲咒】分泌愉悦激素丨快速减压丨放松大脑（Chill午后咖啡时光）",
+                    "ar": [{"name": "助眠频道"}],
+                    "source": "search",
+                }
+            ],
+        }
+        llm = FakeLLM([
+            '{"picks":[{"title":"Good Days","artist":"SZA","query":"SZA Good Days","reason":"午后 R&B，松弛但有律动"}]}'
+        ])
+        scheduler = self.make_scheduler(netease=netease, llm=llm)
+        decision = RadioBrain().interpret_user_text(
+            "来点下午听的rnb",
+            profile={},
+            user_settings={"local_time_block": "afternoon"},
+        )
+
+        song = await scheduler.pick_next(
+            profile={},
+            user_settings={"radio_brain": {"decision": decision.to_dict()}},
+            session_state=scheduler.new_session_state(),
+        )
+
+        self.assertEqual(song["id"], "rnb-1")
+        self.assertEqual(song["selection_reason"]["type"], "radio_brain_inferred_song")
+        self.assertEqual(netease.search_calls[0]["keywords"], "SZA Good Days")
+        self.assertNotIn(
+            "R&B 午后 松弛",
+            [call["keywords"] for call in netease.search_calls],
+        )
+        self.assertIn("具体歌曲", llm.calls[0]["prompt"])
+
+    async def test_brain_taste_direction_skips_unmatched_profile_anchor_before_llm_pick(self):
+        netease = FakeNetease()
+        netease.search_results_by_query = {
+            "Phoebe Bridgers Funeral": [
+                {
+                    "id": "emo-1",
+                    "name": "Funeral",
+                    "ar": [{"name": "Phoebe Bridgers"}],
+                    "al": {"name": "Stranger in the Alps"},
+                    "source": "search",
+                }
+            ],
+        }
+        llm = FakeLLM([
+            '{"picks":[{"title":"Funeral","artist":"Phoebe Bridgers","query":"Phoebe Bridgers Funeral","reason":"半夜 emo，低能量但情绪准确"}]}'
+        ])
+        scheduler = self.make_scheduler(netease=netease, llm=llm)
+        profile = self.profile_with_anchors({
+            "id": "rise",
+            "name": "Rise",
+            "artist": "Generic Artist",
+            "language": "英文",
+        })
+        decision = RadioBrain().interpret_user_text(
+            "来点半夜emo的歌",
+            profile=profile,
+            user_settings={"local_time_block": "late_night"},
+        )
+
+        song = await scheduler.pick_next(
+            profile=profile,
+            user_settings={"radio_brain": {"decision": decision.to_dict()}},
+            session_state=scheduler.new_session_state(),
+        )
+
+        self.assertEqual(song["id"], "emo-1")
+        self.assertEqual(song["selection_reason"]["type"], "radio_brain_inferred_song")
+        self.assertEqual(netease.search_calls[0]["keywords"], "Phoebe Bridgers Funeral")
+
+    async def test_brain_inferred_song_search_filters_utility_audio_results(self):
+        netease = FakeNetease()
+        netease.search_results_by_query = {
+            "SZA Good Days": [
+                {
+                    "id": "junk",
+                    "name": "【大悲咒】分泌愉悦激素丨快速减压丨放松大脑（Chill午后咖啡时光）",
+                    "ar": [{"name": "助眠频道"}],
+                    "source": "search",
+                },
+                {
+                    "id": "rnb-1",
+                    "name": "Good Days",
+                    "ar": [{"name": "SZA"}],
+                    "al": {"name": "Good Days"},
+                    "source": "search",
+                },
+            ]
+        }
+        llm = FakeLLM([
+            '{"picks":[{"title":"Good Days","artist":"SZA","query":"SZA Good Days"}]}'
+        ])
+        scheduler = self.make_scheduler(netease=netease, llm=llm)
+        decision = RadioBrain().interpret_user_text(
+            "来点下午听的rnb",
+            profile={},
+            user_settings={"local_time_block": "afternoon"},
+        )
+
+        song = await scheduler.pick_next(
+            profile={},
+            user_settings={"radio_brain": {"decision": decision.to_dict()}},
+            session_state=scheduler.new_session_state(),
+        )
+
+        self.assertEqual(song["id"], "rnb-1")
+        self.assertNotIn("大悲咒", song["name"])
+
+    async def test_artist_fragment_asks_llm_for_concrete_song_before_artist_search(self):
+        netease = FakeNetease()
+        netease.search_results_by_query = {
+            "Linkin Park Numb": [
+                {
+                    "id": "lp-numb",
+                    "name": "Numb",
+                    "ar": [{"name": "Linkin Park"}],
+                    "al": {"name": "Meteora"},
+                    "source": "search",
+                }
+            ],
+            "Linkin Park": [
+                {
+                    "id": "lp-random",
+                    "name": "Live In Texas Full Album",
+                    "ar": [{"name": "Uploader"}],
+                    "source": "search",
+                }
+            ],
+        }
+        llm = FakeLLM([
+            '{"picks":[{"title":"Numb","artist":"Linkin Park","query":"Linkin Park Numb","reason":"先接一首代表性但不乱搜泛结果"}]}'
+        ])
+        scheduler = self.make_scheduler(netease=netease, llm=llm)
+        decision = RadioBrain().interpret_user_text(
+            "linkin park的",
+            profile={},
+            user_settings={"local_time_block": "night"},
+        )
+
+        song = await scheduler.pick_next(
+            profile={},
+            user_settings={"radio_brain": {"decision": decision.to_dict()}},
+            session_state=scheduler.new_session_state(),
+        )
+
+        self.assertEqual(song["id"], "lp-numb")
+        self.assertEqual(song["selection_reason"]["type"], "radio_brain_inferred_song")
+        self.assertEqual(netease.search_calls[0]["keywords"], "Linkin Park Numb")
+        self.assertNotEqual(netease.search_calls[0]["keywords"], "Linkin Park")
+        self.assertIn("Linkin Park", llm.calls[0]["prompt"])
+
+    async def test_misspelled_artist_fragment_lets_llm_correct_to_concrete_song(self):
+        netease = FakeNetease()
+        netease.search_results_by_query = {
+            "Linkin Park Numb": [
+                {
+                    "id": "lp-numb",
+                    "name": "Numb",
+                    "ar": [{"name": "Linkin Park"}],
+                    "al": {"name": "Meteora"},
+                    "source": "search",
+                }
+            ],
+        }
+        llm = FakeLLM([
+            '{"picks":[{"title":"Numb","artist":"Linkin Park","query":"Linkin Park Numb","reason":"用户很可能把 Linkin Park 拼成了 linkin parl"}]}'
+        ])
+        scheduler = self.make_scheduler(netease=netease, llm=llm)
+        decision = RadioBrain().interpret_user_text(
+            "linkin parl",
+            profile={},
+            user_settings={},
+        )
+
+        song = await scheduler.pick_next(
+            profile={},
+            user_settings={"radio_brain": {"decision": decision.to_dict()}},
+            session_state=scheduler.new_session_state(),
+        )
+
+        self.assertEqual(song["id"], "lp-numb")
+        self.assertEqual(song["selection_reason"]["type"], "radio_brain_inferred_song")
+        self.assertEqual(netease.search_calls[0]["keywords"], "Linkin Park Numb")
+        self.assertIn("linkin parl", llm.calls[0]["prompt"].lower())
+
+    async def test_misspelled_artist_rejects_unrelated_llm_pick_and_search_result(self):
+        netease = FakeNetease()
+        netease.search_results_by_query = {
+            "DubVision I Am Not Over": [
+                {
+                    "id": "dubvision",
+                    "name": "I Am Not Over",
+                    "ar": [{"name": "DubVision"}],
+                    "source": "search",
+                }
+            ],
+            "Linkin Parf": [
+                {
+                    "id": "dubvision-raw",
+                    "name": "Back To Life",
+                    "ar": [{"name": "DubVision"}],
+                    "source": "search",
+                }
+            ],
+        }
+        llm = FakeLLM([
+            '{"picks":[{"title":"I Am Not Over","artist":"DubVision","query":"DubVision I Am Not Over","reason":"错误地偏离了用户想要的乐队"}]}'
+        ])
+        scheduler = self.make_scheduler(netease=netease, llm=llm)
+        decision = RadioBrain().interpret_user_text(
+            "Linkin Parf",
+            profile={},
+            user_settings={},
+        )
+
+        song = await scheduler.pick_next(
+            profile={},
+            user_settings={"radio_brain": {"decision": decision.to_dict()}},
+            session_state=scheduler.new_session_state(),
+        )
+
+        self.assertIsNone(song)
+        self.assertTrue(
+            all(
+                call["keywords"] != "Linkin Parf"
+                for call in netease.search_calls
+            )
+        )
 
     async def test_recent_or_session_played_anchors_are_skipped_before_discovery(self):
         netease = FakeNetease()

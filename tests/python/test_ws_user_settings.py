@@ -29,6 +29,7 @@ class FakeStore:
         self.logged_tracks = []
         self.recent_playable_tracks = []
         self.playback_events = []
+        self.saved_profiles = []
 
     async def get_user_settings(self, uid):
         return self.stored_settings
@@ -37,7 +38,18 @@ class FakeStore:
         return {
             "personality": {"traits": ["calm"]},
             "dj_style_suggestion": "natural",
+            "anchor_tracks": [
+                {
+                    "id": "anchor-en",
+                    "name": "Exit Music",
+                    "artist": "Radiohead",
+                    "language": "英文",
+                }
+            ],
         }
+
+    async def save_profile(self, uid, profile):
+        self.saved_profiles.append((uid, profile))
 
     async def create_session(self, uid):
         return 7
@@ -742,6 +754,71 @@ class WebSocketUserSettingsTests(unittest.IsolatedAsyncioTestCase):
         ]
         self.assertEqual(request_events[0]["reason"], "想听夜路上放空的歌")
 
+    async def test_ws_afternoon_rnb_request_gets_dj_ack_not_failure_copy(self):
+        fake_store = FakeStore({"voice_preset": "warm_male"})
+        fake_dj = FakeDJEngine()
+        fake_tts = FakeTTS()
+        fake_scheduler = FakeScheduler()
+        fake_websocket = FakeWebSocket([
+            {"type": "handshake", "uid": "42", "settings": {}},
+            {"type": "song_request", "text": "来点下午听的rnb"},
+        ])
+
+        ws.store = fake_store
+        ws.dj_engine = fake_dj
+        ws.tts = fake_tts
+        ws.scheduler = fake_scheduler
+        ws.radio_brain = RecordingRadioBrain()
+        ws.compressor = FakeCompressor()
+        ws.profile_engine = None
+
+        await ws.ws_handler(fake_websocket)
+
+        messages = [
+            payload["text"]
+            for payload in fake_websocket.sent
+            if payload["type"] in {"dj_message", "request_status"}
+        ]
+        self.assertTrue(any("R&B" in text for text in messages))
+        self.assertFalse(any("没找到特别准" in text for text in messages))
+
+    async def test_ws_electronic_scene_request_uses_brain_plan_without_specific_agent(self):
+        fake_store = FakeStore({"voice_preset": "warm_male"})
+        fake_dj = FakeDJEngine()
+        fake_tts = FakeTTS()
+        fake_scheduler = FakeScheduler()
+        fake_agent = FakeRequestAgent(FakeRequestPick(found=False))
+        fake_websocket = FakeWebSocket([
+            {"type": "handshake", "uid": "42", "settings": {}},
+            {"type": "song_request", "text": "我想听点炸场电音"},
+        ])
+
+        ws.store = fake_store
+        ws.dj_engine = fake_dj
+        ws.tts = fake_tts
+        ws.scheduler = fake_scheduler
+        ws.request_agent = fake_agent
+        ws.radio_brain = RecordingRadioBrain()
+        ws.compressor = FakeCompressor()
+        ws.profile_engine = None
+
+        await ws.ws_handler(fake_websocket)
+
+        self.assertEqual(fake_agent.calls, [])
+        brain_settings = fake_scheduler.pick_next_calls[-1]["user_settings"]["radio_brain"]
+        decision = brain_settings["decision"]
+        self.assertEqual(decision["intent_type"], "taste_direction")
+        self.assertEqual(decision["semantic_queries"][0], "电子 舞曲 高能")
+        self.assertFalse(decision["search_raw_text"])
+        messages = [
+            payload["text"]
+            for payload in fake_websocket.sent
+            if payload["type"] in {"dj_message", "request_status"}
+        ]
+        self.assertTrue(any("电子" in text for text in messages))
+        self.assertFalse(any("没找到特别准" in text for text in messages))
+        self.assertFalse(any("往这个方向靠" in text for text in messages))
+
     async def test_ws_negative_feedback_uses_radio_brain_without_specific_search(self):
         fake_store = FakeStore({"voice_preset": "warm_male"})
         fake_dj = FakeDJEngine()
@@ -783,6 +860,98 @@ class WebSocketUserSettingsTests(unittest.IsolatedAsyncioTestCase):
             if payload["type"] == "dj_message"
         ]
         self.assertIn("中文", dj_messages[0]["text"])
+
+    async def test_ws_rejecting_current_results_does_not_become_song_search(self):
+        fake_store = FakeStore({"voice_preset": "warm_male"})
+        fake_scheduler = FakeScheduler()
+        fake_scheduler.songs = [
+            {"id": "first", "name": "First Song", "ar": [{"name": "First Artist"}]},
+            {
+                "id": "wrong",
+                "name": "不如不见面",
+                "ar": [{"name": "Wrong Artist"}],
+                "selection_reason": {
+                    "type": "request_intent",
+                    "text": "错误地按不是这些搜索。",
+                },
+            },
+            {"id": "better", "name": "Better Song", "ar": [{"name": "Better Artist"}]},
+        ]
+        fake_agent = FakeRequestAgent(FakeRequestPick(found=False))
+        fake_websocket = FakeWebSocket([
+            {"type": "handshake", "uid": "42", "settings": {}},
+            {"type": "song_request", "text": "不是，不是这些"},
+        ])
+
+        ws.store = fake_store
+        ws.dj_engine = FakeDJEngine()
+        ws.tts = FakeTTS()
+        ws.scheduler = fake_scheduler
+        ws.request_agent = fake_agent
+        ws.radio_brain = RecordingRadioBrain()
+        ws.compressor = FakeCompressor()
+        ws.profile_engine = None
+
+        await ws.ws_handler(fake_websocket)
+
+        self.assertEqual(fake_agent.calls, [])
+        brain_settings = fake_scheduler.pick_next_calls[-1]["user_settings"]["radio_brain"]
+        self.assertEqual(brain_settings["decision"]["intent_type"], "negative_feedback")
+        self.assertEqual(fake_scheduler.pick_next_calls[-1]["user_settings"]["listening_intent"]["keywords"], "")
+        messages = [
+            payload["text"]
+            for payload in fake_websocket.sent
+            if payload["type"] in {"dj_message", "request_status"}
+        ]
+        self.assertFalse(any("往这个方向靠" in text for text in messages))
+        self.assertFalse(any("不如不见面" in text for text in messages))
+        self.assertTrue(any("不是这些" in text or "这批" in text for text in messages))
+
+    async def test_ws_negative_feedback_silently_updates_profile_learning(self):
+        fake_store = FakeStore({"voice_preset": "warm_male"})
+        fake_scheduler = FakeScheduler()
+        fake_websocket = FakeWebSocket([
+            {"type": "handshake", "uid": "42", "settings": {}},
+            {"type": "song_request", "text": "能不能不要放这些中文歌了"},
+        ])
+
+        ws.store = fake_store
+        ws.dj_engine = FakeDJEngine()
+        ws.tts = FakeTTS()
+        ws.scheduler = fake_scheduler
+        ws.radio_brain = RecordingRadioBrain()
+        ws.compressor = FakeCompressor()
+        ws.profile_engine = None
+
+        await ws.ws_handler(fake_websocket)
+
+        self.assertEqual(fake_store.saved_profiles[0][0], "42")
+        learned = fake_store.saved_profiles[0][1]["radio_brain"]["learned_preferences"]
+        self.assertIn("中文", learned["avoid_languages"])
+        self.assertIn("华语流行", learned["avoid_styles"])
+        self.assertEqual(learned["negative_feedback_count"], 1)
+
+    async def test_ws_skip_silently_records_skipped_track_in_profile(self):
+        fake_store = FakeStore({"voice_preset": "warm_male"})
+        fake_scheduler = FakeScheduler()
+        fake_websocket = FakeWebSocket([
+            {"type": "handshake", "uid": "42", "settings": {}},
+            {"type": "skip"},
+        ])
+
+        ws.store = fake_store
+        ws.dj_engine = FakeDJEngine()
+        ws.tts = FakeTTS()
+        ws.scheduler = fake_scheduler
+        ws.radio_brain = RecordingRadioBrain()
+        ws.compressor = FakeCompressor()
+        ws.profile_engine = None
+
+        await ws.ws_handler(fake_websocket)
+
+        learned = fake_store.saved_profiles[0][1]["radio_brain"]["learned_preferences"]
+        self.assertEqual(learned["skipped_track_ids"][0], "first")
+        self.assertEqual(learned["skip_count"], 1)
 
     async def test_ws_song_request_plays_agent_selected_version_with_dj_intro(self):
         fake_store = FakeStore({"voice_preset": "warm_male"})
@@ -872,6 +1041,135 @@ class WebSocketUserSettingsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(request_statuses[0]["status"], "not_found")
         self.assertNotIn("找到了", request_statuses[0]["text"])
         self.assertNotIn("想听", request_statuses[0].get("next_track", {}).get("name", ""))
+
+    async def test_ws_correction_phrase_uses_request_agent_with_thinking_feedback(self):
+        fake_store = FakeStore({"voice_preset": "warm_male"})
+        fake_dj = FakeDJEngine()
+        fake_tts = FakeTTS()
+        fake_scheduler = FakeScheduler()
+        fake_agent = FakeRequestAgent(FakeRequestPick(
+            found=True,
+            song={
+                "id": "p2",
+                "name": "Piano Concerto No. 2 in G minor",
+                "ar": [{"name": "Sergei Prokofiev"}],
+                "selection_reason": {
+                    "type": "request_agent",
+                    "text": "按用户纠正确认为普罗科菲耶夫作品。",
+                },
+            },
+            dj_intro="对，我按普罗科菲耶夫来接，不再按泛风格乱走。",
+            interpreted_request="普罗科菲耶夫作品",
+        ))
+        fake_websocket = FakeWebSocket([
+            {"type": "handshake", "uid": "42", "settings": {}},
+            {"type": "song_request", "text": "我说的是普罗科菲耶夫"},
+        ])
+
+        ws.store = fake_store
+        ws.dj_engine = fake_dj
+        ws.tts = fake_tts
+        ws.scheduler = fake_scheduler
+        ws.request_agent = fake_agent
+        ws.radio_brain = RecordingRadioBrain()
+        ws.compressor = FakeCompressor()
+        ws.profile_engine = None
+
+        await ws.ws_handler(fake_websocket)
+
+        self.assertEqual(fake_agent.calls[0]["request_text"], "我说的是普罗科菲耶夫")
+        self.assertEqual(fake_scheduler.intent_updates, [])
+        thinking_messages = [
+            payload["text"]
+            for payload in fake_websocket.sent
+            if payload["type"] == "dj_message"
+        ]
+        self.assertTrue(any("作品" in text or "人名" in text for text in thinking_messages))
+        self.assertFalse(any("往“我说的是普罗科菲耶夫”这个方向接" in text for text in thinking_messages))
+        segues = [
+            payload for payload in fake_websocket.sent
+            if payload["type"] == "segue"
+        ]
+        self.assertEqual(segues[0]["next_track"]["id"], "p2")
+
+    async def test_ws_artist_fragment_uses_brain_direction_not_not_found_copy(self):
+        fake_store = FakeStore({"voice_preset": "warm_male"})
+        fake_dj = FakeDJEngine()
+        fake_tts = FakeTTS()
+        fake_scheduler = FakeScheduler()
+        fake_agent = FakeRequestAgent(FakeRequestPick(
+            found=False,
+            interpreted_request="linkin park",
+        ))
+        fake_websocket = FakeWebSocket([
+            {"type": "handshake", "uid": "42", "settings": {}},
+            {"type": "song_request", "text": "linkin park的"},
+        ])
+
+        ws.store = fake_store
+        ws.dj_engine = fake_dj
+        ws.tts = fake_tts
+        ws.scheduler = fake_scheduler
+        ws.request_agent = fake_agent
+        ws.radio_brain = RecordingRadioBrain()
+        ws.compressor = FakeCompressor()
+        ws.profile_engine = None
+
+        await ws.ws_handler(fake_websocket)
+
+        self.assertEqual(fake_agent.calls, [])
+        brain_settings = fake_scheduler.pick_next_calls[-1]["user_settings"]["radio_brain"]
+        decision = brain_settings["decision"]
+        self.assertEqual(decision["intent_type"], "artist_direction")
+        self.assertEqual(decision["prefer_artists"], ["Linkin Park"])
+        messages = [
+            payload["text"]
+            for payload in fake_websocket.sent
+            if payload["type"] in {"dj_message", "request_status"}
+        ]
+        self.assertFalse(any("换个说法" in text for text in messages))
+        self.assertFalse(any("没接准" in text for text in messages))
+        self.assertTrue(any("Linkin Park" in text for text in messages))
+
+    async def test_ws_misspelled_artist_fragment_uses_brain_not_retry_instruction(self):
+        fake_store = FakeStore({"voice_preset": "warm_male"})
+        fake_dj = FakeDJEngine()
+        fake_tts = FakeTTS()
+        fake_scheduler = FakeScheduler()
+        fake_agent = FakeRequestAgent(FakeRequestPick(
+            found=False,
+            interpreted_request="linkin parl",
+        ))
+        fake_websocket = FakeWebSocket([
+            {"type": "handshake", "uid": "42", "settings": {}},
+            {"type": "song_request", "text": "linkin parl"},
+        ])
+
+        ws.store = fake_store
+        ws.dj_engine = fake_dj
+        ws.tts = fake_tts
+        ws.scheduler = fake_scheduler
+        ws.request_agent = fake_agent
+        ws.radio_brain = RecordingRadioBrain()
+        ws.compressor = FakeCompressor()
+        ws.profile_engine = None
+
+        await ws.ws_handler(fake_websocket)
+
+        self.assertEqual(fake_agent.calls, [])
+        brain_settings = fake_scheduler.pick_next_calls[-1]["user_settings"]["radio_brain"]
+        decision = brain_settings["decision"]
+        self.assertEqual(decision["intent_type"], "artist_direction")
+        self.assertEqual(decision["prefer_artists"], ["Linkin Parl"])
+        messages = [
+            payload["text"]
+            for payload in fake_websocket.sent
+            if payload["type"] in {"dj_message", "request_status"}
+        ]
+        self.assertFalse(any("换个说法" in text for text in messages))
+        self.assertFalse(any("没接准" in text for text in messages))
+        self.assertFalse(any("Linkin Parl" in text for text in messages))
+        self.assertTrue(any("校正" in text for text in messages))
 
     async def test_ws_short_title_request_does_not_become_mood_direction_when_agent_misses(self):
         fake_store = FakeStore({"voice_preset": "warm_male"})
