@@ -184,6 +184,10 @@ class SearchVerifyAgentTests(unittest.IsolatedAsyncioTestCase):
             {"id": "ktv", "name": "Creep KTV伴奏", "ar": [{"name": "Radiohead"}]},
             {"id": "noise", "name": "白噪音 睡眠", "ar": [{"name": "Utility Audio"}]},
             {"id": "cover", "name": "Creep cover", "ar": [{"name": "Bedroom Singer"}], "alia": ["翻唱"]},
+            {"id": "study-bg", "name": "学习用背景音乐", "ar": [{"name": "Focus Audio"}]},
+            {"id": "study-piano", "name": "自习钢琴曲", "ar": [{"name": "Study Piano"}]},
+            {"id": "white-before-bed", "name": "白噪声 睡前", "ar": [{"name": "Sleep Utility"}]},
+            {"id": "karaoke-cn", "name": "Creep 卡拉OK版", "ar": [{"name": "Radiohead"}]},
             {"id": "creep", "name": "Creep", "ar": [{"name": "Radiohead"}], "al": {"name": "Pablo Honey"}},
         ]
         llm = FakeLLM([
@@ -201,4 +205,39 @@ class SearchVerifyAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("白噪音", judgement_prompt)
         self.assertNotIn("Bedroom Singer", judgement_prompt)
         self.assertNotIn('"id": "cover"', judgement_prompt)
+        self.assertNotIn("学习用背景音乐", judgement_prompt)
+        self.assertNotIn("自习钢琴曲", judgement_prompt)
+        self.assertNotIn("白噪声", judgement_prompt)
+        self.assertNotIn("卡拉OK", judgement_prompt)
         self.assertIn("Pablo Honey", judgement_prompt)
+
+    async def test_utility_candidate_filter_covers_reviewed_variants(self):
+        agent = SearchVerifyAgent(FakeLLM([]), FakeNetease(), AlwaysPlayableResolver())
+
+        bad_examples = [
+            {"name": "学习用背景音乐"},
+            {"name": "自习钢琴曲"},
+            {"name": "白噪声 睡前"},
+            {"name": "卡拉OK版"},
+            {"name": "shared playlist"},
+            {"name": "深夜歌单"},
+            {"name": "Creep backing track"},
+            {"name": "Creep backing"},
+            {"name": "Creep accompaniment"},
+            {"name": "Creep accompaniment version"},
+            {"name": "Creep cover"},
+            {"name": "翻唱合集"},
+            {"name": "Creep KTV"},
+            {"name": "Creep karaoke"},
+            {"name": "study piano"},
+            {"name": "背景音乐"},
+            {"name": "white noise"},
+            {"name": "白噪音"},
+            {"name": "sleep music"},
+            {"name": "睡眠音乐"},
+            {"name": "助眠钢琴"},
+        ]
+
+        for song in bad_examples:
+            with self.subTest(song=song["name"]):
+                self.assertTrue(agent._is_bad_candidate(song))
