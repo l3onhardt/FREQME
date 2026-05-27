@@ -19,7 +19,6 @@ from backend.engines.profile import ProfileEngine
 from backend.engines.dj import DJEngine
 from backend.engines.scheduler import StreamScheduler
 from backend.engines.audio_resolver import AudioResolver
-from backend.engines.song_request_agent import SongRequestAgent
 from backend.engines.radio_brain import RadioBrain
 from backend.engines.dj_request_agent import DJRequestAgent
 from backend.engines.search_verify_agent import SearchVerifyAgent
@@ -70,7 +69,6 @@ async def lifespan(app: FastAPI):
     dj_eng = DJEngine(llm_router, store)
     sched = StreamScheduler(netease_adapter, store, bus, llm=llm_router)
     audio_resolver = AudioResolver(netease_adapter, store)
-    request_agent = SongRequestAgent(llm_router, netease_adapter, llm_timeout_s=5.0)
     radio_brain = RadioBrain()
     dj_memory_manager = DJMemoryManager(store)
     dj_request_agent = DJRequestAgent(llm_router, llm_timeout_s=8.0)
@@ -107,7 +105,6 @@ async def lifespan(app: FastAPI):
     ws.dj_engine = dj_eng
     ws.scheduler = sched
     ws.audio_resolver = audio_resolver
-    ws.request_agent = request_agent
     ws.radio_brain = radio_brain
     ws.dj_memory_manager = dj_memory_manager
     ws.dj_request_agent = dj_request_agent

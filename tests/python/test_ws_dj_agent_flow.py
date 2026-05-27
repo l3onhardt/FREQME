@@ -26,6 +26,24 @@ class FailingLegacyBrain:
         raise AssertionError("legacy radio brain should not be called")
 
 
+class RecordingLegacyAgent:
+    def __init__(self):
+        self.calls = []
+
+    async def resolve(self, *args, **kwargs):
+        self.calls.append({"args": args, "kwargs": kwargs})
+        return None
+
+
+class RecordingLegacyBrain:
+    def __init__(self):
+        self.calls = []
+
+    def interpret_user_text(self, *args, **kwargs):
+        self.calls.append({"args": args, "kwargs": kwargs})
+        return None
+
+
 class RecordingCompressor(FakeCompressor):
     def get_context(self):
         return [{"speaker": "user", "text": "previous turn"}]
@@ -212,6 +230,8 @@ class WSDJAgentFlowTests(unittest.IsolatedAsyncioTestCase):
             "dj_memory_manager",
         ):
             setattr(ws, name, None)
+        legacy_request_agent = object()
+        ws.request_agent = legacy_request_agent
 
         app = FastAPI()
         with (
@@ -226,6 +246,7 @@ class WSDJAgentFlowTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIsInstance(ws.dj_request_agent, DJRequestAgent)
                 self.assertIsInstance(ws.search_verify_agent, SearchVerifyAgent)
                 self.assertIsInstance(ws.queue_director, QueueDirector)
+                self.assertIs(ws.request_agent, legacy_request_agent)
 
     async def test_song_request_uses_queue_director_not_radio_brain_or_old_request_agent(self):
         from backend.api import ws
@@ -257,6 +278,41 @@ class WSDJAgentFlowTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(request_status["status"], "ready")
         self.assertEqual(request_status["next_track"]["id"], "verified-radiohead")
+        self.assertNotIn(request_text, request_status["text"])
+
+    async def test_song_request_without_queue_director_does_not_fall_back_to_legacy_interpreters(self):
+        from backend.api import ws
+
+        request_text = "不能放点radiohead的吗"
+        legacy_agent = RecordingLegacyAgent()
+        legacy_brain = RecordingLegacyBrain()
+        fake_websocket = FakeWebSocket([
+            {"type": "handshake", "uid": "42", "settings": {}},
+            {"type": "song_request", "text": request_text},
+        ])
+
+        ws.store = FakeStore({"voice_preset": "warm_male"})
+        ws.dj_engine = FakeDJEngine()
+        ws.tts = FakeTTS()
+        ws.scheduler = FakeScheduler()
+        ws.compressor = RecordingCompressor()
+        ws.profile_engine = None
+        ws.audio_resolver = None
+        ws.queue_director = None
+        ws.request_agent = legacy_agent
+        ws.radio_brain = legacy_brain
+
+        await ws.ws_handler(fake_websocket)
+
+        self.assertEqual(legacy_agent.calls, [])
+        self.assertEqual(legacy_brain.calls, [])
+        self.assertEqual(ws.scheduler.intent_updates, [])
+        request_status = next(
+            payload for payload in fake_websocket.sent
+            if payload["type"] == "request_status"
+        )
+        self.assertEqual(request_status["status"], "not_found")
+        self.assertEqual(request_status["text"], "I could not safely verify a playable match.")
         self.assertNotIn(request_text, request_status["text"])
 
     async def test_song_request_allows_short_entity_name_in_successful_dj_text(self):
