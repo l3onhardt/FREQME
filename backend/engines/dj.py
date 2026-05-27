@@ -39,7 +39,7 @@ class DJEngine:
         personality = profile.get("personality", {})
         insights = self._radio_insights_text(profile)
         situational = self._situational_text(user_settings)
-        prompt = f"""现在是{scene}，用户刚打开一档私人音乐电台。
+        prompt = f"""你是 FREQME，一位真实的 FM 音乐电台主播。现在是{scene}，用户刚打开电台。
 
 用户画像：{personality}
 主播可用的听感洞察：
@@ -47,11 +47,12 @@ class DJEngine:
 建议的 DJ 风格：{style}
 时间与地区上下文：{situational}
 
-请生成一段开场白，朗读时长约 12 到 20 秒。
+请生成一段开场白，朗读时长约 10 到 18 秒。
 只输出主播要说的话，不要标题、括号、解释或舞台提示。
-不要说“欢迎收听”，不要说“根据你的画像”，不要提系统或算法。
-如果用户刚点了方向，先像真人 DJ 一样轻轻接住这个请求，再把音乐放进去。
-语气要像真实电台主播自然开口，有画面感，但不要矫情。"""
+语气要像专业电台主播自然开口：稳一点、顺一点、有一点陪伴感，但不要播音腔过重。
+不要说“欢迎收听”，不要说“根据你的画像”，不要提系统、算法、推荐或模型。
+如果用户刚点了方向，先像真人 DJ 一样轻轻接住这个请求，再自然把音乐带进去。
+如果当前是早晨、午后、傍晚或夜里，措辞要顺着这个时间的气质调整，但都保持电台感。"""
         return await self.llm.chat(
             self._with_user_settings_hint(prompt, user_settings),
             max_tokens=180,
@@ -65,6 +66,7 @@ class DJEngine:
         next_song: dict,
         context: ContextCompressor,
         user_settings: dict | None = None,
+        presentation_plan: dict | None = None,
     ) -> str:
         current_name = current_song.get("name", "这首歌")
         current_artist = self._artist_name(current_song)
@@ -75,6 +77,9 @@ class DJEngine:
             if isinstance(next_song.get("selection_reason"), dict)
             else ""
         )
+        presentation_plan = presentation_plan or next_song.get("presentation_plan") or {}
+        segue_mode = str(presentation_plan.get("segue_mode") or "short_segue")
+        intro_value = str(presentation_plan.get("intro_value") or "medium")
 
         recent = context.to_prompt_text()
         style = profile.get("dj_style_suggestion", "温暖自然")
@@ -83,12 +88,15 @@ class DJEngine:
         music_notes = (user_settings or {}).get("music_notes", "").strip()[:200]
         insights = self._radio_insights_text(profile)
         situational = self._situational_text(user_settings)
-
-        prompt = f"""你是 FREQME，一位私人音乐电台主播。现在是{scene}。
+        intro_level = self._segue_intensity(next_song, recent, user_settings)
+        prompt = f"""你是 FREQME，一位专业 FM 音乐电台主播。现在是{scene}。
 
 当前刚播完：{current_name} - {current_artist}
 下一首即将播放：{next_name} - {next_artist}
 选曲线索：{selection_reason or '延续刚才的情绪，让两首歌自然接上。'}
+串场等级：{intro_level}
+当前播报模式：{segue_mode}
+当前介绍价值：{intro_level if intro_level != 'none' else 'none'}
 
 用户画像：{', '.join(traits) if traits else '暂无明确画像'}
 主播可用的听感洞察：
@@ -101,11 +109,16 @@ class DJEngine:
 最近电台上下文：
 {recent if recent else '刚开始，没有历史上下文。'}
 
-请生成一段 1 到 2 句的串场，朗读时长约 8 到 15 秒。
+请生成一段符合当前播报模式的串场。
+- 如果模式是 silence：尽量不输出内容；如果必须输出，也只给一个非常短的过门。
+- 如果模式是 ack：先自然接住用户意图，不要像客服，不要解释系统。
+- 如果模式是 short_segue：用 1 到 2 句轻轻带过，朗读时长约 6 到 12 秒。
+- 如果模式是 intro/break：可以稍微展开，但仍然像电台，不要像说明书，朗读时长约 12 到 22 秒。
+
 只输出主播要说的话，不要标题、括号、解释或舞台提示。
-必须自然连接“{current_name}”和“{next_name}”，可以点到两首歌的气质变化。
+必须自然连接“{current_name}”和“{next_name}”。
 不要使用“推荐”“喜欢”“接下来请听”这些机械表达；不要提系统、画像或选曲规则。
-语气要像深夜电台里真实的人在接歌：具体、克制、贴近音乐。"""
+语气要像真实电台 DJ：有呼吸感，句子短一点，留一点空白给音乐。"""
         return await self.llm.chat(
             self._with_user_settings_hint(prompt, user_settings),
             max_tokens=180,
@@ -119,6 +132,7 @@ class DJEngine:
         next_song: dict,
         context: ContextCompressor,
         user_settings: dict | None = None,
+        presentation_plan: dict | None = None,
     ) -> str:
         played_text = self._song_list_text(played_songs[-3:])
         next_name = next_song.get("name", "下一首歌")
@@ -129,6 +143,10 @@ class DJEngine:
             if isinstance(next_song.get("selection_reason"), dict)
             else ""
         )
+        presentation_plan = presentation_plan or next_song.get("presentation_plan") or {}
+        break_level = self._break_intensity(next_song, played_songs, context.to_prompt_text(), user_settings)
+        segue_mode = str(presentation_plan.get("segue_mode") or "short_segue")
+        intro_level = str(presentation_plan.get("intro_value") or break_level or "medium")
         recent = context.to_prompt_text()
         style = profile.get("dj_style_suggestion", "温暖自然")
         traits = profile.get("personality", {}).get("traits", [])
@@ -136,8 +154,7 @@ class DJEngine:
         music_notes = (user_settings or {}).get("music_notes", "").strip()[:200]
         insights = self._radio_insights_text(profile)
         situational = self._situational_text(user_settings)
-
-        prompt = f"""你是 FREQME，一位真实的私人音乐电台主播。现在是{scene}。
+        prompt = f"""你是 FREQME，一位专业 FM 音乐电台主播。现在是{scene}。
 
 刚刚播过的一组歌：
 {played_text}
@@ -145,6 +162,9 @@ class DJEngine:
 下一首即将播放：{next_name} - {next_artist}
 下一首可确认信息：{next_facts}
 选曲线索：{selection_reason or '延续刚才一组歌的情绪，同时给听感一点变化。'}
+段落强度：{break_level}
+当前播报模式：{segue_mode}
+当前介绍价值：{intro_level}
 
 用户画像：{', '.join(traits) if traits else '暂无明确画像'}
 主播可用的听感洞察：
@@ -155,10 +175,15 @@ class DJEngine:
 时间与地区上下文：{situational}
 最近电台上下文：{recent if recent else '刚开始，没有历史上下文。'}
 
-请生成一段像人类电台 DJ 的节目段落，朗读时长约 20 到 35 秒。
-结构要自然：先用一句话回看刚刚这一组歌的共同气质，再介绍下一首歌。
-介绍下一首时必须点到歌名和艺人；可以提到专辑、别名、发行时间等“可确认信息”。
+请按模式生成节目段落。
+- silence：尽量不输出内容，或者只留一句极短的过门。
+- short_segue：1 到 2 句，朗读时长约 8 到 14 秒。
+- intro：可自然展开到 14 到 22 秒，但仍要克制。
+- break：可以是 20 到 30 秒的完整介绍，但必须像电台 DJ，不像百科说明。
+
+介绍下一首时必须点到歌名和艺人；只有在可确认时才提专辑、别名、发行时间或创作信息。
 如果没有明确创作背景，绝对不要编造幕后故事、发行背景或作者意图；改用声音质感、情绪、编曲听感来讲。
+如果是低强度，就少讲一点、像自然过门；如果是高强度，可以多给一点信息量，但仍然要像 DJ。
 只输出主播要说的话，不要标题、括号、舞台提示或解释。
 不要提系统、画像或选曲规则；所有“懂用户”的表达都要像你自己听出来的。
 语气要像真实电台主播：有呼吸感、具体、克制、温暖，可以有一点口语停顿，但不要加奇怪语气词，不要卖萌，不要像广告。"""
@@ -245,6 +270,17 @@ class DJEngine:
         if publish_time:
             facts.append(f"发行时间：{publish_time}")
 
+        creator = song.get("creator") or song.get("songwriter") or song.get("composer")
+        if isinstance(creator, str) and creator.strip():
+            facts.append(f"创作信息：{creator.strip()}")
+        elif isinstance(creator, list):
+            creator_text = "、".join(
+                str(item).strip() for item in creator
+                if str(item).strip()
+            )
+            if creator_text:
+                facts.append(f"创作信息：{creator_text}")
+
         reason = song.get("selection_reason")
         if isinstance(reason, dict):
             reason_text = reason.get("text")
@@ -282,6 +318,9 @@ class DJEngine:
                 text = ""
             if text:
                 lines.append(f"- {label}：{text}")
+        focus = insights.get("song_introduction_focus")
+        if isinstance(focus, str) and focus.strip():
+            lines.append(f"- 介绍重点：{focus.strip()}")
         return "\n".join(lines) if lines else "暂无明确洞察。"
 
     def _situational_text(self, user_settings: dict | None = None) -> str:
@@ -291,12 +330,18 @@ class DJEngine:
         locale = settings.get("locale")
         region_hint = settings.get("region_hint")
         intent = settings.get("listening_intent")
+        local_time_block = settings.get("local_time_block")
+        current_mode = settings.get("current_mode")
         if timezone_name:
             hints.append(f"时区：{timezone_name}")
         if locale:
             hints.append(f"语言环境：{locale}")
         if region_hint:
             hints.append(f"地区线索：{region_hint}")
+        if local_time_block:
+            hints.append(f"当前时段：{local_time_block}")
+        if current_mode:
+            hints.append(f"当前状态：{current_mode}")
         if isinstance(intent, dict):
             raw_text = (intent.get("raw_text") or "").strip()
             keywords = (intent.get("keywords") or "").strip()
@@ -305,6 +350,49 @@ class DJEngine:
             if intent_bits:
                 hints.append(f"用户刚刚想听：{' / '.join(intent_bits)}")
         return "；".join(hints) if hints else "未说明"
+
+    def _segue_intensity(self, next_song: dict, recent: str, user_settings: dict | None = None) -> str:
+        reason = self._selection_reason_text(next_song)
+        if reason and len(reason) > 28:
+            return "high"
+        if any(token in reason for token in ("专辑", "发行", "创作", "经典", "代表作")):
+            return "high"
+        if recent and len(recent) > 40:
+            return "medium"
+        if (user_settings or {}).get("current_mode"):
+            return "medium"
+        return "low"
+
+    def _break_intensity(
+        self,
+        next_song: dict,
+        played_songs: list[dict],
+        recent: str,
+        user_settings: dict | None = None,
+    ) -> str:
+        facts = self._song_fact_text(next_song)
+        reason = self._selection_reason_text(next_song)
+        if any(token in facts for token in ("专辑", "发行时间", "创作信息")):
+            return "high"
+        if len(played_songs or []) >= 3 and reason:
+            return "medium"
+        if recent and len(recent) > 40:
+            return "medium"
+        if (user_settings or {}).get("current_mode"):
+            return "medium"
+        return "low"
+
+    def _selection_reason_text(self, song: dict | None) -> str:
+        if not isinstance(song, dict):
+            return ""
+        reason = song.get("selection_reason")
+        if isinstance(reason, dict):
+            text = reason.get("text")
+            if isinstance(text, str):
+                return text.strip()
+        if isinstance(reason, str):
+            return reason.strip()
+        return ""
 
     def _clean_music_notes(self, notes: str) -> str:
         clean = (notes or "").strip()[:200]
@@ -317,10 +405,13 @@ class DJEngine:
             "土嗨": "高刺激舞曲或粗糙舞曲",
             "不停": "避免连续播放",
         }
+        changed = False
         for old, new in replacements.items():
-            clean = clean.replace(old, new)
+            if old in clean:
+                clean = clean.replace(old, new)
+                changed = True
 
-        if clean != notes.strip()[:200]:
+        if changed:
             clean = f"{clean}。请只理解为音乐偏好，不要复述原话。"
         return clean
 
@@ -338,6 +429,7 @@ class DJEngine:
         timezone_name = (user_settings or {}).get("timezone_name", "").strip()
         locale = (user_settings or {}).get("locale", "").strip()
         region_hint = (user_settings or {}).get("region_hint", "").strip()
+        local_time_block = (user_settings or {}).get("local_time_block", "").strip()
         hints = []
         if display_name:
             hints.append(f"听众昵称：{display_name}")
@@ -353,6 +445,8 @@ class DJEngine:
             hints.append(f"语言环境：{locale}")
         if region_hint:
             hints.append(f"地区线索：{region_hint}")
+        if local_time_block:
+            hints.append(f"时段：{local_time_block}")
         if not hints:
             return prompt
         return f"{prompt}\n\n听众补充信息：{'；'.join(hints)}"

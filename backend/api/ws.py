@@ -25,7 +25,15 @@ search_verify_agent = None
 queue_director = None
 dj_memory_manager = None
 
-DEFAULT_DJ_INTRO = "晚上好，这里是今晚的私人电台。我先把第一首歌轻轻放进来，你不用急，跟着这一点光慢慢听。"
+def default_dj_intro(scene: str) -> str:
+    greeting_map = {
+        "清晨": "早上好",
+        "午后": "下午好",
+        "深夜": "晚上好",
+        "日常": "你好",
+    }
+    greeting = greeting_map.get(scene, "你好")
+    return f"{greeting}，电台已经打开了。先别急着说话，我们先让第一首歌把今天的气氛慢慢铺开。"
 MAX_QUEUE_PREPARE_ATTEMPTS = 12
 
 
@@ -86,6 +94,13 @@ async def ws_handler(websocket: WebSocket):
             and len(played_songs) % 3 == 0
             and not playback_queue.ready_items()
         )
+
+    def current_theme_window() -> int:
+        intent = scheduler_state.listening_intent if scheduler_state else {}
+        try:
+            return max(2, min(6, int((intent or {}).get("theme_window") or 4)))
+        except Exception:
+            return 4
 
     def dj_playback_context() -> dict:
         return {
@@ -238,7 +253,10 @@ async def ws_handler(websocket: WebSocket):
                 dj_engine.generate_intro(
                     profile,
                     scene,
-                    user_settings=user_settings,
+                    user_settings={
+                        **user_settings,
+                        "local_time_block": scene,
+                    },
                 ),
                 timeout=20.0,
             )
@@ -296,6 +314,7 @@ async def ws_handler(websocket: WebSocket):
                         prepared_song,
                         compressor,
                         user_settings=user_settings,
+                        presentation_plan=prepared_song.get("presentation_plan"),
                     )
                 except Exception:
                     segue_text = ""
@@ -452,8 +471,9 @@ async def ws_handler(websocket: WebSocket):
                             "dj_style_suggestion": "温暖自然",
                         }
 
+                default_intro_text = default_dj_intro(scene)
                 default_intro_task = asyncio.create_task(
-                    synthesize_intro_text(DEFAULT_DJ_INTRO)
+                    synthesize_intro_text(default_intro_text)
                 )
                 intro_task = asyncio.create_task(prepare_intro())
 
@@ -466,7 +486,7 @@ async def ws_handler(websocket: WebSocket):
                     "type": "session_start",
                     "profile": profile,
                     "scene": scene,
-                    "intro_text": DEFAULT_DJ_INTRO,
+                    "intro_text": default_intro_text,
                     "tts_ready": False,
                     "tts_hash": "",
                 })
@@ -475,7 +495,7 @@ async def ws_handler(websocket: WebSocket):
                     default_tts_hash = await default_intro_task
                     await websocket.send_json({
                         "type": "intro",
-                        "text": DEFAULT_DJ_INTRO,
+                        "text": default_intro_text,
                         "tts_ready": bool(default_tts_hash),
                         "tts_hash": default_tts_hash,
                     })
@@ -534,6 +554,19 @@ async def ws_handler(websocket: WebSocket):
                 request_text = " ".join(str(msg.get("text") or "").split())[:120]
                 if not request_text:
                     continue
+                if scheduler and scheduler_state:
+                    try:
+                        scheduler.apply_listening_intent(
+                            scheduler_state,
+                            request_text,
+                            user_settings=user_settings,
+                        )
+                        scheduler_state.intent_picks_remaining = max(
+                            scheduler_state.intent_picks_remaining,
+                            int((scheduler_state.listening_intent or {}).get("theme_window") or 4),
+                        )
+                    except Exception:
+                        pass
                 if prewarm_task and not prewarm_task.done():
                     prewarm_task.cancel()
                     try:

@@ -74,6 +74,16 @@ class StreamScheduler:
         sid = song.get("id")
         return str(sid).strip() if sid is not None else ""
 
+    def _album_name(self, song: dict | None) -> str:
+        if not isinstance(song, dict):
+            return ""
+        album = song.get("al") or song.get("album")
+        if isinstance(album, dict):
+            return str(album.get("name") or "").strip()
+        if isinstance(album, str):
+            return album.strip()
+        return ""
+
     def _artist_name(self, song: dict | None) -> str:
         if not isinstance(song, dict):
             return ""
@@ -123,6 +133,93 @@ class StreamScheduler:
             "text": text,
         }
         return selected
+
+    def _presentation_plan(
+        self,
+        song: dict,
+        current_song_id: str | None,
+        profile: dict | None,
+        user_settings: dict | None,
+        state: SchedulerSessionState,
+    ) -> dict:
+        reason = song.get("selection_reason") if isinstance(song, dict) else {}
+        reason_text = str(reason.get("text") or "").strip() if isinstance(reason, dict) else ""
+        reason_type = str(reason.get("type") or "").strip() if isinstance(reason, dict) else ""
+        intro_value = self._intro_value(song, reason_type, reason_text, profile, user_settings)
+        segue_mode = self._segue_mode(song, current_song_id, profile, user_settings, state)
+        theme_window = self._theme_window(user_settings, state)
+        return {
+            "intro_value": intro_value,
+            "segue_mode": segue_mode,
+            "should_speak": segue_mode != "silence",
+            "reason_type": reason_type,
+            "theme_window": theme_window,
+        }
+
+    def _intro_value(
+        self,
+        song: dict,
+        reason_type: str,
+        reason_text: str,
+        profile: dict | None,
+        user_settings: dict | None,
+    ) -> str:
+        facts = []
+        if self._album_name(song):
+            facts.append("album")
+        if str(song.get("publishTime") or song.get("publish_time") or "").strip():
+            facts.append("publish")
+        if any(key in song for key in ("creator", "composer", "songwriter")):
+            facts.append("creation")
+        if reason_type in {"radio_brain_inferred_song", "radio_brain_search"}:
+            facts.append("intent")
+        if reason_type in {"familiar_anchor", "daily_personal"}:
+            facts.append("flow")
+        if isinstance(user_settings, dict) and user_settings.get("current_mode"):
+            facts.append("context")
+        if isinstance(profile, dict) and profile.get("radio_insights"):
+            facts.append("taste")
+        if reason_text and len(reason_text) > 28:
+            facts.append("detail")
+        if len(facts) >= 4:
+            return "high"
+        if len(facts) >= 2:
+            return "medium"
+        if facts:
+            return "low"
+        return "none"
+
+    def _theme_window(self, user_settings: dict | None, state: SchedulerSessionState) -> int:
+        intent = self._intent_from_settings(user_settings, state)
+        window = intent.get("theme_window") if isinstance(intent, dict) else 4
+        try:
+            return max(2, min(6, int(window or 4)))
+        except Exception:
+            return 4
+
+    def _segue_mode(
+        self,
+        song: dict,
+        current_song_id: str | None,
+        profile: dict | None,
+        user_settings: dict | None,
+        state: SchedulerSessionState,
+    ) -> str:
+        if not current_song_id:
+            return "intro"
+        if state.pick_count and state.pick_count % 5 == 0:
+            return "break"
+        reason_type = str((song.get("selection_reason") or {}).get("type") or "")
+        window = self._theme_window(user_settings, state)
+        if reason_type in {"familiar_anchor", "daily_personal"}:
+            return "silence"
+        if reason_type in {"request_intent", "radio_brain_profile", "radio_brain_search", "radio_brain_inferred_song"}:
+            return "ack" if window > 0 else "short_segue"
+        if isinstance(user_settings, dict) and user_settings.get("current_mode") in {"专注", "放松"}:
+            return "silence"
+        if isinstance(profile, dict) and profile.get("radio_insights"):
+            return "short_segue"
+        return "short_segue"
 
     def _remember_played(self, song: dict, state: SchedulerSessionState) -> None:
         sid = self._song_id(song)
@@ -206,6 +303,7 @@ class StreamScheduler:
                 "raw_text": clean_text,
                 "keywords": "",
                 "mood": "",
+                "theme_window": 4,
             }
             if session_state:
                 session_state.listening_intent = intent
@@ -227,10 +325,13 @@ class StreamScheduler:
             "raw_text": clean_text,
             "keywords": keywords,
             "mood": "",
+            "theme_window": 4,
         }
         if session_state:
             session_state.listening_intent = intent
             session_state.intent_picks_remaining = 4
+        if isinstance(intent, dict):
+            intent["theme_window"] = int(intent.get("theme_window") or 4)
         if isinstance(user_settings, dict):
             user_settings["listening_intent"] = intent
         return intent
@@ -288,17 +389,21 @@ class StreamScheduler:
         state: SchedulerSessionState,
     ) -> dict:
         if state.listening_intent:
+            if "theme_window" not in state.listening_intent:
+                state.listening_intent["theme_window"] = 4
             return state.listening_intent
         if isinstance(user_settings, dict) and isinstance(
             user_settings.get("listening_intent"),
             dict,
         ):
             state.listening_intent = user_settings["listening_intent"]
+            if "theme_window" not in state.listening_intent:
+                state.listening_intent["theme_window"] = 4
             if (
                 state.intent_picks_remaining <= 0
                 and not self._has_dj_agent_active_mode(user_settings)
             ):
-                state.intent_picks_remaining = 4
+                state.intent_picks_remaining = int(state.listening_intent.get("theme_window") or 4)
             return state.listening_intent
         return {}
 
@@ -581,6 +686,13 @@ class StreamScheduler:
 
         def _select(song: dict, reason_type: str, text: str) -> dict:
             selected = self._with_reason(song, reason_type, text)
+            selected["presentation_plan"] = self._presentation_plan(
+                selected,
+                current_song_id,
+                profile,
+                user_settings,
+                state,
+            )
             self._remember_played(selected, state)
             state.pick_count += 1
             if reason_type == "request_intent" and state.intent_picks_remaining > 0:

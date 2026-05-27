@@ -35,9 +35,11 @@ class DJPromptQualityTests(unittest.IsolatedAsyncioTestCase):
                 "name": "新雨",
                 "ar": [{"name": "乙"}],
                 "selection_reason": {"text": "从慢速人声过渡到更轻的器乐"},
+                "presentation_plan": {"segue_mode": "short_segue", "intro_value": "medium"},
             },
             FakeContext(),
             user_settings={"current_mode": "陪伴", "music_notes": "少说套话"},
+            presentation_plan={"segue_mode": "short_segue", "intro_value": "medium"},
         )
 
         prompt = llm.calls[0]["prompt"]
@@ -67,9 +69,11 @@ class DJPromptQualityTests(unittest.IsolatedAsyncioTestCase):
                 "ar": [{"name": "D"}],
                 "al": {"name": "Night Album"},
                 "selection_reason": {"text": "给刚才的电子质感一个更温暖的落点。"},
+                "presentation_plan": {"segue_mode": "break", "intro_value": "high"},
             },
             FakeContext(),
             user_settings={"current_mode": "陪伴"},
+            presentation_plan={"segue_mode": "break", "intro_value": "high"},
         )
 
         prompt = llm.calls[0]["prompt"]
@@ -78,7 +82,7 @@ class DJPromptQualityTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("专辑：Night Album", prompt)
         self.assertIn("必须点到歌名和艺人", prompt)
         self.assertIn("绝对不要编造幕后故事", prompt)
-        self.assertIn("人类电台 DJ", prompt)
+        self.assertIn("像电台 DJ", prompt)
         self.assertEqual(llm.calls[0]["max_tokens"], 360)
 
     async def test_intro_prompt_uses_radio_insights_time_location_and_request_intent(self):
@@ -142,6 +146,7 @@ class DJPromptQualityTests(unittest.IsolatedAsyncioTestCase):
                 "name": "Second",
                 "ar": [{"name": "B"}],
                 "selection_reason": {"text": "回应你刚刚说想听夜路上的歌。"},
+                "presentation_plan": {"segue_mode": "ack", "intro_value": "high"},
             },
             FakeContext(),
             user_settings={
@@ -152,6 +157,7 @@ class DJPromptQualityTests(unittest.IsolatedAsyncioTestCase):
                 "timezone_name": "Asia/Shanghai",
                 "region_hint": "杭州",
             },
+            presentation_plan={"segue_mode": "ack", "intro_value": "high"},
         )
 
         prompt = llm.calls[0]["prompt"]
