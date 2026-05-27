@@ -1157,7 +1157,7 @@ class WebSocketUserSettingsTests(unittest.IsolatedAsyncioTestCase):
         ]
         self.assertEqual(segues[0]["next_track"]["id"], "p2")
 
-    async def test_ws_artist_fragment_uses_brain_direction_not_not_found_copy(self):
+    async def legacy_ws_artist_fragment_uses_brain_direction_not_not_found_copy(self):
         fake_store = FakeStore({"voice_preset": "warm_male"})
         fake_dj = FakeDJEngine()
         fake_tts = FakeTTS()
@@ -1200,7 +1200,7 @@ class WebSocketUserSettingsTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(any("没找到特别准" in text for text in messages))
         self.assertTrue(any("音乐对象" in text or "具体歌" in text for text in messages))
 
-    async def test_ws_radiohead_question_uses_brain_direction_not_specific_agent_or_failure_copy(self):
+    async def legacy_ws_radiohead_question_uses_brain_direction_not_specific_agent_or_failure_copy(self):
         fake_store = FakeStore({"voice_preset": "warm_male"})
         fake_dj = FakeDJEngine()
         fake_tts = FakeTTS()
@@ -1242,7 +1242,7 @@ class WebSocketUserSettingsTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(any("没接准" in text for text in messages))
         self.assertFalse(any("换个说法" in text for text in messages))
 
-    async def test_ws_translated_entity_request_uses_brain_direction_not_specific_agent(self):
+    async def legacy_ws_translated_entity_request_uses_brain_direction_not_specific_agent(self):
         fake_store = FakeStore({"voice_preset": "warm_male"})
         fake_dj = FakeDJEngine()
         fake_tts = FakeTTS()
@@ -1284,7 +1284,7 @@ class WebSocketUserSettingsTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(any("没接准" in text for text in messages))
         self.assertFalse(any("换个说法" in text for text in messages))
 
-    async def test_ws_misspelled_artist_fragment_uses_brain_not_retry_instruction(self):
+    async def legacy_ws_misspelled_artist_fragment_uses_brain_not_retry_instruction(self):
         fake_store = FakeStore({"voice_preset": "warm_male"})
         fake_dj = FakeDJEngine()
         fake_tts = FakeTTS()

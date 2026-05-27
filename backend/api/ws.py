@@ -1,6 +1,7 @@
 import asyncio
 import json
 import re
+import unicodedata
 
 from fastapi import WebSocket, WebSocketDisconnect
 
@@ -90,7 +91,7 @@ async def ws_handler(websocket: WebSocket):
 
     def dj_playback_context() -> dict:
         return {
-            "current_track": _track_info(current_song) if current_song else None,
+            "current_track": _track_info(current_song) if current_song else {},
             "recent_tracks": [_track_info(song) for song in played_songs[-10:]],
             "ready_queue": [
                 _track_info(item.song) for item in playback_queue.ready_items()
@@ -98,9 +99,23 @@ async def ws_handler(websocket: WebSocket):
             "scene": scene,
         }
 
+    def normalized_request_text(text: str) -> str:
+        folded = str(text or "").casefold()
+        return "".join(
+            ch for ch in folded
+            if not ch.isspace()
+            and unicodedata.category(ch)[0] not in {"P", "Z"}
+        )
+
+    def text_contains_request_variant(text: str, request_text: str) -> bool:
+        normalized_request = normalized_request_text(request_text)
+        if not normalized_request:
+            return False
+        return normalized_request in normalized_request_text(text)
+
     def safe_director_status_text(text: str, request_text: str, fallback: str) -> str:
         safe_text = str(text or "").strip()
-        if not safe_text or (request_text and request_text in safe_text):
+        if not safe_text or text_contains_request_variant(safe_text, request_text):
             return fallback
         return safe_text
 
@@ -115,7 +130,6 @@ async def ws_handler(websocket: WebSocket):
             if brain_decision.get("intent_type") in {
                 "taste_direction",
                 "artist_direction",
-                "music_entity_direction",
                 "negative_feedback",
                 "skip_variant",
                 "profile_correction",
@@ -161,23 +175,11 @@ async def ws_handler(websocket: WebSocket):
                 ),
                 "next_track": track,
             }
-        if brain_decision.get("intent_type") == "music_entity_direction":
-            ack_text = str(brain_decision.get("ack_text") or "").strip()
-            return {
-                "type": "request_status",
-                "status": "ready",
-                "text": (
-                    f"{ack_text} 下一首先接：{track['name']}。"
-                    if ack_text
-                    else f"收到，我会先理解“{request_text}”里的音乐对象，再接具体歌。"
-                ),
-                "next_track": track,
-            }
         if reason_type == "dj_agent_verified":
             reason_text = ""
             if isinstance(item.selection_reason, dict):
                 reason_text = str(item.selection_reason.get("text") or "").strip()
-            if reason_text and request_text and request_text in reason_text:
+            if reason_text and text_contains_request_variant(reason_text, request_text):
                 reason_text = ""
             return {
                 "type": "request_status",
@@ -739,7 +741,6 @@ async def ws_handler(websocket: WebSocket):
                     "negative_feedback",
                     "taste_direction",
                     "artist_direction",
-                    "music_entity_direction",
                     "skip_variant",
                     "profile_correction",
                 }:

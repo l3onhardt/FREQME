@@ -62,6 +62,15 @@ class FakeQueueDirector:
         )
 
 
+class RaisingQueueDirector:
+    def __init__(self):
+        self.calls = []
+
+    async def handle_song_request(self, **kwargs):
+        self.calls.append(kwargs)
+        raise RuntimeError("director unavailable")
+
+
 class WSDJAgentFlowTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         from backend.api import auth, ws
@@ -208,6 +217,73 @@ class WSDJAgentFlowTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(director.calls), 1)
         self.assertEqual(ws.scheduler.intent_updates, [])
+        request_status = next(
+            payload for payload in fake_websocket.sent
+            if payload["type"] == "request_status"
+        )
+        self.assertEqual(request_status["status"], "not_found")
+        self.assertEqual(request_status["text"], "I could not safely verify a playable match.")
+        self.assertNotIn(request_text, request_status["text"])
+
+    async def test_song_request_context_has_empty_current_track_before_playback(self):
+        from backend.api import ws
+
+        director = FakeQueueDirector(status="ask", dj_text="Which version do you mean?")
+        request_text = "radiohead"
+        fake_websocket = FakeWebSocket([
+            {"type": "song_request", "text": request_text},
+        ])
+
+        ws.store = FakeStore({"voice_preset": "warm_male"})
+        ws.dj_engine = FakeDJEngine()
+        ws.tts = FakeTTS()
+        ws.scheduler = FakeScheduler()
+        ws.compressor = RecordingCompressor()
+        ws.profile_engine = None
+        ws.audio_resolver = None
+        ws.queue_director = director
+        ws.request_agent = FailingLegacyAgent()
+        ws.radio_brain = FailingLegacyBrain()
+
+        await ws.ws_handler(fake_websocket)
+
+        self.assertEqual(len(director.calls), 1)
+        current_track = director.calls[0]["playback_context"]["current_track"]
+        self.assertIsInstance(current_track, dict)
+        self.assertEqual(current_track, {})
+
+    async def test_song_request_director_status_filters_spaced_raw_request_variant(self):
+        request_text = "不能放点radiohead的吗"
+        spaced_variant = "不能 放点 radiohead 的吗"
+        director = FakeQueueDirector(
+            status="needs_recovery",
+            dj_text=spaced_variant,
+        )
+
+        fake_websocket = await self._run_with_director(director, request_text)
+
+        texts = [
+            payload["text"]
+            for payload in fake_websocket.sent
+            if payload["type"] in {"dj_message", "request_status"}
+        ]
+        self.assertTrue(texts)
+        self.assertFalse(any(spaced_variant in text for text in texts))
+        self.assertFalse(any(request_text in text for text in texts))
+        request_status = next(
+            payload for payload in fake_websocket.sent
+            if payload["type"] == "request_status"
+        )
+        self.assertEqual(request_status["status"], "not_found")
+        self.assertEqual(request_status["text"], "I could not safely verify a playable match.")
+
+    async def test_song_request_director_exception_returns_safe_not_found(self):
+        request_text = "不能放点radiohead的吗"
+        director = RaisingQueueDirector()
+
+        fake_websocket = await self._run_with_director(director, request_text)
+
+        self.assertEqual(len(director.calls), 1)
         request_status = next(
             payload for payload in fake_websocket.sent
             if payload["type"] == "request_status"
