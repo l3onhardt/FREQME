@@ -14,6 +14,14 @@ let introFallbackTimer = null;
 let userVolume = 0.8;
 let isDucked = false;
 let mainVolumeFadeTimer = null;
+let breathTimer = null;
+let breathPhase = 0;
+let breathLevel = 0;
+let audioContext = null;
+let analyserNode = null;
+let sourceNode = null;
+let analyserData = null;
+let analyserActive = false;
 const DUCKING_RATIO = 0.25;
 const DUCK_FADE_MS = 700;
 const RESTORE_FADE_MS = 1000;
@@ -28,6 +36,9 @@ const audioTTS = document.getElementById('audio-tts');
 const volumeSlider = document.getElementById('volume-slider');
 const requestForm = document.getElementById('request-form');
 const requestInput = document.getElementById('request-input');
+const onboardingPrevBtn = document.getElementById('onboarding-prev-btn');
+const onboardingNextBtn = document.getElementById('onboarding-next-btn');
+const stepDots = Array.from(document.querySelectorAll('#step-indicator .step-dot'));
 
 audioMain.volume = userVolume;
 audioTTS.volume = 0.9;
@@ -36,17 +47,125 @@ audioTTS.volume = 0.9;
 function createParticles() {
   if (particlesCreated) return;
   const bg = document.getElementById('player-bg');
-  for (let i = 0; i < 20; i++) {
+  for (let i = 0; i < 16; i++) {
     const p = document.createElement('div');
     p.className = 'particle';
     p.style.left = Math.random() * 100 + '%';
     p.style.top = Math.random() * 100 + '%';
     p.style.animationDelay = Math.random() * 6 + 's';
     p.style.animationDuration = (4 + Math.random() * 8) + 's';
-    p.style.opacity = (0.1 + Math.random() * 0.3);
+    p.style.opacity = (0.06 + Math.random() * 0.16);
     bg.appendChild(p);
   }
   particlesCreated = true;
+}
+
+
+async function connectAudioAnalyser() {
+  const runtimeWindow = typeof window !== 'undefined' ? window : null;
+  const AC = runtimeWindow?.AudioContext || runtimeWindow?.webkitAudioContext;
+  if (!AC) return false;
+  try {
+    if (!audioContext) {
+      audioContext = new AC();
+      analyserNode = audioContext.createAnalyser();
+      analyserNode.fftSize = 256;
+      analyserData = new Uint8Array(analyserNode.frequencyBinCount);
+    }
+    if (audioContext.state === 'suspended') {
+      await audioContext.resume();
+    }
+    if (!sourceNode) {
+      sourceNode = audioContext.createMediaElementSource(audioMain);
+      sourceNode.connect(analyserNode);
+      analyserNode.connect(audioContext.destination);
+    }
+    analyserActive = true;
+    return true;
+  } catch {
+    analyserActive = false;
+    return false;
+  }
+}
+
+function setAmbientState(level, phase = 'night') {
+  const clamped = Math.max(0, Math.min(1, level));
+  const root = document.documentElement;
+  if (!root?.style?.setProperty) return;
+  const presets = {
+    morning: { hue: 6, warmth: 0.08, halo: 'rgba(255, 196, 145, 0.12)', halo2: 'rgba(255, 230, 193, 0.06)' },
+    afternoon: { hue: 14, warmth: 0.1, halo: 'rgba(242, 157, 109, 0.11)', halo2: 'rgba(232, 184, 127, 0.07)' },
+    evening: { hue: 22, warmth: 0.16, halo: 'rgba(218, 121, 98, 0.12)', halo2: 'rgba(242, 157, 109, 0.08)' },
+    night: { hue: 28, warmth: 0.2, halo: 'rgba(163, 98, 118, 0.12)', halo2: 'rgba(242, 157, 109, 0.08)' },
+    late: { hue: 34, warmth: 0.24, halo: 'rgba(128, 89, 132, 0.12)', halo2: 'rgba(242, 157, 109, 0.06)' },
+  };
+  const preset = presets[phase] || presets.night;
+  root.style.setProperty('--ambient-alpha', String(0.08 + (clamped * 0.12)));
+  root.style.setProperty('--bg-hue', `${preset.hue + (clamped * 4)}deg`);
+  root.style.setProperty('--bg-warmth', String(preset.warmth + (clamped * 0.1)));
+  root.style.setProperty('--pulse-alpha', String(0.08 + (clamped * 0.12)));
+  root.style.setProperty('--breath-glow', String(0.12 + (clamped * 0.12)));
+  root.style.setProperty('--breath-scale', String(1 + (clamped * 0.008)));
+  root.style.setProperty('--time-halo', preset.halo);
+  root.style.setProperty('--time-halo-2', preset.halo2);
+}
+
+function setBreathLevel(level) {
+  breathLevel = Math.max(0, Math.min(1, level));
+  setAmbientState(breathLevel, currentDayPhase());
+}
+
+function currentDayPhase() {
+  const hour = new Date().getHours();
+  if (hour >= 6 && hour < 11) return 'morning';
+  if (hour >= 11 && hour < 17) return 'afternoon';
+  if (hour >= 17 && hour < 21) return 'evening';
+  if (hour >= 21 && hour < 24) return 'night';
+  return 'late';
+}
+
+function startBreathLoop() {
+  if (breathTimer) return;
+  const runtimeWindow = typeof window !== 'undefined' ? window : null;
+  if (!runtimeWindow?.requestAnimationFrame) {
+    setAmbientState(breathLevel || 0.18, currentDayPhase());
+    return;
+  }
+  const tick = () => {
+    breathPhase += 1;
+
+    if (analyserActive && analyserNode && analyserData) {
+      analyserNode.getByteTimeDomainData(analyserData);
+      let sum = 0;
+      let peak = 0;
+      for (let i = 0; i < analyserData.length; i += 1) {
+        const n = (analyserData[i] - 128) / 128;
+        sum += n * n;
+        peak = Math.max(peak, Math.abs(n));
+      }
+      const rms = Math.sqrt(sum / analyserData.length);
+      const energy = Math.min(1, (rms * 2.1) + (peak * 0.35));
+      breathLevel = breathLevel + ((energy - breathLevel) * 0.08);
+      setAmbientState(breathLevel, currentDayPhase());
+    } else {
+      const ambient = 0.18 + (Math.sin(breathPhase / 90) * 0.03);
+      breathLevel = breathLevel + ((ambient - breathLevel) * 0.05);
+      setAmbientState(breathLevel, currentDayPhase());
+    }
+
+    breathTimer = runtimeWindow.requestAnimationFrame(tick);
+  };
+  breathTimer = runtimeWindow.requestAnimationFrame(tick);
+}
+
+function stopBreathLoop() {
+  if (breathTimer) {
+    const runtimeWindow = typeof window !== 'undefined' ? window : null;
+    if (runtimeWindow?.cancelAnimationFrame) {
+      runtimeWindow.cancelAnimationFrame(breathTimer);
+    }
+    breathTimer = null;
+  }
 }
 
 // ---- TTS Helper ----
@@ -134,23 +253,31 @@ async function playTTS(hash, text, onEnd) {
     return;
   }
   audioTTS.src = url;
+  startBreathLoop();
+  setAmbientState(0.42);
+  updateBreathState('speaking', true);
   duckMainForDJ();
   audioTTS.onended = () => {
     audioTTS.onended = null;
     restoreMainAfterDJ();
+    updateBreathState('idle', true);
     if (onEnd) onEnd();
   };
   audioTTS.play().catch(() => {
     restoreMainAfterDJ();
+    updateBreathState('idle', true);
     if (onEnd) onEnd();
   });
 }
 
-function playTrack(track, url) {
+async function playTrack(track, url) {
   document.getElementById('track-name').textContent = track.name || '--';
   document.getElementById('track-artist').textContent = track.artist || '--';
   audioMain.src = url;
   applyMainVolume({ immediate: true });
+  await connectAudioAnalyser();
+  setAmbientState(0.54);
+  startBreathLoop();
   audioMain.play().catch(() => {});
   isPlaying = true;
   document.getElementById('btn-play').textContent = '⏸';
@@ -212,6 +339,20 @@ function resetIntroGate() {
   audioTTS._hasIntro = false;
   clearIntroFallbackTimer();
   restoreMainAfterDJ();
+  stopBreathLoop();
+  setBreathLevel(0.15);
+}
+
+function updateBreathState(kind, active) {
+  const map = {
+    idle: 0.15,
+    speaking: 0.62,
+    playing: 0.86,
+    loading: 0.38,
+  };
+  if (active) {
+    setBreathLevel(map[kind] ?? 0.15);
+  }
 }
 
 // ---- QR Login ----
@@ -320,6 +461,7 @@ async function showOnboardingOrStart(profile) {
 }
 
 async function bootAuth() {
+  setAmbientState(0.22, currentDayPhase());
   document.getElementById('qr-status').textContent = '正在检查登录状态...';
   try {
     let statusData = await fetchAuthStatus();
@@ -354,6 +496,7 @@ function showPlayerAndConnect() {
   document.getElementById('onboarding-screen').classList.remove('active');
   document.getElementById('player-screen').classList.add('active');
   createParticles();
+  startBreathLoop();
   connectWebSocket();
 }
 
@@ -370,7 +513,12 @@ function updateOnboardingStep() {
       step.dataset.step === onboardingSteps[onboardingStepIndex],
     );
   });
-  document.getElementById('onboarding-next-btn').textContent =
+  stepDots.forEach((dot, index) => {
+    dot.classList.toggle('active', index === onboardingStepIndex);
+  });
+  onboardingPrevBtn.disabled = onboardingStepIndex === 0;
+  onboardingPrevBtn.style.visibility = onboardingStepIndex === 0 ? 'hidden' : 'visible';
+  onboardingNextBtn.textContent =
     onboardingStepIndex === onboardingSteps.length - 1 ? '开始收听' : '继续';
 }
 
@@ -392,6 +540,13 @@ document.getElementById('mode-options').addEventListener('click', (event) => {
   selectChoice('mode-options', 'mode', button.dataset.mode);
 });
 
+onboardingPrevBtn.addEventListener('click', () => {
+  if (onboardingStepIndex > 0) {
+    onboardingStepIndex -= 1;
+    updateOnboardingStep();
+  }
+});
+
 document.getElementById('onboarding-next-btn').addEventListener('click', async () => {
   if (onboardingStepIndex < onboardingSteps.length - 1) {
     onboardingStepIndex += 1;
@@ -410,6 +565,7 @@ document.getElementById('onboarding-next-btn').addEventListener('click', async (
 
   const nextButton = document.getElementById('onboarding-next-btn');
   nextButton.disabled = true;
+  onboardingPrevBtn.disabled = true;
   document.getElementById('onboarding-status').textContent = '正在保存你的电台频率...';
   try {
     const resp = await fetch(`/api/radio/onboarding/${uid}`, {
@@ -427,6 +583,7 @@ document.getElementById('onboarding-next-btn').addEventListener('click', async (
     document.getElementById('onboarding-status').textContent =
       '保存失败，请稍后再试。' + (e.message ? ` ${e.message}` : '');
     nextButton.disabled = false;
+    onboardingPrevBtn.disabled = onboardingStepIndex === 0;
   }
 });
 
@@ -454,6 +611,8 @@ function connectWebSocket() {
 
   ws.onopen = () => {
     document.getElementById('dj-text').textContent = '正在连接电台...';
+    startBreathLoop();
+    updateBreathState('loading', true);
     ws.send(JSON.stringify({
       type: 'handshake',
       uid: uid,
@@ -500,12 +659,15 @@ async function handleMessage(msg) {
       const sl = document.getElementById('scene-label');
       const sceneMap = { '深夜': 'FREQME 深夜', '清晨': 'FREQME 清晨', '午后': 'FREQME 午后' };
       sl.textContent = sceneMap[msg.scene] || 'FREQME';
+      updateBreathState('loading', true);
 
       beginIntroWait();
       if (msg.tts_ready && msg.tts_hash) {
         playIntroTTS(msg.tts_hash, msg.intro_text);
       } else {
         document.getElementById('dj-text').textContent = msg.intro_text || LOCAL_DJ_GREETING;
+        startBreathLoop();
+        updateBreathState('speaking', true);
       }
       break;
     }
@@ -550,6 +712,7 @@ async function handleMessage(msg) {
 
     case 'error': {
       document.getElementById('dj-text').textContent = msg.message || '出错了';
+      updateBreathState('idle', true);
       resetIntroGate();
       // Auto-retry after a few seconds
       if (retryTimer) clearTimeout(retryTimer);
@@ -567,6 +730,9 @@ async function handleMessage(msg) {
           playTTS(msg.tts_hash, msg.text);
         } else {
           document.getElementById('dj-text').textContent = msg.text;
+          startBreathLoop();
+          updateBreathState('speaking', true);
+          setTimeout(() => updateBreathState('idle', true), 2200);
         }
       }
       break;
@@ -601,6 +767,9 @@ audioMain.addEventListener('ended', () => {
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify({ type: 'track_ended' }));
   }
+  stopBreathLoop();
+  setBreathLevel(0.18);
+  updateBreathState('loading', true);
 });
 
 audioMain.addEventListener('error', () => {
@@ -620,11 +789,17 @@ document.getElementById('btn-play').addEventListener('click', () => {
     audioTTS.pause();
     isPlaying = false;
     document.getElementById('btn-play').textContent = '▶';
+    stopBreathLoop();
+    setBreathLevel(0.15);
   } else {
     if (audioTTS.src && !audioTTS.ended) {
       audioTTS.play().catch(() => {});
+      startBreathLoop();
+      updateBreathState('speaking', true);
     } else {
       audioMain.play().catch(() => {});
+      startBreathLoop();
+      updateBreathState('playing', true);
     }
     isPlaying = true;
     document.getElementById('btn-play').textContent = '⏸';
@@ -641,6 +816,8 @@ document.getElementById('btn-skip').addEventListener('click', () => {
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify({ type: 'skip' }));
   }
+  startBreathLoop();
+  updateBreathState('loading', true);
 });
 
 if (requestForm && requestInput) {

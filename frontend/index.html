@@ -4,98 +4,144 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>FREQME</title>
-<link rel="stylesheet" href="css/radio.css?v=20260526-smart-dj-request">
+<link rel="stylesheet" href="css/radio.css?v=20260528-frontend-redesign">
 </head>
 <body>
 <div id="app">
+  <div class="ambient ambient-a"></div>
+  <div class="ambient ambient-b"></div>
+
   <!-- Login Screen -->
-  <div id="login-screen" class="screen active">
-    <div class="login-container">
-      <h1>🌙 欢迎回来</h1>
-      <p class="subtitle">扫码登录网易云，开启你的专属电台</p>
-      <div id="qr-container">
-        <img id="qr-img" src="" alt="QR Code">
-        <p id="qr-status">等待生成二维码...</p>
+  <section id="login-screen" class="screen active">
+    <div class="screen-shell login-shell">
+      <div class="hero-copy">
+        <div class="eyebrow">FREQME 夜间电台</div>
+        <h1>把夜色调成你的频率</h1>
+        <p class="subtitle">扫码登录网易云，进入一间温暖、安静、会陪你听歌的房间。</p>
       </div>
-      <button id="start-radio-btn" class="btn-primary" style="display:none">开始收听</button>
+      <div class="glass-panel login-panel">
+        <div class="panel-badge">登录 / 开始收听</div>
+        <div id="qr-container" class="qr-card">
+          <img id="qr-img" src="" alt="QR Code">
+          <div class="status-stack">
+            <p id="qr-status" class="status-line">等待生成二维码...</p>
+            <p class="status-hint">打开网易云音乐 APP 扫码即可继续</p>
+          </div>
+        </div>
+        <button id="start-radio-btn" class="btn-primary" style="display:none">开始收听</button>
+      </div>
     </div>
-  </div>
+  </section>
 
   <!-- Onboarding Screen -->
-  <div id="onboarding-screen" class="screen">
-    <div class="onboarding-panel">
-      <div class="scene-label">调频</div>
-      <h1>先把这个电台调成你的频率</h1>
-      <p id="onboarding-status" class="subtitle">正在读取你的歌单和最近收听...</p>
+  <section id="onboarding-screen" class="screen">
+    <div class="screen-shell onboarding-shell">
+      <div class="hero-copy narrow">
+        <div class="eyebrow">调频</div>
+        <h1>先把这个电台调成你的频率</h1>
+        <p id="onboarding-status" class="subtitle">正在读取你的歌单和最近收听...</p>
+      </div>
 
-      <section class="onboarding-step active" data-step="voice">
-        <h2>你希望主播是什么声音？</h2>
-        <div class="choice-grid" id="voice-options">
-          <button class="choice-card selected" data-voice="silver_female">
-            <strong>知性磁性女声</strong>
-            <span>银色、成熟、低暖，像深夜里懂音乐的电台姐姐</span>
-          </button>
-          <button class="choice-card" data-voice="warm_male">
-            <strong>温柔磁性男主播</strong>
-            <span>沉稳、克制、有靠近感，像陪你慢慢听歌的电台主持人</span>
-          </button>
+      <div class="glass-panel onboarding-panel">
+        <div class="step-indicator" id="step-indicator">
+          <span class="step-dot active"></span>
+          <span class="step-dot"></span>
+          <span class="step-dot"></span>
         </div>
-      </section>
 
-      <section class="onboarding-step" data-step="notes">
-        <h2>我怎么称呼你？</h2>
-        <input id="display-name-input" class="text-input" maxlength="40" placeholder="比如：小林">
-        <textarea id="music-notes-input" class="text-area" maxlength="500" placeholder="有什么歌单背景、最近状态、雷区或偏好可以补充"></textarea>
-      </section>
+        <section class="onboarding-step active" data-step="voice">
+          <div class="step-title">
+            <h2>你希望主播是什么声音？</h2>
+            <p>先选一个今晚最舒服的陪伴声线。</p>
+          </div>
+          <div class="choice-grid" id="voice-options">
+            <button class="choice-card selected" data-voice="silver_female" type="button">
+              <strong>知性磁性女声</strong>
+              <span>银色、成熟、低暖，像深夜里懂音乐的电台姐姐</span>
+            </button>
+            <button class="choice-card" data-voice="warm_male" type="button">
+              <strong>温柔磁性男主播</strong>
+              <span>沉稳、克制、有靠近感，像陪你慢慢听歌的主持人</span>
+            </button>
+          </div>
+        </section>
 
-      <section class="onboarding-step" data-step="mode">
-        <h2>现在想让电台怎么陪你？</h2>
-        <div class="choice-grid compact" id="mode-options">
-          <button class="choice-card selected" data-mode="陪伴">陪伴</button>
-          <button class="choice-card" data-mode="专注">专注</button>
-          <button class="choice-card" data-mode="放松">放松</button>
-          <button class="choice-card" data-mode="深夜情绪">深夜情绪</button>
+        <section class="onboarding-step" data-step="notes">
+          <div class="step-title">
+            <h2>我怎么称呼你？</h2>
+            <p>留一点你的状态，电台会更懂今晚该怎么陪你。</p>
+          </div>
+          <input id="display-name-input" class="text-input" maxlength="40" placeholder="比如：小林">
+          <textarea id="music-notes-input" class="text-area" maxlength="500" placeholder="有什么歌单背景、最近状态、雷区或偏好可以补充"></textarea>
+        </section>
+
+        <section class="onboarding-step" data-step="mode">
+          <div class="step-title">
+            <h2>现在想让电台怎么陪你？</h2>
+            <p>这会影响今晚的语气、节奏和选歌方向。</p>
+          </div>
+          <div class="choice-grid compact" id="mode-options">
+            <button class="choice-card selected" data-mode="陪伴" type="button">陪伴</button>
+            <button class="choice-card" data-mode="专注" type="button">专注</button>
+            <button class="choice-card" data-mode="放松" type="button">放松</button>
+            <button class="choice-card" data-mode="深夜情绪" type="button">深夜情绪</button>
+          </div>
+        </section>
+
+        <div class="panel-actions">
+          <button id="onboarding-prev-btn" class="btn-secondary" type="button">返回</button>
+          <button id="onboarding-next-btn" class="btn-primary" type="button">继续</button>
         </div>
-      </section>
-
-      <button id="onboarding-next-btn" class="btn-primary">继续</button>
+      </div>
     </div>
-  </div>
+  </section>
 
   <!-- Player Screen -->
-  <div id="player-screen" class="screen">
+  <section id="player-screen" class="screen">
     <div class="player-bg" id="player-bg"></div>
     <div class="player-overlay">
-      <div class="scene-label" id="scene-label">FREQME</div>
-      <div class="track-info" id="track-info">
-        <div class="track-name" id="track-name">--</div>
-        <div class="track-artist" id="track-artist">--</div>
-      </div>
-      <div class="dj-message" id="dj-message">
-        <p id="dj-text"></p>
-      </div>
-      <form class="request-form" id="request-form">
-        <input
-          id="request-input"
-          class="request-input"
-          maxlength="120"
-          autocomplete="off"
-          placeholder="想听什么，直接跟主播说"
-        >
-        <button class="request-button" type="submit">点歌</button>
-      </form>
-      <div class="player-controls">
-        <button id="btn-skip" class="ctrl-btn" title="下一首">⏭</button>
-        <button id="btn-play" class="ctrl-btn ctrl-main" title="暂停/播放">⏸</button>
-        <input type="range" id="volume-slider" min="0" max="100" value="80" title="音量">
+      <div class="player-card glass-panel">
+        <div class="player-topline">
+          <div class="scene-label" id="scene-label">FREQME</div>
+          <div class="player-badge">夜间陪伴中</div>
+        </div>
+
+        <div class="track-stack">
+          <div class="track-name" id="track-name">--</div>
+          <div class="track-artist" id="track-artist">--</div>
+        </div>
+
+        <div class="dj-message" id="dj-message">
+          <p id="dj-text"></p>
+        </div>
+
+        <form class="request-form" id="request-form">
+          <input
+            id="request-input"
+            class="request-input"
+            maxlength="120"
+            autocomplete="off"
+            placeholder="想听什么，直接跟主播说"
+          >
+          <button class="request-button" type="submit">点歌</button>
+        </form>
+
+        <div class="player-controls">
+          <button id="btn-skip" class="ctrl-btn" title="下一首" type="button">⏭</button>
+          <button id="btn-play" class="ctrl-btn ctrl-main" title="暂停/播放" type="button">⏸</button>
+          <div class="volume-wrap">
+            <span class="volume-label">音量</span>
+            <input type="range" id="volume-slider" min="0" max="100" value="80" title="音量">
+          </div>
+        </div>
       </div>
     </div>
-  </div>
+  </section>
 </div>
 
 <audio id="audio-main" preload="auto"></audio>
 <audio id="audio-tts" preload="auto"></audio>
 
-<script src="js/radio.js?v=20260526-smart-dj-request"></script>
+<script src="js/radio.js?v=20260528-playback-hotfix"></script>
 </body>
 </html>
