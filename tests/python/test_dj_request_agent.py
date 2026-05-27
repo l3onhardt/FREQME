@@ -333,6 +333,35 @@ class DJRequestAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("我要听齐默尔曼", decision.music_task["search_goals"])
         self.assertIn("我要听齐默尔曼", llm.calls[0]["prompt"])
 
+    async def test_model_clarification_for_performer_work_request_is_overridden(self):
+        agent = DJRequestAgent(FakeLLM("""
+        {
+          "action": "ask_clarifying_question",
+          "understood_intent": "unclear",
+          "music_task": {"type": "unclear", "search_goals": []},
+          "queue_policy": {"duration_tracks": 0, "continue_direction": false},
+          "uncertainty": {"level": "high", "should_ask_user": true},
+          "dj_response": {"speak_now": "这个我没接稳，是想听某个歌手，还是这种氛围？"},
+          "memory_update": {"session_preference": [], "negative_constraints": []}
+        }
+        """))
+
+        decision = await agent.decide("我想听齐默尔曼的肖邦", context_pack={})
+
+        self.assertEqual(decision.action, "set_direction_and_play")
+        self.assertEqual(decision.music_task["type"], "artist_work_direction")
+        self.assertEqual(
+            decision.music_task["primary_entities"],
+            [
+                {"role": "performer", "name": "齐默尔曼"},
+                {"role": "work", "name": "肖邦"},
+            ],
+        )
+        self.assertEqual(decision.music_task["work_hint"], "肖邦")
+        self.assertEqual(decision.music_task["search_goals"], ["齐默尔曼 肖邦"])
+        self.assertTrue(decision.queue_policy["continue_direction"])
+        self.assertFalse(decision.uncertainty["should_ask_user"])
+
     async def test_bare_entity_request_is_playable_when_model_asks(self):
         agent = DJRequestAgent(FakeLLM("""
         {
@@ -367,6 +396,31 @@ class DJRequestAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(decision.music_task["search_goals"], ["Zimerman"])
         self.assertFalse(decision.uncertainty["should_ask_user"])
 
+    async def test_model_clarification_for_colloquial_entity_request_is_overridden(self):
+        agent = DJRequestAgent(FakeLLM("""
+        {
+          "action": "ask_clarifying_question",
+          "understood_intent": "unclear",
+          "music_task": {"type": "unclear", "search_goals": []},
+          "queue_policy": {"duration_tracks": 0, "continue_direction": false},
+          "uncertainty": {"level": "high", "should_ask_user": true},
+          "dj_response": {"speak_now": "这个我没接稳，是想听某个歌手，还是这种氛围？"},
+          "memory_update": {"session_preference": [], "negative_constraints": []}
+        }
+        """))
+
+        decision = await agent.decide("能不能放点收音机头的", context_pack={})
+
+        self.assertEqual(decision.action, "set_direction_and_play")
+        self.assertEqual(decision.music_task["type"], "artist_direction")
+        self.assertEqual(
+            decision.music_task["primary_entities"],
+            [{"role": "music_entity", "name": "收音机头"}],
+        )
+        self.assertEqual(decision.music_task["search_goals"], ["收音机头"])
+        self.assertFalse(decision.uncertainty["should_ask_user"])
+        self.assertNotIn("没接稳", decision.dj_response["speak_now"])
+
     async def test_llm_exception_structures_scene_constraint_without_asking(self):
         agent = DJRequestAgent(RaisingLLM())
 
@@ -381,6 +435,33 @@ class DJRequestAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(decision.queue_policy["continue_direction"])
         self.assertFalse(decision.uncertainty["should_ask_user"])
         self.assertNotIn("没接稳", decision.dj_response["speak_now"])
+
+    async def test_model_clarification_for_english_scene_request_is_overridden(self):
+        agent = DJRequestAgent(FakeLLM("""
+        {
+          "action": "ask_clarifying_question",
+          "understood_intent": "unclear",
+          "music_task": {"type": "unclear", "search_goals": []},
+          "queue_policy": {"duration_tracks": 0, "continue_direction": false},
+          "uncertainty": {"level": "high", "should_ask_user": true},
+          "dj_response": {"speak_now": "这个我没接稳，是想听某个歌手，还是这种氛围？"},
+          "memory_update": {"session_preference": [], "negative_constraints": []}
+        }
+        """))
+
+        decision = await agent.decide(
+            "play something like late night low-key rnb, not too loud",
+            context_pack={},
+        )
+
+        self.assertEqual(decision.action, "set_direction_and_play")
+        self.assertEqual(decision.music_task["type"], "scene_genre_direction")
+        self.assertIn("R&B", decision.music_task["style_hint"])
+        self.assertIn("低刺激", decision.music_task["style_hint"])
+        self.assertIn("SZA Good Days", decision.music_task["search_goals"])
+        self.assertIn("Daniel Caesar Best Part", decision.music_task["search_goals"])
+        self.assertTrue(decision.queue_policy["continue_direction"])
+        self.assertFalse(decision.uncertainty["should_ask_user"])
 
     async def test_scene_request_search_goals_are_concrete_tracks_not_playlists(self):
         agent = DJRequestAgent(FakeLLM("""

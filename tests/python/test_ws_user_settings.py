@@ -119,6 +119,7 @@ class FakeDJEngine:
         next_song,
         context,
         user_settings=None,
+        presentation_plan=None,
     ):
         self.segue_calls.append({
             "profile": profile,
@@ -126,6 +127,7 @@ class FakeDJEngine:
             "played_songs": list(played_songs),
             "next_song": next_song,
             "user_settings": user_settings,
+            "presentation_plan": presentation_plan,
         })
         return "program break"
 
@@ -147,6 +149,22 @@ class FailingIntroDJEngine(FakeDJEngine):
             "user_settings": user_settings,
         })
         raise RuntimeError("llm unavailable")
+
+
+class SlowIntroDJEngine(FakeDJEngine):
+    def __init__(self):
+        super().__init__()
+        self.intro_finished = False
+
+    async def generate_intro(self, profile, scene, user_settings=None):
+        self.intro_calls.append({
+            "profile": profile,
+            "scene": scene,
+            "user_settings": user_settings,
+        })
+        await asyncio.sleep(0.05)
+        self.intro_finished = True
+        return "slow intro"
 
 
 class FakeTTS:
@@ -223,13 +241,14 @@ class RecordingQueueDirector:
 
 
 class QueuingRecordingQueueDirector(RecordingQueueDirector):
-    def __init__(self, dj_text="Queued by DJ agent.", song=None):
+    def __init__(self, dj_text="Queued by DJ agent.", song=None, decision=None):
         super().__init__(status="queued", dj_text=dj_text)
         self.song = song or {
             "id": "director-song",
             "name": "Director Song",
             "ar": [{"name": "Director Artist"}],
         }
+        self.decision = decision or {}
 
     async def handle_song_request(self, **kwargs):
         self.calls.append(kwargs)
@@ -247,6 +266,7 @@ class QueuingRecordingQueueDirector(RecordingQueueDirector):
             dj_text=self.dj_text,
             next_song=self.song,
             url=f"https://example.test/{self.song['id']}.mp3",
+            decision=self.decision,
         )
 
 
@@ -536,7 +556,10 @@ class WebSocketUserSettingsTests(unittest.IsolatedAsyncioTestCase):
         await ws.ws_handler(fake_websocket)
 
         self.assertTrue(fake_websocket.accepted)
-        self.assertEqual(fake_dj.intro_calls[0]["user_settings"], stored_settings)
+        intro_settings = fake_dj.intro_calls[0]["user_settings"]
+        for key, value in stored_settings.items():
+            self.assertEqual(intro_settings[key], value)
+        self.assertEqual(intro_settings["local_time_block"], "daily")
         self.assertEqual(fake_tts.synthesize_calls[0]["user_settings"], stored_settings)
         self.assertEqual(fake_tts.synthesize_calls[0]["voice_preset"], "bright_girl")
         self.assertEqual(fake_scheduler.pick_next_calls[0]["user_settings"], stored_settings)
@@ -632,13 +655,13 @@ class WebSocketUserSettingsTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("play_track", sent_types)
         self.assertIn("intro", sent_types)
         session_start = next(payload for payload in fake_websocket.sent if payload["type"] == "session_start")
-        self.assertIn("今晚", session_start["intro_text"])
+        self.assertIn("电台", session_start["intro_text"])
         self.assertNotIn("AI", session_start["intro_text"])
         self.assertNotIn("接入", session_start["intro_text"])
         self.assertNotIn("正在", session_start["intro_text"])
         self.assertFalse(session_start["tts_ready"])
         intro = next(payload for payload in fake_websocket.sent if payload["type"] == "intro")
-        self.assertIn("今晚", intro["text"])
+        self.assertIn("电台", intro["text"])
         self.assertNotIn("AI", intro["text"])
         self.assertNotIn("接入", intro["text"])
         self.assertNotIn("正在", intro["text"])
@@ -667,7 +690,7 @@ class WebSocketUserSettingsTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("play_track", sent_types)
         self.assertIn("intro", sent_types)
         intros = [payload for payload in fake_websocket.sent if payload["type"] == "intro"]
-        self.assertTrue(any("今晚" in payload["text"] for payload in intros))
+        self.assertTrue(any("电台" in payload["text"] for payload in intros))
         self.assertFalse(any("AI" in payload["text"] for payload in intros))
         self.assertFalse(any("接入" in payload["text"] for payload in intros))
         llm_intro = next(payload for payload in intros if payload["text"] == "intro")
@@ -712,6 +735,44 @@ class WebSocketUserSettingsTests(unittest.IsolatedAsyncioTestCase):
         await ws.ws_handler(fake_websocket)
 
         self.assertTrue(fake_scheduler.intro_sent_before_second_pick)
+
+    async def test_ws_song_request_is_not_blocked_by_slow_llm_intro_after_first_track(self):
+        fake_store = FakeStore({"voice_preset": "warm_male"})
+        fake_dj = SlowIntroDJEngine()
+        fake_tts = FakeTTS()
+        fake_scheduler = FakeScheduler()
+        fake_director = QueuingRecordingQueueDirector(
+            dj_text="我先接住这个方向。",
+            song={"id": "director-fast", "name": "Fast Lane", "ar": [{"name": "DJ Agent"}]},
+        )
+
+        class CheckpointWebSocket(FakeWebSocket):
+            async def iter_text(self):
+                yield json.dumps({"type": "handshake", "uid": "42", "settings": {}})
+                self.resumed_before_intro_finished = not fake_dj.intro_finished
+                yield json.dumps({"type": "song_request", "text": "能不能放点收音机头的"})
+
+        fake_websocket = CheckpointWebSocket([])
+
+        ws.store = fake_store
+        ws.dj_engine = fake_dj
+        ws.tts = fake_tts
+        ws.scheduler = fake_scheduler
+        ws.request_agent = FailingRequestAgent()
+        ws.radio_brain = FailingRadioBrain()
+        ws.queue_director = fake_director
+        ws.compressor = FakeCompressor()
+        ws.profile_engine = None
+
+        await asyncio.wait_for(ws.ws_handler(fake_websocket), timeout=1.0)
+
+        self.assertTrue(fake_websocket.resumed_before_intro_finished)
+        request_status = next(
+            payload for payload in fake_websocket.sent
+            if payload["type"] == "request_status"
+        )
+        self.assertEqual(request_status["status"], "ready")
+        self.assertEqual(request_status["next_track"]["id"], "director-fast")
 
     async def test_ws_uses_recent_playable_track_when_first_song_resolution_keeps_failing(self):
         fake_store = FakeStore({"voice_preset": "warm_male"})
@@ -848,6 +909,223 @@ class WebSocketUserSettingsTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(request_status["status"], "ready")
         self.assertEqual(request_status["next_track"]["id"], "rnb-director")
+
+    async def test_ws_song_request_ready_status_hides_internal_verification_note(self):
+        fake_store = FakeStore({"voice_preset": "warm_male"})
+        fake_dj = FakeDJEngine()
+        fake_tts = FakeTTS()
+        fake_scheduler = FakeScheduler()
+
+        class InternalNoteDirector(QueuingRecordingQueueDirector):
+            async def handle_song_request(self, **kwargs):
+                self.calls.append(kwargs)
+                kwargs["playback_queue"].clear_ready()
+                kwargs["playback_queue"].add_ready(
+                    self.song,
+                    f"https://example.test/{self.song['id']}.mp3",
+                    selection_reason={
+                        "type": "dj_agent_verified",
+                        "text": "Selected the first playable candidate from a concrete track query.",
+                    },
+                )
+                return SimpleNamespace(
+                    status=self.status,
+                    dj_text=self.dj_text,
+                    next_song=self.song,
+                    url=f"https://example.test/{self.song['id']}.mp3",
+                    decision=self.decision,
+                )
+
+        fake_director = InternalNoteDirector(
+            dj_text="我先接住这个方向。",
+            song={"id": "director-song", "name": "Director Song", "ar": [{"name": "Director Artist"}]},
+        )
+        fake_websocket = FakeWebSocket([
+            {"type": "handshake", "uid": "42", "settings": {}},
+            {"type": "song_request", "text": "能不能放点收音机头的"},
+        ])
+
+        ws.store = fake_store
+        ws.dj_engine = fake_dj
+        ws.tts = fake_tts
+        ws.scheduler = fake_scheduler
+        ws.request_agent = FailingRequestAgent()
+        ws.radio_brain = FailingRadioBrain()
+        ws.queue_director = fake_director
+        ws.compressor = FakeCompressor()
+        ws.profile_engine = None
+
+        await ws.ws_handler(fake_websocket)
+
+        request_status = next(
+            payload for payload in fake_websocket.sent
+            if payload["type"] == "request_status"
+        )
+        self.assertEqual(request_status["status"], "ready")
+        self.assertIn("下一首", request_status["text"])
+        self.assertNotIn("Selected the first playable candidate", request_status["text"])
+        self.assertNotIn("query", request_status["text"])
+
+    async def test_ws_song_request_ready_status_uses_chinese_copy_for_english_version_note(self):
+        fake_store = FakeStore({"voice_preset": "warm_male"})
+        fake_dj = FakeDJEngine()
+        fake_tts = FakeTTS()
+        fake_scheduler = FakeScheduler()
+
+        class EnglishNoteDirector(QueuingRecordingQueueDirector):
+            async def handle_song_request(self, **kwargs):
+                self.calls.append(kwargs)
+                kwargs["playback_queue"].clear_ready()
+                kwargs["playback_queue"].add_ready(
+                    self.song,
+                    f"https://example.test/{self.song['id']}.mp3",
+                    selection_reason={
+                        "type": "dj_agent_verified",
+                        "text": "Original album version from OK Computer",
+                    },
+                )
+                return SimpleNamespace(
+                    status=self.status,
+                    dj_text=self.dj_text,
+                    next_song=self.song,
+                    url=f"https://example.test/{self.song['id']}.mp3",
+                    decision=self.decision,
+                )
+
+        fake_director = EnglishNoteDirector(
+            dj_text="我先接住这个方向。",
+            song={"id": "radiohead-song", "name": "Karma Police", "ar": [{"name": "Radiohead"}]},
+        )
+        fake_websocket = FakeWebSocket([
+            {"type": "handshake", "uid": "42", "settings": {}},
+            {"type": "song_request", "text": "能不能放点收音机头的"},
+        ])
+
+        ws.store = fake_store
+        ws.dj_engine = fake_dj
+        ws.tts = fake_tts
+        ws.scheduler = fake_scheduler
+        ws.request_agent = FailingRequestAgent()
+        ws.radio_brain = FailingRadioBrain()
+        ws.queue_director = fake_director
+        ws.compressor = FakeCompressor()
+        ws.profile_engine = None
+
+        await ws.ws_handler(fake_websocket)
+
+        request_status = next(
+            payload for payload in fake_websocket.sent
+            if payload["type"] == "request_status"
+        )
+        self.assertEqual(request_status["text"], "下一首准备好了：Karma Police。")
+        self.assertNotIn("Original album version", request_status["text"])
+
+    async def test_ws_song_request_ready_status_hides_mixed_english_judgement_note(self):
+        fake_store = FakeStore({"voice_preset": "warm_male"})
+        fake_dj = FakeDJEngine()
+        fake_tts = FakeTTS()
+        fake_scheduler = FakeScheduler()
+
+        class MixedJudgementDirector(QueuingRecordingQueueDirector):
+            async def handle_song_request(self, **kwargs):
+                self.calls.append(kwargs)
+                kwargs["playback_queue"].clear_ready()
+                kwargs["playback_queue"].add_ready(
+                    self.song,
+                    f"https://example.test/{self.song['id']}.mp3",
+                    selection_reason={
+                        "type": "dj_agent_verified",
+                        "text": (
+                            "Selected 'Creep' as a highly recognizable and iconic song by Radiohead, "
+                            "matching the artist_direction task and 收音机头 search goal."
+                        ),
+                    },
+                )
+                return SimpleNamespace(
+                    status=self.status,
+                    dj_text=self.dj_text,
+                    next_song=self.song,
+                    url=f"https://example.test/{self.song['id']}.mp3",
+                    decision=self.decision,
+                )
+
+        fake_director = MixedJudgementDirector(
+            dj_text="我先接住这个方向。",
+            song={"id": "radiohead-creep", "name": "Creep", "ar": [{"name": "Radiohead"}]},
+        )
+        fake_websocket = FakeWebSocket([
+            {"type": "handshake", "uid": "42", "settings": {}},
+            {"type": "song_request", "text": "能不能放点收音机头的"},
+        ])
+
+        ws.store = fake_store
+        ws.dj_engine = fake_dj
+        ws.tts = fake_tts
+        ws.scheduler = fake_scheduler
+        ws.request_agent = FailingRequestAgent()
+        ws.radio_brain = FailingRadioBrain()
+        ws.queue_director = fake_director
+        ws.compressor = FakeCompressor()
+        ws.profile_engine = None
+
+        await ws.ws_handler(fake_websocket)
+
+        request_status = next(
+            payload for payload in fake_websocket.sent
+            if payload["type"] == "request_status"
+        )
+        self.assertEqual(request_status["text"], "下一首准备好了：Creep。")
+        self.assertNotIn("recognizable", request_status["text"])
+        self.assertNotIn("artist_direction", request_status["text"])
+
+    async def test_ws_song_request_extends_structured_direction_after_verified_queue(self):
+        fake_store = FakeStore({"voice_preset": "warm_male"})
+        fake_dj = FakeDJEngine()
+        fake_tts = FakeTTS()
+        fake_scheduler = FakeScheduler()
+        fake_director = QueuingRecordingQueueDirector(
+            dj_text="我先把晚上这条线接住。",
+            song={"id": "night-director", "name": "Apocalypse", "ar": [{"name": "Cigarettes After Sex"}]},
+            decision={
+                "action": "set_direction_and_play",
+                "music_task": {
+                    "type": "scene_genre_direction",
+                    "primary_entities": [{"role": "scene", "name": "晚上听"}],
+                    "style_hint": "安静 放松 不炸",
+                    "search_goals": ["Cigarettes After Sex Apocalypse"],
+                },
+                "queue_policy": {"duration_tracks": 5, "continue_direction": True},
+            },
+        )
+        fake_websocket = FakeWebSocket([
+            {"type": "handshake", "uid": "42", "settings": {}},
+            {"type": "song_request", "text": "放点晚上听的，别这么炸"},
+        ])
+
+        ws.store = fake_store
+        ws.dj_engine = fake_dj
+        ws.tts = fake_tts
+        ws.scheduler = fake_scheduler
+        ws.request_agent = FailingRequestAgent()
+        ws.radio_brain = FailingRadioBrain()
+        ws.queue_director = fake_director
+        ws.compressor = FakeCompressor()
+        ws.profile_engine = None
+
+        await ws.ws_handler(fake_websocket)
+
+        self.assertEqual(len(fake_scheduler.intent_updates), 1)
+        update = fake_scheduler.intent_updates[0]
+        self.assertEqual(update["request_text"], "晚上听 安静 放松 不炸")
+        self.assertNotIn("放点晚上听的", update["request_text"])
+        self.assertEqual(
+            update["user_settings"]["listening_intent"]["raw_text"],
+            "晚上听 安静 放松 不炸",
+        )
+        self.assertEqual(
+            update["user_settings"]["listening_intent"]["keywords"],
+            "晚上听 安静 放松 不炸",
+        )
 
     async def test_ws_queue_director_positive_request_bypasses_legacy_interpreters(self):
         fake_store = FakeStore({"voice_preset": "warm_male"})

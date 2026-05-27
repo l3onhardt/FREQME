@@ -52,6 +52,19 @@ async def ws_handler(websocket: WebSocket):
     scheduler_state = scheduler.new_session_state() if scheduler else None
     playback_queue = PlaybackQueue(prewarm_depth=3)
     prewarm_task = None
+    intro_send_task = None
+    background_tasks = set()
+    send_lock = asyncio.Lock()
+
+    async def send_json(payload: dict) -> None:
+        async with send_lock:
+            await websocket.send_json(payload)
+
+    def start_background(coro):
+        task = asyncio.create_task(coro)
+        background_tasks.add(task)
+        task.add_done_callback(background_tasks.discard)
+        return task
 
     def current_voice_preset() -> str:
         return user_settings.get("voice_preset", "silver_female")
@@ -101,6 +114,64 @@ async def ws_handler(websocket: WebSocket):
             return max(2, min(6, int((intent or {}).get("theme_window") or 4)))
         except Exception:
             return 4
+
+    def structured_direction_from_decision(decision) -> str:
+        if not isinstance(decision, dict):
+            return ""
+        policy = decision.get("queue_policy")
+        if not isinstance(policy, dict) or not policy.get("continue_direction"):
+            return ""
+        task = decision.get("music_task")
+        if not isinstance(task, dict):
+            return ""
+        task_type = str(task.get("type") or "").strip()
+        if task_type not in {
+            "artist_direction",
+            "artist_work_direction",
+            "scene_genre_direction",
+            "continuation",
+            "negative_feedback",
+        }:
+            return ""
+        parts = []
+        for entity in task.get("primary_entities") or []:
+            if isinstance(entity, dict):
+                name = str(entity.get("name") or "").strip()
+                if name:
+                    parts.append(name)
+        style_hint = str(task.get("style_hint") or "").strip()
+        if style_hint:
+            parts.append(style_hint)
+        work_hint = str(task.get("work_hint") or "").strip()
+        if task_type == "artist_work_direction" and work_hint:
+            parts.append(work_hint)
+        cleaned = []
+        for part in parts:
+            for item in str(part).replace("，", " ").replace(",", " ").split():
+                item = item.strip()
+                if item and item not in cleaned:
+                    cleaned.append(item)
+        return " ".join(cleaned)[:120]
+
+    def apply_structured_direction_from_result(result) -> None:
+        if not scheduler or not scheduler_state:
+            return
+        decision = getattr(result, "decision", {}) if result else {}
+        direction = structured_direction_from_decision(decision)
+        if not direction:
+            return
+        try:
+            scheduler.apply_listening_intent(
+                scheduler_state,
+                direction,
+                user_settings=user_settings,
+            )
+            scheduler_state.intent_picks_remaining = max(
+                scheduler_state.intent_picks_remaining,
+                current_theme_window(),
+            )
+        except Exception:
+            pass
 
     def dj_playback_context() -> dict:
         return {
@@ -177,6 +248,32 @@ async def ws_handler(websocket: WebSocket):
             return fallback
         return safe_text
 
+    def safe_ready_reason_text(text: str, request_text: str, fallback: str) -> str:
+        safe_text = safe_director_status_text(text, request_text, fallback="")
+        lowered = safe_text.casefold()
+        internal_fragments = (
+            "selected ",
+            "selected the first playable candidate",
+            "matching ",
+            "search goal",
+            "concrete track query",
+            "low_confidence_judge_fallback",
+            "verification",
+            "artist_direction",
+            "scene_genre_direction",
+            "specific_track",
+            "music_task",
+            "query",
+        )
+        contains_cjk = bool(re.search(r"[\u4e00-\u9fff]", safe_text))
+        if (
+            not safe_text
+            or not contains_cjk
+            or any(fragment in lowered for fragment in internal_fragments)
+        ):
+            return fallback
+        return safe_text
+
     def dj_agent_verified_ready_status(
         request_text: str,
         old_ready_items: list | None = None,
@@ -195,13 +292,16 @@ async def ws_handler(websocket: WebSocket):
             if selection_reason.get("type") != "dj_agent_verified":
                 continue
             track = _track_info(item.song)
-            reason_text = str(selection_reason.get("text") or "").strip()
-            if reason_text and text_contains_request_variant(reason_text, request_text):
-                reason_text = ""
+            fallback_text = f"下一首准备好了：{track['name']}。"
+            reason_text = safe_ready_reason_text(
+                str(selection_reason.get("text") or "").strip(),
+                request_text,
+                fallback_text,
+            )
             return {
                 "type": "request_status",
                 "status": "ready",
-                "text": reason_text or f"Next track is ready: {track['name']}.",
+                "text": reason_text,
                 "next_track": track,
             }
         return None
@@ -233,7 +333,7 @@ async def ws_handler(websocket: WebSocket):
 
     async def send_track(song: dict, url: str):
         nonlocal prewarm_task
-        await websocket.send_json({
+        await send_json({
             "type": "play_track",
             "track": _track_info(song),
             "url": url,
@@ -389,17 +489,18 @@ async def ws_handler(websocket: WebSocket):
         nonlocal prewarm_task
         if prewarm_task:
             try:
-                await asyncio.wait_for(asyncio.shield(prewarm_task), timeout=0.05)
+                await asyncio.wait_for(asyncio.shield(prewarm_task), timeout=1.5)
             except asyncio.TimeoutError:
-                prewarm_task.cancel()
+                pass
             except asyncio.CancelledError:
                 pass
-            prewarm_task = None
+            if prewarm_task.done():
+                prewarm_task = None
         if not playback_queue.ready_items():
             await fill_queue(max_items=1, allow_program_break=False)
         item = playback_queue.promote_next(previous_event=previous_event)
         if not item:
-            await websocket.send_json({
+            await send_json({
                 "type": "error",
                 "message": "暂无更多歌曲，请稍后再试",
             })
@@ -410,7 +511,7 @@ async def ws_handler(websocket: WebSocket):
         tts_hash_val = item.tts_hash
 
         if segue:
-            await websocket.send_json({
+            await send_json({
                 "type": "segue",
                 "text": segue,
                 "tts_ready": bool(tts_hash_val),
@@ -444,7 +545,7 @@ async def ws_handler(websocket: WebSocket):
             if msg_type == "handshake":
                 uid = msg.get("uid")
                 if not await _uid_matches_active_login(uid):
-                    await websocket.send_json({
+                    await send_json({
                         "type": "error",
                         "message": "登录账号和当前电台用户不一致，请重新登录。",
                     })
@@ -482,7 +583,7 @@ async def ws_handler(websocket: WebSocket):
                 except Exception:
                     session_id = 0
 
-                await websocket.send_json({
+                await send_json({
                     "type": "session_start",
                     "profile": profile,
                     "scene": scene,
@@ -493,7 +594,7 @@ async def ws_handler(websocket: WebSocket):
 
                 try:
                     default_tts_hash = await default_intro_task
-                    await websocket.send_json({
+                    await send_json({
                         "type": "intro",
                         "text": default_intro_text,
                         "tts_ready": bool(default_tts_hash),
@@ -507,19 +608,24 @@ async def ws_handler(websocket: WebSocket):
                 if item:
                     await send_track(item.song, item.url)
 
-                try:
-                    intro, tts_hash = await intro_task
-                    if intro:
-                        await websocket.send_json({
-                            "type": "intro",
-                            "text": intro,
-                            "tts_ready": bool(tts_hash),
-                            "tts_hash": tts_hash,
-                        })
-                except Exception:
-                    pass
+                async def send_llm_intro_when_ready():
+                    try:
+                        intro, tts_hash = await intro_task
+                        if intro:
+                            await send_json({
+                                "type": "intro",
+                                "text": intro,
+                                "tts_ready": bool(tts_hash),
+                                "tts_hash": tts_hash,
+                            })
+                    except Exception:
+                        pass
 
-                await fill_queue(max_items=1)
+                intro_send_task = start_background(send_llm_intro_when_ready())
+                if prewarm_task and not prewarm_task.done():
+                    prewarm_task.cancel()
+                prewarm_task = asyncio.create_task(fill_queue(max_items=1))
+                await asyncio.sleep(0)
 
             elif msg_type == "track_ended":
                 await send_prepared_next(previous_event="played")
@@ -554,19 +660,8 @@ async def ws_handler(websocket: WebSocket):
                 request_text = " ".join(str(msg.get("text") or "").split())[:120]
                 if not request_text:
                     continue
-                if scheduler and scheduler_state:
-                    try:
-                        scheduler.apply_listening_intent(
-                            scheduler_state,
-                            request_text,
-                            user_settings=user_settings,
-                        )
-                        scheduler_state.intent_picks_remaining = max(
-                            scheduler_state.intent_picks_remaining,
-                            int((scheduler_state.listening_intent or {}).get("theme_window") or 4),
-                        )
-                    except Exception:
-                        pass
+                if intro_send_task and not intro_send_task.done():
+                    intro_send_task.cancel()
                 if prewarm_task and not prewarm_task.done():
                     prewarm_task.cancel()
                     try:
@@ -619,7 +714,7 @@ async def ws_handler(websocket: WebSocket):
                             old_ready_items=old_ready_items,
                         )
                         if not ready_status:
-                            await websocket.send_json({
+                            await send_json({
                                 "type": "request_status",
                                 "status": "not_found",
                                 "text": "I could not safely verify a playable match.",
@@ -632,13 +727,14 @@ async def ws_handler(websocket: WebSocket):
                                 "Queued the verified track.",
                             )
                             tts_hash_val = await synthesize_intro_text(dj_text)
-                            await websocket.send_json({
+                            await send_json({
                                 "type": "dj_message",
                                 "text": dj_text,
                                 "tts_ready": bool(tts_hash_val),
                                 "tts_hash": tts_hash_val,
                             })
-                        await websocket.send_json(ready_status)
+                        await send_json(ready_status)
+                        apply_structured_direction_from_result(result)
                         await fill_queue(max_items=1, allow_program_break=False)
                         continue
                     if result_status == "ask":
@@ -647,7 +743,7 @@ async def ws_handler(websocket: WebSocket):
                             request_text,
                             "I need to clarify the music direction first.",
                         )
-                        await websocket.send_json({
+                        await send_json({
                             "type": "request_status",
                             "status": "needs_clarification",
                             "text": ask_text,
@@ -659,14 +755,14 @@ async def ws_handler(websocket: WebSocket):
                         request_text,
                         "I could not safely verify a playable match.",
                     )
-                    await websocket.send_json({
+                    await send_json({
                         "type": "request_status",
                         "status": "not_found",
                         "text": recovery_text,
                     })
                     continue
 
-                await websocket.send_json({
+                await send_json({
                     "type": "request_status",
                     "status": "not_found",
                     "text": "I could not safely verify a playable match.",
@@ -679,6 +775,18 @@ async def ws_handler(websocket: WebSocket):
                 await store.end_session(session_id, 0, "", "用户断开")
             except Exception:
                 pass
+    finally:
+        for task in list(background_tasks):
+            if task.done():
+                continue
+            try:
+                await asyncio.wait_for(asyncio.shield(task), timeout=0.2)
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                task.cancel()
+        if prewarm_task and not prewarm_task.done():
+            prewarm_task.cancel()
 
 
 async def _prepare_queue_item(audio_resolver_obj, song: dict, uid: str | None):

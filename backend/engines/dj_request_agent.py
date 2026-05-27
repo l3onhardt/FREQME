@@ -192,10 +192,16 @@ Return only JSON:
     def _fallback_decision_for_clear_request(self, raw_text: str, context_pack: dict) -> DJDecision | None:
         entity = self._extract_clear_entity_request(raw_text)
         if entity:
+            performer_work = self._split_performer_work_entity(entity)
+            if performer_work:
+                return self._artist_work_direction_decision(raw_text, *performer_work)
             return self._entity_direction_decision(raw_text, entity)
 
         entity = self._extract_bare_entity_request(raw_text)
         if entity:
+            performer_work = self._split_performer_work_entity(entity)
+            if performer_work:
+                return self._artist_work_direction_decision(raw_text, *performer_work)
             return self._entity_direction_decision(raw_text, entity)
 
         scene = self._extract_scene_direction(raw_text, context_pack)
@@ -225,6 +231,37 @@ Return only JSON:
             dj_response={"speak_now": f"懂了，我先按 {entity} 这个方向接上。", "tone": "warm_confident"},
             memory_update={
                 "session_preference": [entity],
+                "possible_long_term_preference": [],
+                "negative_constraints": [],
+            },
+            raw_text=raw_text,
+        )
+
+    def _artist_work_direction_decision(self, raw_text: str, performer: str, work: str) -> DJDecision:
+        search_goal = " ".join(part for part in (performer, work) if part).strip()
+        return DJDecision(
+            action="set_direction_and_play",
+            understood_intent=f"User wants {work} associated with {performer}.",
+            music_task={
+                "type": "artist_work_direction",
+                "primary_entities": [
+                    {"role": "performer", "name": performer},
+                    {"role": "work", "name": work},
+                ],
+                "work_hint": work,
+                "style_hint": search_goal,
+                "search_goals": [search_goal] if search_goal else [],
+                "must_not_search_literal_user_sentence": True,
+            },
+            queue_policy={"duration_tracks": 5, "continue_direction": True, "avoid_repetition": True},
+            uncertainty={
+                "level": "medium",
+                "reason": "LLM unavailable; performer/work request structured locally.",
+                "should_ask_user": False,
+            },
+            dj_response={"speak_now": f"懂了，我先按 {performer} 和 {work} 这条线接上。", "tone": "warm_confident"},
+            memory_update={
+                "session_preference": [search_goal] if search_goal else [],
                 "possible_long_term_preference": [],
                 "negative_constraints": [],
             },
@@ -274,7 +311,8 @@ Return only JSON:
             return ""
         patterns = (
             r"^(?:我(?:想|要)?听|想听|来点|放点|播点|播放|点首|点一首|给我(?:来点|放点|播点|播放)?)(?P<body>.+)$",
-            r"^(?:can you|could you|would you|please|play|put on|i want|i'd like)\s+(?P<body>.+)$",
+            r"^(?:能不能|不能|可以)(?:给我)?(?:来点|放点|播点|播放|听)?(?P<body>.+)$",
+            r"^(?:can you|could you|would you|please|play|put on|i want|i'd like|give me)\s+(?P<body>.+)$",
         )
         body = ""
         for pattern in patterns:
@@ -314,6 +352,7 @@ Return only JSON:
         entity = re.sub(r"[，。！？?!、]+$", "", entity).strip()
         entity = re.sub(r"(?:的歌|的曲子|的作品|的音乐|歌|曲子|作品|音乐)$", "", entity).strip()
         entity = re.sub(r"(?:可以吗|行吗|好吗|好不好|吗|么|呢|吧)$", "", entity).strip()
+        entity = re.sub(r"的$", "", entity).strip()
         entity = re.sub(r"^(?:一点|一些|几个|几首|首)\s*", "", entity).strip()
         return entity[:80]
 
@@ -328,6 +367,21 @@ Return only JSON:
             return False
         return True
 
+    def _split_performer_work_entity(self, entity: str) -> tuple[str, str] | None:
+        clean = str(entity or "").strip()
+        if not clean or "的" not in clean:
+            return None
+        performer, work = [part.strip() for part in clean.split("的", 1)]
+        if not performer or not work:
+            return None
+        if len(performer) > 40 or len(work) > 50:
+            return None
+        if self._contains_scene_or_constraint(performer) or self._contains_scene_or_constraint(work):
+            return None
+        if re.search(r"[听放播来点给要想能不能可以]", performer) or re.search(r"[听放播来点给要想能不能可以]", work):
+            return None
+        return performer, work
+
     def _extract_scene_direction(self, text: str, context_pack: dict) -> dict | None:
         clean = str(text or "").strip()
         if not clean or not self._starts_with_request_marker(clean):
@@ -339,7 +393,11 @@ Return only JSON:
         constraints = []
         if any(token in clean for token in ("晚上", "夜晚", "深夜", "睡前")):
             labels.append("晚上听")
+        if any(token in clean.lower() for token in ("night", "late night", "bedtime")):
+            labels.append("晚上听")
         if any(token in clean for token in ("下午", "午后")):
+            labels.append("下午听")
+        if any(token in clean.lower() for token in ("afternoon",)):
             labels.append("下午听")
         if any(token in clean.lower() for token in ("rnb", "r&b")):
             labels.append("R&B")
@@ -352,6 +410,8 @@ Return only JSON:
         if any(token in clean for token in ("安静", "轻一点", "柔一点", "慢一点", "放松")):
             constraints.append("安静放松")
         if any(token in clean for token in ("困", "累", "睡前")):
+            constraints.append("低刺激")
+        if any(token in clean.lower() for token in ("low-key", "low key", "not too loud", "quiet", "mellow", "soft")):
             constraints.append("低刺激")
 
         label = "、".join(self._dedupe(labels + constraints)) or "当前氛围"
@@ -397,6 +457,16 @@ Return only JSON:
             "爵士",
             "trip hop",
             "triphop",
+            "night",
+            "late night",
+            "bedtime",
+            "afternoon",
+            "low-key",
+            "low key",
+            "not too loud",
+            "quiet",
+            "mellow",
+            "soft",
         )
         return any(token in lowered for token in tokens)
 
@@ -418,7 +488,9 @@ Return only JSON:
         return candidate
 
     def _starts_with_request_marker(self, text: str) -> bool:
-        return str(text or "").startswith(
+        value = str(text or "")
+        lowered = value.lower().strip()
+        return value.startswith(
             (
                 "我要",
                 "我想",
@@ -438,6 +510,18 @@ Return only JSON:
                 "能不能",
                 "不能",
                 "可以",
+            )
+        ) or lowered.startswith(
+            (
+                "play",
+                "put on",
+                "give me",
+                "can you",
+                "could you",
+                "would you",
+                "please",
+                "i want",
+                "i'd like",
             )
         )
 
