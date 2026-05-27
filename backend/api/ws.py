@@ -107,17 +107,91 @@ async def ws_handler(websocket: WebSocket):
             and unicodedata.category(ch)[0] not in {"P", "Z"}
         )
 
+    def looks_like_user_request_sentence(text: str) -> bool:
+        lowered = str(text or "").casefold()
+        phrase_markers = (
+            "不能",
+            "能不能",
+            "可以",
+            "想听",
+            "我要",
+            "我想",
+            "来点",
+            "放点",
+            "播点",
+            "给我",
+            "换成",
+            "换点",
+            "别",
+            "不要",
+            "吗",
+            "么",
+            "would you",
+            "could you",
+            "can you",
+            "please",
+            "i want",
+            "i'd like",
+            "put on",
+        )
+        return any(marker in lowered for marker in phrase_markers) or bool(
+            re.search(r"\bplay\b", lowered)
+        )
+
     def text_contains_request_variant(text: str, request_text: str) -> bool:
         normalized_request = normalized_request_text(request_text)
         if not normalized_request:
             return False
-        return normalized_request in normalized_request_text(text)
+        normalized_text = normalized_request_text(text)
+        if normalized_text == normalized_request:
+            return True
+        return (
+            looks_like_user_request_sentence(request_text)
+            and normalized_request in normalized_text
+        )
 
     def safe_director_status_text(text: str, request_text: str, fallback: str) -> str:
         safe_text = str(text or "").strip()
-        if not safe_text or text_contains_request_variant(safe_text, request_text):
+        old_failure_fragments = (
+            "没找到特别准",
+            "娌℃壘鍒扮壒鍒噯",
+        )
+        if (
+            not safe_text
+            or text_contains_request_variant(safe_text, request_text)
+            or any(fragment in safe_text for fragment in old_failure_fragments)
+        ):
             return fallback
         return safe_text
+
+    def dj_agent_verified_ready_status(
+        request_text: str,
+        old_ready_items: list | None = None,
+    ) -> dict | None:
+        old_ready_items = old_ready_items or []
+        for item in playback_queue.ready_items():
+            # ready_items() returns the queue's live item objects; skip the
+            # pre-request objects so stale verified items cannot satisfy a new request.
+            if any(item is old_item for old_item in old_ready_items):
+                continue
+            selection_reason = (
+                item.selection_reason
+                if isinstance(item.selection_reason, dict)
+                else {}
+            )
+            if selection_reason.get("type") != "dj_agent_verified":
+                continue
+            track = _track_info(item.song)
+            reason_text = str(selection_reason.get("text") or "").strip()
+            if reason_text and text_contains_request_variant(reason_text, request_text):
+                reason_text = ""
+            return {
+                "type": "request_status",
+                "status": "ready",
+                "text": reason_text or f"Next track is ready: {track['name']}.",
+                "next_track": track,
+            }
+        return None
 
     def request_status_for_ready_item(request_text: str) -> dict:
         ready = playback_queue.ready_items()
@@ -152,6 +226,8 @@ async def ws_handler(websocket: WebSocket):
             else ""
         )
         track = _track_info(item.song)
+        if reason_type == "dj_agent_verified":
+            return dj_agent_verified_ready_status(request_text)
         if brain_decision.get("intent_type") in {
             "negative_feedback",
             "skip_variant",
@@ -173,18 +249,6 @@ async def ws_handler(websocket: WebSocket):
                     if ack_text
                     else f"收到，我会往“{request_text}”这个方向调整。"
                 ),
-                "next_track": track,
-            }
-        if reason_type == "dj_agent_verified":
-            reason_text = ""
-            if isinstance(item.selection_reason, dict):
-                reason_text = str(item.selection_reason.get("text") or "").strip()
-            if reason_text and text_contains_request_variant(reason_text, request_text):
-                reason_text = ""
-            return {
-                "type": "request_status",
-                "status": "ready",
-                "text": reason_text or f"Next track is ready: {track['name']}.",
                 "next_track": track,
             }
         if reason_type == "request_intent":
@@ -597,6 +661,7 @@ async def ws_handler(websocket: WebSocket):
                     pass
 
                 if queue_director:
+                    old_ready_items = list(playback_queue.ready_items())
                     try:
                         recent_turns = (
                             compressor.get_context()
@@ -621,22 +686,33 @@ async def ws_handler(websocket: WebSocket):
 
                     result_status = getattr(result, "status", "") if result else ""
                     result_text = getattr(result, "dj_text", "") if result else ""
-                    if result_text:
-                        dj_text = safe_director_status_text(
-                            result_text,
-                            request_text,
-                            "I could not safely verify a playable match.",
-                        )
-                        tts_hash_val = await synthesize_intro_text(dj_text)
-                        await websocket.send_json({
-                            "type": "dj_message",
-                            "text": dj_text,
-                            "tts_ready": bool(tts_hash_val),
-                            "tts_hash": tts_hash_val,
-                        })
 
                     if result_status == "queued":
-                        await websocket.send_json(request_status_for_ready_item(request_text))
+                        ready_status = dj_agent_verified_ready_status(
+                            request_text,
+                            old_ready_items=old_ready_items,
+                        )
+                        if not ready_status:
+                            await websocket.send_json({
+                                "type": "request_status",
+                                "status": "not_found",
+                                "text": "I could not safely verify a playable match.",
+                            })
+                            continue
+                        if result_text:
+                            dj_text = safe_director_status_text(
+                                result_text,
+                                request_text,
+                                "Queued the verified track.",
+                            )
+                            tts_hash_val = await synthesize_intro_text(dj_text)
+                            await websocket.send_json({
+                                "type": "dj_message",
+                                "text": dj_text,
+                                "tts_ready": bool(tts_hash_val),
+                                "tts_hash": tts_hash_val,
+                            })
+                        await websocket.send_json(ready_status)
                         await fill_queue(max_items=1, allow_program_break=False)
                         continue
                     if result_status == "ask":

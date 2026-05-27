@@ -71,6 +71,61 @@ class RaisingQueueDirector:
         raise RuntimeError("director unavailable")
 
 
+class QueuedWithoutReadyDirector:
+    def __init__(self):
+        self.calls = []
+
+    async def handle_song_request(self, **kwargs):
+        self.calls.append(kwargs)
+        kwargs["playback_queue"].clear_ready()
+        return SimpleNamespace(
+            status="queued",
+            dj_text="I found the direction.",
+            next_song={"id": "missing-ready", "name": "Missing Ready"},
+            url="/audio/missing-ready",
+        )
+
+
+class QueuedWithoutMutationDirector:
+    def __init__(self):
+        self.calls = []
+
+    async def handle_song_request(self, **kwargs):
+        self.calls.append(kwargs)
+        return SimpleNamespace(
+            status="queued",
+            dj_text="I found the direction.",
+            next_song={"id": "missing-ready", "name": "Missing Ready"},
+            url="/audio/missing-ready",
+        )
+
+
+class AppendingVerifiedDirector:
+    def __init__(self):
+        self.calls = []
+
+    async def handle_song_request(self, **kwargs):
+        self.calls.append(kwargs)
+        kwargs["playback_queue"].add_ready(
+            {
+                "id": "fresh-verified",
+                "name": "Fresh Verified",
+                "ar": [{"name": "New Artist"}],
+            },
+            "/audio/fresh-verified",
+            {
+                "type": "dj_agent_verified",
+                "text": "Fresh verified item",
+            },
+        )
+        return SimpleNamespace(
+            status="queued",
+            dj_text="I found the direction.",
+            next_song={"id": "fresh-verified", "name": "Fresh Verified"},
+            url="/audio/fresh-verified",
+        )
+
+
 class WSDJAgentFlowTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         from backend.api import auth, ws
@@ -204,6 +259,74 @@ class WSDJAgentFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(request_status["next_track"]["id"], "verified-radiohead")
         self.assertNotIn(request_text, request_status["text"])
 
+    async def test_song_request_allows_short_entity_name_in_successful_dj_text(self):
+        director = FakeQueueDirector(dj_text="I'll line up Radiohead next.")
+        request_text = "radiohead"
+
+        fake_websocket = await self._run_with_director(director, request_text)
+
+        dj_message = next(
+            payload for payload in fake_websocket.sent
+            if payload["type"] == "dj_message"
+        )
+        self.assertEqual(dj_message["text"], "I'll line up Radiohead next.")
+        request_status = next(
+            payload for payload in fake_websocket.sent
+            if payload["type"] == "request_status"
+        )
+        self.assertEqual(request_status["status"], "ready")
+        self.assertEqual(request_status["next_track"]["id"], "verified-radiohead")
+
+    async def test_song_request_allows_long_entity_name_in_successful_dj_text(self):
+        director = FakeQueueDirector(
+            dj_text="I'll line up Bohemian Rhapsody next.",
+            song={
+                "id": "bohemian-rhapsody",
+                "name": "Bohemian Rhapsody",
+                "artist": "Queen",
+            },
+        )
+        request_text = "Bohemian Rhapsody"
+
+        fake_websocket = await self._run_with_director(director, request_text)
+
+        dj_message = next(
+            payload for payload in fake_websocket.sent
+            if payload["type"] == "dj_message"
+        )
+        self.assertEqual(dj_message["text"], "I'll line up Bohemian Rhapsody next.")
+        request_status = next(
+            payload for payload in fake_websocket.sent
+            if payload["type"] == "request_status"
+        )
+        self.assertEqual(request_status["status"], "ready")
+        self.assertEqual(request_status["next_track"]["id"], "bohemian-rhapsody")
+
+    async def test_song_request_allows_entity_name_containing_play_in_successful_dj_text(self):
+        director = FakeQueueDirector(
+            dj_text="I'll line up Coldplay next.",
+            song={
+                "id": "coldplay",
+                "name": "Yellow",
+                "artist": "Coldplay",
+            },
+        )
+        request_text = "Coldplay"
+
+        fake_websocket = await self._run_with_director(director, request_text)
+
+        dj_message = next(
+            payload for payload in fake_websocket.sent
+            if payload["type"] == "dj_message"
+        )
+        self.assertEqual(dj_message["text"], "I'll line up Coldplay next.")
+        request_status = next(
+            payload for payload in fake_websocket.sent
+            if payload["type"] == "request_status"
+        )
+        self.assertEqual(request_status["status"], "ready")
+        self.assertEqual(request_status["next_track"]["id"], "coldplay")
+
     async def test_song_request_director_failure_does_not_quote_raw_sentence(self):
         from backend.api import ws
 
@@ -277,6 +400,33 @@ class WSDJAgentFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(request_status["status"], "not_found")
         self.assertEqual(request_status["text"], "I could not safely verify a playable match.")
 
+    async def test_song_request_director_status_filters_old_failure_copy(self):
+        request_text = "radiohead"
+        old_failure_copy = "没找到特别准的版本，我先往这个情绪靠近一点。"
+        director = FakeQueueDirector(
+            status="needs_recovery",
+            dj_text=old_failure_copy,
+        )
+
+        fake_websocket = await self._run_with_director(director, request_text)
+
+        messages = [
+            payload["text"]
+            for payload in fake_websocket.sent
+            if payload["type"] in {"dj_message", "request_status"}
+        ]
+        self.assertTrue(messages)
+        self.assertFalse(any("没找到特别准" in text for text in messages))
+        self.assertTrue(all(
+            text == "I could not safely verify a playable match."
+            for text in messages
+        ))
+        request_status = next(
+            payload for payload in fake_websocket.sent
+            if payload["type"] == "request_status"
+        )
+        self.assertEqual(request_status["status"], "not_found")
+
     async def test_song_request_director_exception_returns_safe_not_found(self):
         request_text = "不能放点radiohead的吗"
         director = RaisingQueueDirector()
@@ -291,6 +441,113 @@ class WSDJAgentFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(request_status["status"], "not_found")
         self.assertEqual(request_status["text"], "I could not safely verify a playable match.")
         self.assertNotIn(request_text, request_status["text"])
+
+    async def test_song_request_director_queued_without_verified_ready_item_is_safe_failure(self):
+        request_text = "不能放点radiohead的吗"
+        director = QueuedWithoutReadyDirector()
+
+        fake_websocket = await self._run_with_director(director, request_text)
+
+        self.assertEqual(len(director.calls), 1)
+        request_status = next(
+            payload for payload in fake_websocket.sent
+            if payload["type"] == "request_status"
+        )
+        self.assertEqual(request_status["status"], "not_found")
+        self.assertEqual(request_status["text"], "I could not safely verify a playable match.")
+        self.assertNotIn(request_text, request_status["text"])
+        self.assertNotIn("没找到特别准", request_status["text"])
+        self.assertFalse(any(
+            payload["type"] == "dj_message"
+            for payload in fake_websocket.sent
+        ))
+
+    async def test_song_request_director_queued_ignores_stale_verified_ready_item(self):
+        from backend.api import ws
+
+        class StaleVerifiedScheduler(FakeScheduler):
+            def __init__(self):
+                super().__init__()
+                self.songs[1] = {
+                    "id": "stale-verified",
+                    "name": "Stale Verified",
+                    "ar": [{"name": "Old Artist"}],
+                    "selection_reason": {
+                        "type": "dj_agent_verified",
+                        "text": "Old verified item",
+                    },
+                }
+
+        request_text = "不能放点radiohead的吗"
+        director = QueuedWithoutMutationDirector()
+        fake_websocket = FakeWebSocket([
+            {"type": "handshake", "uid": "42", "settings": {}},
+            {"type": "song_request", "text": request_text},
+        ])
+
+        ws.store = FakeStore({"voice_preset": "warm_male"})
+        ws.dj_engine = FakeDJEngine()
+        ws.tts = FakeTTS()
+        ws.scheduler = StaleVerifiedScheduler()
+        ws.compressor = RecordingCompressor()
+        ws.profile_engine = None
+        ws.audio_resolver = None
+        ws.queue_director = director
+        ws.request_agent = FailingLegacyAgent()
+        ws.radio_brain = FailingLegacyBrain()
+
+        await ws.ws_handler(fake_websocket)
+
+        request_status = [
+            payload for payload in fake_websocket.sent
+            if payload["type"] == "request_status"
+        ][-1]
+        self.assertEqual(request_status["status"], "not_found")
+        self.assertNotIn("next_track", request_status)
+        self.assertEqual(request_status["text"], "I could not safely verify a playable match.")
+
+    async def test_song_request_director_queued_uses_new_verified_item_after_stale_one(self):
+        from backend.api import ws
+
+        class StaleVerifiedScheduler(FakeScheduler):
+            def __init__(self):
+                super().__init__()
+                self.songs[1] = {
+                    "id": "stale-verified",
+                    "name": "Stale Verified",
+                    "ar": [{"name": "Old Artist"}],
+                    "selection_reason": {
+                        "type": "dj_agent_verified",
+                        "text": "Old verified item",
+                    },
+                }
+
+        request_text = "不能放点radiohead的吗"
+        director = AppendingVerifiedDirector()
+        fake_websocket = FakeWebSocket([
+            {"type": "handshake", "uid": "42", "settings": {}},
+            {"type": "song_request", "text": request_text},
+        ])
+
+        ws.store = FakeStore({"voice_preset": "warm_male"})
+        ws.dj_engine = FakeDJEngine()
+        ws.tts = FakeTTS()
+        ws.scheduler = StaleVerifiedScheduler()
+        ws.compressor = RecordingCompressor()
+        ws.profile_engine = None
+        ws.audio_resolver = None
+        ws.queue_director = director
+        ws.request_agent = FailingLegacyAgent()
+        ws.radio_brain = FailingLegacyBrain()
+
+        await ws.ws_handler(fake_websocket)
+
+        request_status = next(
+            payload for payload in fake_websocket.sent
+            if payload["type"] == "request_status"
+        )
+        self.assertEqual(request_status["status"], "ready")
+        self.assertEqual(request_status["next_track"]["id"], "fresh-verified")
 
     async def test_song_request_director_ask_does_not_clear_existing_ready_queue(self):
         from backend.api import ws
