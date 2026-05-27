@@ -143,10 +143,39 @@ async def get_audio_proxy(
     if not audio_resolver:
         return JSONResponse({"error": "audio resolver unavailable"}, status_code=503)
 
-    resolved = await audio_resolver.resolve_with_candidates({"id": song_id})
+    resolved = await _resolve_audio(song_id)
     if not resolved.ok or not resolved.url:
         return JSONResponse({"error": resolved.reason or "audio unavailable"}, status_code=404)
 
+    response = await _stream_resolved_audio(resolved, range_header)
+    if response.status_code != 502:
+        return response
+
+    error = getattr(response, "body", b"").decode("utf-8", errors="ignore")
+    if not _should_refresh_resolution(error):
+        return response
+
+    refreshed = await _resolve_audio(song_id, force_refresh=True)
+    if not refreshed.ok or not refreshed.url or refreshed.url == resolved.url:
+        await _record_audio_proxy_failure(song_id, response)
+        return response
+    refreshed_response = await _stream_resolved_audio(refreshed, range_header)
+    if refreshed_response.status_code == 502:
+        await _record_audio_proxy_failure(song_id, refreshed_response)
+    return refreshed_response
+
+
+async def _resolve_audio(song_id: str, force_refresh: bool = False):
+    try:
+        return await audio_resolver.resolve_with_candidates(
+            {"id": song_id},
+            force_refresh=force_refresh,
+        )
+    except TypeError:
+        return await audio_resolver.resolve_with_candidates({"id": song_id})
+
+
+async def _stream_resolved_audio(resolved, range_header: str | None):
     client = httpx.AsyncClient(timeout=30.0, follow_redirects=True, trust_env=False)
     try:
         headers = {}
@@ -196,6 +225,26 @@ async def get_audio_proxy(
     except Exception as error:
         await client.aclose()
         return JSONResponse({"error": str(error)}, status_code=502)
+
+
+def _should_refresh_resolution(error_text: str) -> bool:
+    lowered = str(error_text or "").lower()
+    return any(marker in lowered for marker in ("upstream 401", "upstream 403", "upstream 404"))
+
+
+async def _record_audio_proxy_failure(song_id: str, response) -> None:
+    store = getattr(audio_resolver, "store", None)
+    if not store:
+        return
+    try:
+        reason = getattr(response, "body", b"").decode("utf-8", errors="ignore")[:240]
+        await store.log_playback_event(
+            "playback_failed",
+            song_id=song_id,
+            reason=reason,
+        )
+    except Exception:
+        pass
 
 
 def _is_audio_media_type(media_type: str) -> bool:

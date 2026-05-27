@@ -21,12 +21,17 @@ class AudioResolver:
         self.netease = netease
         self.store = store
 
-    async def resolve(self, song: dict, uid: str | None = None) -> AudioResolution:
+    async def resolve(
+        self,
+        song: dict,
+        uid: str | None = None,
+        force_refresh: bool = False,
+    ) -> AudioResolution:
         song_id = self._song_id(song)
         if not song_id:
             return AudioResolution(False, "", reason="missing_song_id")
 
-        cached = await self.store.get_audio_resolution(song_id)
+        cached = None if force_refresh else await self.store.get_audio_resolution(song_id)
         if cached and cached.get("url") and self._is_playable_url(cached["url"]):
             return AudioResolution(
                 True,
@@ -47,8 +52,9 @@ class AudioResolver:
         self,
         song: dict,
         uid: str | None = None,
+        force_refresh: bool = False,
     ) -> AudioResolution:
-        first = await self.resolve(song, uid=uid)
+        first = await self.resolve(song, uid=uid, force_refresh=force_refresh)
         if first.ok:
             return first
 
