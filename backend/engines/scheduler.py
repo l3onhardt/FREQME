@@ -201,6 +201,18 @@ class StreamScheduler:
         user_settings: dict | None = None,
     ) -> dict:
         clean_text = " ".join(str(request_text or "").strip().split())[:120]
+        if self._has_dj_agent_active_mode(user_settings):
+            intent = {
+                "raw_text": clean_text,
+                "keywords": "",
+                "mood": "",
+            }
+            if session_state:
+                session_state.listening_intent = intent
+                session_state.intent_picks_remaining = 0
+            if isinstance(user_settings, dict):
+                user_settings["listening_intent"] = intent
+            return intent
         brain_decision = self._radio_brain_decision(user_settings)
         semantic_queries = self._radio_brain_search_queries(brain_decision)
         if brain_decision.get("intent_type") == "negative_feedback":
@@ -222,6 +234,14 @@ class StreamScheduler:
         if isinstance(user_settings, dict):
             user_settings["listening_intent"] = intent
         return intent
+
+    def _has_dj_agent_active_mode(self, user_settings: dict | None) -> bool:
+        if not isinstance(user_settings, dict):
+            return False
+        dj_agent_state = user_settings.get("dj_agent")
+        if not isinstance(dj_agent_state, dict):
+            return False
+        return "active_mode" in dj_agent_state
 
     def _normalize_request_keywords(self, text: str) -> str:
         raw = " ".join(str(text or "").strip().split())[:120]
@@ -274,13 +294,18 @@ class StreamScheduler:
             dict,
         ):
             state.listening_intent = user_settings["listening_intent"]
-            if state.intent_picks_remaining <= 0:
+            if (
+                state.intent_picks_remaining <= 0
+                and not self._has_dj_agent_active_mode(user_settings)
+            ):
                 state.intent_picks_remaining = 4
             return state.listening_intent
         return {}
 
     def _intent_keywords(self, intent: dict) -> str:
         if not isinstance(intent, dict):
+            return ""
+        if "keywords" in intent and not str(intent.get("keywords") or "").strip():
             return ""
         keywords = intent.get("keywords") or intent.get("raw_text") or ""
         return self._normalize_request_keywords(str(keywords))
