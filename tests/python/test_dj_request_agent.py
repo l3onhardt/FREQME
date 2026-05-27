@@ -18,6 +18,34 @@ class RaisingLLM:
         raise RuntimeError("llm unavailable")
 
 
+class MappingLLM:
+    def __init__(self, mapping):
+        self.mapping = mapping
+        self.calls = []
+
+    async def chat(self, prompt, max_tokens=300, system=None):
+        self.calls.append({"prompt": prompt, "max_tokens": max_tokens, "system": system})
+        user_message = self._user_message_from_prompt(prompt)
+        return self.mapping.get(user_message, """
+        {
+          "action": "ask_clarifying_question",
+          "understood_intent": "unclear",
+          "music_task": {"type": "unclear", "search_goals": []},
+          "queue_policy": {"duration_tracks": 0, "continue_direction": false},
+          "uncertainty": {"level": "high", "should_ask_user": true},
+          "dj_response": {"speak_now": "这个我没接稳，是想听某个歌手，还是这种氛围？"},
+          "memory_update": {"session_preference": [], "negative_constraints": []}
+        }
+        """)
+
+    def _user_message_from_prompt(self, prompt):
+        marker = "User just spoke to the AI radio DJ:\n"
+        context_marker = "\n\nContext pack JSON:"
+        if marker not in prompt or context_marker not in prompt:
+            return ""
+        return prompt.split(marker, 1)[1].split(context_marker, 1)[0].strip()
+
+
 class DJRequestAgentTests(unittest.IsolatedAsyncioTestCase):
     async def test_radiohead_request_becomes_music_task_not_literal_search(self):
         llm = FakeLLM("""
@@ -95,6 +123,54 @@ class DJRequestAgentTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(decision.action, "ask_clarifying_question")
         self.assertEqual(decision.uncertainty["level"], "high")
+
+    async def test_accidental_single_letter_prefix_before_clear_request_is_ignored(self):
+        llm = MappingLLM({
+            "我要听肖邦": """
+            {
+              "action": "set_direction_and_play",
+              "understood_intent": "User wants Chopin.",
+              "music_task": {
+                "type": "artist_work_direction",
+                "primary_entities": [{"role": "composer", "name": "Frederic Chopin"}],
+                "search_goals": ["Chopin Nocturnes", "Chopin Ballades"],
+                "must_not_search_literal_user_sentence": true
+              },
+              "queue_policy": {"duration_tracks": 5, "continue_direction": true},
+              "uncertainty": {"level": "low", "should_ask_user": false},
+              "dj_response": {"speak_now": "我先接肖邦这条线。"},
+              "memory_update": {"session_preference": ["Chopin"], "negative_constraints": []}
+            }
+            """,
+            "来点Bill Evans": """
+            {
+              "action": "set_direction_and_play",
+              "understood_intent": "User wants Bill Evans.",
+              "music_task": {
+                "type": "artist_direction",
+                "primary_entities": [{"role": "artist", "name": "Bill Evans"}],
+                "search_goals": ["Bill Evans Waltz for Debby"],
+                "must_not_search_literal_user_sentence": true
+              },
+              "queue_policy": {"duration_tracks": 4, "continue_direction": true},
+              "uncertainty": {"level": "low", "should_ask_user": false},
+              "dj_response": {"speak_now": "我先接 Bill Evans。"},
+              "memory_update": {"session_preference": ["Bill Evans"], "negative_constraints": []}
+            }
+            """,
+        })
+        agent = DJRequestAgent(llm)
+
+        chopin = await agent.decide("w我要听肖邦", context_pack={})
+        bill_evans = await agent.decide("q来点Bill Evans", context_pack={})
+
+        self.assertEqual(chopin.action, "set_direction_and_play")
+        self.assertEqual(chopin.raw_text, "我要听肖邦")
+        self.assertEqual(chopin.music_task["primary_entities"][0]["name"], "Frederic Chopin")
+        self.assertEqual(bill_evans.action, "set_direction_and_play")
+        self.assertEqual(bill_evans.raw_text, "来点Bill Evans")
+        self.assertNotIn("w我要听肖邦", llm.calls[0]["prompt"])
+        self.assertNotIn("q来点Bill Evans", llm.calls[1]["prompt"])
 
     async def test_playable_action_with_empty_music_task_falls_back(self):
         agent = DJRequestAgent(FakeLLM("""

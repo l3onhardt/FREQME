@@ -55,7 +55,7 @@ class DJRequestAgent:
         self.llm_timeout_s = llm_timeout_s
 
     async def decide(self, user_message: str, context_pack: dict | None = None) -> DJDecision:
-        clean = " ".join(str(user_message or "").split())[:500]
+        clean = self._clean_user_message(user_message)
         if not clean:
             return self._safe_question(clean)
         prompt = self._prompt(clean, context_pack or {})
@@ -155,6 +155,45 @@ Return only JSON:
             dj_response={"speak_now": "这个我没接稳，是想听某个歌手，还是这种氛围？", "tone": "warm_clarifying"},
             memory_update={"session_preference": [], "possible_long_term_preference": [], "negative_constraints": []},
             raw_text=raw_text,
+        )
+
+    def _clean_user_message(self, user_message: str) -> str:
+        clean = " ".join(str(user_message or "").split())[:500]
+        if not clean:
+            return ""
+        return self._strip_accidental_latin_prefix(clean)
+
+    def _strip_accidental_latin_prefix(self, text: str) -> str:
+        match = re.match(r"^[A-Za-z]\s*(?=[\u4e00-\u9fff])", text)
+        if not match:
+            return text
+        candidate = text[match.end():].strip()
+        if not self._starts_with_request_marker(candidate):
+            return text
+        return candidate
+
+    def _starts_with_request_marker(self, text: str) -> bool:
+        return str(text or "").startswith(
+            (
+                "我要",
+                "我想",
+                "想听",
+                "想要",
+                "来点",
+                "放点",
+                "播点",
+                "播放",
+                "点首",
+                "点一首",
+                "给我",
+                "换成",
+                "换点",
+                "接着",
+                "继续",
+                "能不能",
+                "不能",
+                "可以",
+            )
         )
 
     def _parse_json(self, text: str) -> dict:
