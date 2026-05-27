@@ -53,30 +53,43 @@ def _mimo_chat(msgs: list[dict], maxt: int, api_key: str, base_url: str, model: 
     return data["choices"][0]["message"]["content"]
 
 
+def _settings_for_provider(provider: str, is_fallback: bool) -> dict:
+    model = settings.llm_fallback_model if is_fallback else settings.llm_model
+    api_key = settings.llm_fallback_api_key if is_fallback else settings.llm_api_key
+    if provider == "mimo" and not api_key:
+        api_key = settings.mimo_api_key
+    return {
+        "model": model,
+        "api_key": api_key,
+        "base_url": settings.llm_api_base,
+    }
+
+
 PROVIDERS = {
     "mimo": {
         "url": "dynamic",
-        "headers": lambda: {
-            "api-key": settings.llm_api_key or settings.mimo_api_key,
+        "headers": lambda cfg: {
+            "api-key": cfg["api_key"],
             "Content-Type": "application/json",
         },
-        "body": lambda msgs, maxt: {
-            "model": settings.llm_model,
+        "body": lambda msgs, maxt, cfg, response_format: {
+            "model": cfg["model"],
             "max_tokens": maxt,
             "messages": msgs,
+            **({"response_format": response_format} if response_format else {}),
         },
         "parse": lambda response: response.json()["choices"][0]["message"]["content"],
-        "base_url": lambda: f"{settings.llm_api_base.rstrip('/')}/chat/completions",
+        "base_url": lambda cfg: f"{cfg['base_url'].rstrip('/')}/chat/completions",
     },
     "anthropic": {
         "url": "https://api.anthropic.com/v1/messages",
-        "headers": lambda: {
-            "x-api-key": settings.llm_api_key,
+        "headers": lambda cfg: {
+            "x-api-key": cfg["api_key"],
             "anthropic-version": "2023-06-01",
             "content-type": "application/json",
         },
-        "body": lambda msgs, maxt: {
-            "model": settings.llm_model,
+        "body": lambda msgs, maxt, cfg, response_format: {
+            "model": cfg["model"],
             "max_tokens": maxt,
             "messages": msgs,
         },
@@ -84,24 +97,25 @@ PROVIDERS = {
     },
     "openai": {
         "url": "https://api.openai.com/v1/chat/completions",
-        "headers": lambda: {
-            "Authorization": f"Bearer {settings.llm_api_key}",
+        "headers": lambda cfg: {
+            "Authorization": f"Bearer {cfg['api_key']}",
             "content-type": "application/json",
         },
-        "body": lambda msgs, maxt: {
-            "model": settings.llm_model,
+        "body": lambda msgs, maxt, cfg, response_format: {
+            "model": cfg["model"],
             "messages": msgs,
             "max_tokens": maxt,
+            **({"response_format": response_format} if response_format else {}),
         },
         "parse": lambda response: response.json()["choices"][0]["message"]["content"],
     },
     "gemini": {
-        "url": lambda: (
+        "url": lambda cfg: (
             "https://generativelanguage.googleapis.com/v1beta/models/"
-            f"{settings.llm_model}:generateContent?key={settings.llm_api_key}"
+            f"{cfg['model']}:generateContent?key={cfg['api_key']}"
         ),
-        "headers": lambda: {"content-type": "application/json"},
-        "body": lambda msgs, maxt: {
+        "headers": lambda cfg: {"content-type": "application/json"},
+        "body": lambda msgs, maxt, cfg, response_format: {
             "contents": [{"parts": [{"text": m["content"]} for m in msgs]}],
             "generationConfig": {"maxOutputTokens": maxt},
         },
@@ -127,6 +141,7 @@ class LLMRouter:
         user_msg: str,
         max_tokens: int = 300,
         system: str | None = None,
+        response_format: dict | None = None,
     ) -> str:
         messages = [
             {"role": "system", "content": system or self.system_prompt},
@@ -145,19 +160,24 @@ class LLMRouter:
                 continue
             try:
                 cfg = PROVIDERS[provider]
+                provider_settings = _settings_for_provider(
+                    provider,
+                    is_fallback=provider == settings.llm_fallback_provider
+                    and provider != settings.llm_provider,
+                )
                 url = cfg["url"]
                 if url == "dynamic":
-                    url = cfg["base_url"]()
+                    url = cfg["base_url"](provider_settings)
                 elif callable(url):
-                    url = url()
+                    url = url(provider_settings)
 
                 request_tokens = max_tokens
                 response = None
                 for attempt in range(3):
                     response = await self.client.post(
                         url,
-                        headers=cfg["headers"](),
-                        json=cfg["body"](messages, request_tokens),
+                        headers=cfg["headers"](provider_settings),
+                        json=cfg["body"](messages, request_tokens, provider_settings, response_format),
                         timeout=25.0 if attempt else 15.0,
                     )
                     if (

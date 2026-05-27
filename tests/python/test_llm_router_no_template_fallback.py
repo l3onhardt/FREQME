@@ -20,6 +20,30 @@ class FailingClient:
         pass
 
 
+class PrimaryFailsFallbackSucceedsClient:
+    def __init__(self):
+        self.calls = []
+
+    async def post(self, url, *args, **kwargs):
+        self.calls.append({"url": url, "headers": kwargs.get("headers"), "json": kwargs.get("json")})
+
+        class Response:
+            status_code = 200
+
+            def json(self):
+                return {
+                    "content": [{"text": '{"ok":true}'}],
+                    "usage": {"total_tokens": 11},
+                }
+
+        if len(self.calls) == 1:
+            raise RuntimeError("primary unavailable")
+        return Response()
+
+    async def aclose(self):
+        pass
+
+
 class RejectionClient:
     async def post(self, *args, **kwargs):
         class Response:
@@ -73,6 +97,31 @@ class EmptyMimoThenContentClient:
         if len(self.urls) == 1:
             return Response("", "length", 180)
         return Response("有风从窗边过去，我们从这一首开始。", "stop", 42)
+
+    async def aclose(self):
+        pass
+
+
+class ResponseFormatClient:
+    def __init__(self):
+        self.payloads = []
+
+    async def post(self, url, *args, **kwargs):
+        self.payloads.append(kwargs["json"])
+
+        class Response:
+            status_code = 200
+
+            def json(self):
+                return {
+                    "choices": [{
+                        "finish_reason": "stop",
+                        "message": {"content": '{"ok":true}'},
+                    }],
+                    "usage": {"total_tokens": 12},
+                }
+
+        return Response()
 
     async def aclose(self):
         pass
@@ -155,6 +204,40 @@ class LLMRouterNoTemplateFallbackTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(RuntimeError):
             await router.chat("请生成电台开场", max_tokens=80)
 
+    async def test_chat_uses_fallback_provider_key_and_model_when_primary_fails(self):
+        router = LLMRouter()
+        router.store = FakeStore()
+        client = PrimaryFailsFallbackSucceedsClient()
+        router.client = client
+        old_provider = llm_router_module.settings.llm_provider
+        old_model = llm_router_module.settings.llm_model
+        old_key = llm_router_module.settings.llm_api_key
+        old_fallback_provider = llm_router_module.settings.llm_fallback_provider
+        old_fallback_model = llm_router_module.settings.llm_fallback_model
+        old_fallback_key = llm_router_module.settings.llm_fallback_api_key
+        try:
+            llm_router_module.settings.llm_provider = "mimo"
+            llm_router_module.settings.llm_model = "primary-model"
+            llm_router_module.settings.llm_api_key = "primary-key"
+            llm_router_module.settings.llm_fallback_provider = "anthropic"
+            llm_router_module.settings.llm_fallback_model = "fallback-model"
+            llm_router_module.settings.llm_fallback_api_key = "fallback-key"
+
+            result = await router.chat("Return JSON", max_tokens=80)
+        finally:
+            llm_router_module.settings.llm_provider = old_provider
+            llm_router_module.settings.llm_model = old_model
+            llm_router_module.settings.llm_api_key = old_key
+            llm_router_module.settings.llm_fallback_provider = old_fallback_provider
+            llm_router_module.settings.llm_fallback_model = old_fallback_model
+            llm_router_module.settings.llm_fallback_api_key = old_fallback_key
+
+        self.assertEqual(result, '{"ok":true}')
+        self.assertEqual(len(client.calls), 2)
+        fallback_call = client.calls[1]
+        self.assertEqual(fallback_call["json"]["model"], "fallback-model")
+        self.assertEqual(fallback_call["headers"]["x-api-key"], "fallback-key")
+
     async def test_chat_retries_mimo_with_more_tokens_when_reasoning_uses_budget(self):
         router = LLMRouter()
         router.store = FakeStore()
@@ -171,6 +254,21 @@ class LLMRouterNoTemplateFallbackTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(client.max_tokens[0], 180)
         self.assertGreater(client.max_tokens[1], client.max_tokens[0])
+
+    async def test_chat_passes_response_format_to_provider_payload(self):
+        router = LLMRouter()
+        router.store = FakeStore()
+        client = ResponseFormatClient()
+        router.client = client
+
+        result = await router.chat(
+            "Return JSON",
+            max_tokens=80,
+            response_format={"type": "json_object"},
+        )
+
+        self.assertEqual(result, '{"ok":true}')
+        self.assertEqual(client.payloads[0]["response_format"], {"type": "json_object"})
 
     async def test_chat_retries_mimo_when_content_is_truncated_by_length(self):
         router = LLMRouter()

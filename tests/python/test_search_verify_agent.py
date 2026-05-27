@@ -13,6 +13,17 @@ class FakeLLM:
         return self.responses.pop(0)
 
 
+class JsonModeLLM(FakeLLM):
+    async def chat(self, prompt, max_tokens=300, system=None, response_format=None):
+        self.calls.append({
+            "prompt": prompt,
+            "max_tokens": max_tokens,
+            "system": system,
+            "response_format": response_format,
+        })
+        return self.responses.pop(0)
+
+
 class FakeNetease:
     def __init__(self):
         self.search_calls = []
@@ -44,6 +55,21 @@ class AlwaysPlayableResolver:
 class ExplodingResolver:
     async def resolve_with_candidates(self, song, uid=None):
         raise RuntimeError("resolver unavailable")
+
+
+class RecordingResolver:
+    def __init__(self, playable_ids):
+        self.playable_ids = set(playable_ids)
+        self.calls = []
+
+    async def resolve_with_candidates(self, song, uid=None):
+        self.calls.append(song)
+        ok = song.get("id") in self.playable_ids
+        return type("Result", (), {
+            "ok": ok,
+            "song_id": song.get("id"),
+            "proxy_url": f"/api/radio/audio/{song.get('id')}" if ok else "",
+        })()
 
 
 class SearchVerifyAgentTests(unittest.IsolatedAsyncioTestCase):
@@ -79,6 +105,25 @@ class SearchVerifyAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.url, "/api/radio/audio/rubinstein")
         self.assertEqual([call["keywords"] for call in netease.search_calls], ["Arthur Rubinstein Chopin Nocturne"])
         self.assertNotIn("想听鲁宾斯坦弹的肖邦夜曲", [call["keywords"] for call in netease.search_calls])
+
+    async def test_json_mode_is_requested_for_query_and_judgement(self):
+        netease = FakeNetease()
+        netease.results_by_query["Radiohead Creep"] = [
+            {"id": "creep", "name": "Creep", "ar": [{"name": "Radiohead"}]},
+        ]
+        llm = JsonModeLLM([
+            '{"search_queries":["Radiohead Creep"]}',
+            '{"chosen_id":"creep","confidence":0.9}',
+        ])
+        agent = SearchVerifyAgent(llm, netease, AlwaysPlayableResolver())
+
+        result = await agent.verify({"search_goals": ["Radiohead Creep"]})
+
+        self.assertEqual(result.status, "verified")
+        self.assertEqual([call["response_format"] for call in llm.calls], [
+            {"type": "json_object"},
+            {"type": "json_object"},
+        ])
 
     async def test_returns_recovery_options_when_no_playable_candidate(self):
         netease = FakeNetease()
@@ -178,6 +223,56 @@ class SearchVerifyAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("不能放点 radiohead 吗", searched)
         self.assertNotIn("想听 Arthur Rubinstein Chopin", searched)
         self.assertNotIn("鎯冲惉 Arthur Rubinstein Chopin", searched)
+
+    async def test_scene_playlist_like_queries_are_replaced_with_track_queries(self):
+        netease = FakeNetease()
+        netease.results_by_query["Joji Slow Dancing in the Dark"] = [
+            {"id": "joji", "name": "Slow Dancing in the Dark", "ar": [{"name": "Joji"}]},
+        ]
+        llm = FakeLLM([
+            '{"search_queries":["晚上放松舒缓歌曲","安静夜晚歌单","Joji Slow Dancing in the Dark"]}',
+            '{"chosen_id":"joji","confidence":0.9}',
+        ])
+        agent = SearchVerifyAgent(llm, netease, AlwaysPlayableResolver())
+
+        result = await agent.verify(
+            {
+                "type": "scene_genre_direction",
+                "style_hint": "晚上、放松、舒缓、非炸裂",
+                "search_goals": ["晚上放松舒缓歌曲", "安静夜晚歌单", "晚上 安静 放松 夜晚 mellow 安静 不炸"],
+            }
+        )
+
+        self.assertEqual(result.status, "verified")
+        searched = [call["keywords"] for call in netease.search_calls]
+        self.assertEqual(searched, ["Joji Slow Dancing in the Dark"])
+        self.assertNotIn("安静夜晚歌单", searched)
+        self.assertNotIn("晚上 安静 放松 夜晚 mellow 安静 不炸", searched)
+
+    async def test_concrete_scene_track_can_fallback_to_first_playable_when_judge_is_uncertain(self):
+        netease = FakeNetease()
+        netease.results_by_query["Joji Slow Dancing in the Dark"] = [
+            {"id": "joji", "name": "Slow Dancing in the Dark", "ar": [{"name": "Joji"}]},
+        ]
+        llm = FakeLLM([
+            '{"search_queries":["Joji Slow Dancing in the Dark"]}',
+            '{"chosen_id":"","confidence":0.0}',
+        ])
+        resolver = RecordingResolver({"joji"})
+        agent = SearchVerifyAgent(llm, netease, resolver)
+
+        result = await agent.verify(
+            {
+                "type": "scene_genre_direction",
+                "style_hint": "晚上、放松、舒缓、非炸裂",
+                "search_goals": ["Joji Slow Dancing in the Dark"],
+            }
+        )
+
+        self.assertEqual(result.status, "verified")
+        self.assertEqual(result.selected_song["id"], "joji")
+        self.assertEqual(result.verification["risk"], "low_confidence_judge_fallback")
+        self.assertEqual(result.used_query, "Joji Slow Dancing in the Dark")
 
     async def test_invalid_chosen_id_and_bad_confidence_does_not_queue_first_candidate(self):
         netease = FakeNetease()

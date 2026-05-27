@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import asyncio
+import inspect
 import json
 import re
 
@@ -47,6 +48,16 @@ class SearchVerifyAgent:
 
         judgement = await self._judge(music_task, candidates)
         song = self._chosen_song(candidates, judgement)
+        fallback_verification = {}
+        if not song:
+            song = self._fallback_song_for_concrete_task(candidates, music_task)
+            if song:
+                fallback_verification = {
+                    "confidence": 0.7,
+                    "matched_entities": [],
+                    "version_note": "Selected the first playable candidate from a concrete track query.",
+                    "risk": "low_confidence_judge_fallback",
+                }
         if not song:
             return SearchVerification(
                 status="not_found",
@@ -73,7 +84,7 @@ class SearchVerifyAgent:
             status="verified",
             selected_song=selected,
             url=getattr(resolved, "proxy_url", ""),
-            verification={
+            verification=fallback_verification or {
                 "confidence": self._safe_float(judgement.get("confidence")),
                 "matched_entities": judgement.get("matched_entities") or [],
                 "version_note": str(judgement.get("version_note") or ""),
@@ -95,7 +106,11 @@ Return JSON only:
 {{"search_queries":["artist title or performer composer work"]}}"""
         try:
             response = await asyncio.wait_for(
-                self.llm.chat(prompt, max_tokens=220, system="You create music search queries. Return JSON only."),
+                self._chat_json(
+                    prompt,
+                    max_tokens=220,
+                    system="You create music search queries. Return JSON only.",
+                ),
                 timeout=self.llm_timeout_s,
             )
             data = self._parse_json(response)
@@ -129,12 +144,42 @@ Return JSON only:
 }}"""
         try:
             response = await asyncio.wait_for(
-                self.llm.chat(prompt, max_tokens=360, system="You verify music search results. Return JSON only."),
+                self._chat_json(
+                    prompt,
+                    max_tokens=360,
+                    system="You verify music search results. Return JSON only.",
+                ),
                 timeout=self.llm_timeout_s,
             )
             return self._parse_json(response)
         except Exception:
             return {}
+
+    async def _chat_json(self, prompt: str, max_tokens: int, system: str) -> str:
+        kwargs = {
+            "max_tokens": max_tokens,
+            "system": system,
+            "response_format": {"type": "json_object"},
+        }
+        try:
+            return await self.llm.chat(prompt, **kwargs)
+        except TypeError as error:
+            if not self._looks_like_unsupported_response_format(error):
+                raise
+            kwargs.pop("response_format", None)
+            return await self.llm.chat(prompt, **kwargs)
+
+    def _looks_like_unsupported_response_format(self, error: TypeError) -> bool:
+        return "response_format" in str(error) or self._chat_accepts_response_format() is False
+
+    def _chat_accepts_response_format(self) -> bool | None:
+        try:
+            parameters = inspect.signature(self.llm.chat).parameters
+        except (TypeError, ValueError):
+            return None
+        if any(parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in parameters.values()):
+            return True
+        return "response_format" in parameters
 
     async def _not_found(self, music_task: dict, queries: list[str], reason: str) -> SearchVerification:
         judgement = await self._judge(music_task, [])
@@ -173,6 +218,24 @@ Return JSON only:
             if str(candidate.get("id")) == chosen_id:
                 return candidate
         return None
+
+    def _fallback_song_for_concrete_task(self, candidates: list[dict], music_task: dict) -> dict | None:
+        if not self._allows_concrete_candidate_fallback(music_task):
+            return None
+        for candidate in candidates[:4]:
+            query = str(candidate.get("_source_query") or "")
+            if self._looks_like_scene_bucket_query(query) or self._looks_like_scene_descriptor_query(query):
+                continue
+            if self._is_bad_candidate(candidate, music_task):
+                continue
+            return candidate
+        return None
+
+    def _allows_concrete_candidate_fallback(self, music_task: dict) -> bool:
+        if not isinstance(music_task, dict):
+            return False
+        task_type = str(music_task.get("type") or "")
+        return task_type in {"scene_genre_direction", "artist_direction", "artist_work_direction", "specific_track"}
 
     def _candidate_text(self, candidates: list[dict]) -> str:
         bounded = candidates[:MAX_CANDIDATES_FOR_JUDGEMENT]
@@ -221,6 +284,10 @@ Return JSON only:
         query = re.sub(r"^(can|could|would|please|play|listen to|put on|give me)\b", "", query, flags=re.I).strip()
         query = re.sub(r"[?？吗嘛呢吧]+$", "", query).strip()
         if not query:
+            return ""
+        if self._looks_like_scene_bucket_query(query):
+            return ""
+        if self._looks_like_scene_descriptor_query(query):
             return ""
         if self._looks_like_compact_chinese_sentence(query) and raw and query in raw:
             return ""
@@ -437,3 +504,20 @@ Return JSON only:
         has_ascii_word = bool(re.search(r"[A-Za-z0-9]", query))
         has_separator = bool(re.search(r"\s", query))
         return has_cjk and not has_ascii_word and not has_separator and len(query) > 6
+
+    def _looks_like_scene_bucket_query(self, query: str) -> bool:
+        text = str(query or "").strip().lower()
+        bucket_tokens = ("歌单", "歌曲", "音乐", "playlist", "mix", "合集", "助眠", "白噪", "学习")
+        scene_tokens = ("晚上", "夜晚", "深夜", "睡前", "安静", "舒缓", "放松", "氛围", "mellow", "chill")
+        has_bucket = any(token in text for token in bucket_tokens)
+        has_scene = any(token in text for token in scene_tokens)
+        has_specific_artistish = bool(re.search(r"[A-Za-z].+\s+[A-Za-z]", text)) and not has_bucket
+        return has_bucket and has_scene and not has_specific_artistish
+
+    def _looks_like_scene_descriptor_query(self, query: str) -> bool:
+        text = str(query or "").strip().lower()
+        scene_tokens = ("晚上", "夜晚", "深夜", "睡前", "安静", "舒缓", "放松", "氛围", "mellow", "chill", "不炸")
+        token_count = len(re.findall(r"[A-Za-z0-9+&]+|[\u4e00-\u9fff]{1,4}", text))
+        has_scene = sum(1 for token in scene_tokens if token in text) >= 2
+        has_specific_ascii = bool(re.search(r"[A-Za-z][A-Za-z0-9'.+&-]*\s+[A-Za-z][A-Za-z0-9'.+&-]*", text))
+        return has_scene and token_count <= 8 and not has_specific_ascii
