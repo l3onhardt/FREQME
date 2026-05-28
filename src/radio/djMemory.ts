@@ -91,6 +91,18 @@ export class DJMemoryManager {
     }
   }
 
+  logPlaybackEvent(
+    eventType: string,
+    options: {
+      uid?: string | null;
+      songId?: string | null;
+      reason?: string;
+      payload?: Record<string, unknown>;
+    } = {},
+  ): void {
+    this.store.logPlaybackEvent(eventType, options);
+  }
+
   private retrieveRelevantMemories(uid: string, requestText: string): Array<Record<string, unknown>> {
     const memories = this.store.getDjUserMemories(uid, [], 8);
     const normalizedRequest = normalizeMatchText(requestText);

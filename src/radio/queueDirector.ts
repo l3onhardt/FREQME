@@ -77,8 +77,18 @@ export class QueueDirector {
       };
     }
 
-    const verification = await this.verifier.verify(decision.musicTask, args.uid, args.requestText);
+    const verification = await this.verifier.verify(decision.musicTask, args.uid, args.requestText, contextPack);
     if (verification.status !== "verified" || !verification.selectedSong || !verification.url) {
+      this.memoryManager.logPlaybackEvent("song_request_not_found", {
+        uid: args.uid,
+        reason: args.requestText,
+        payload: {
+          requestText: args.requestText,
+          failureReason: verification.failureReason || "",
+          usedQuery: verification.usedQuery || "",
+          diagnostics: verification.diagnostics || {},
+        },
+      });
       return {
         status: "needs_recovery",
         djText: this.recoveryText(decision),

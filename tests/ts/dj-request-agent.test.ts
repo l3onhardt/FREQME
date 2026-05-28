@@ -95,6 +95,37 @@ test("genre requests like R&B are accepted as executable LLM decisions", async (
   assert.equal(decision.uncertainty.shouldAskUser, false);
 });
 
+test("abstract genre decisions must include concrete artist-title candidates, not only bucket searches", async () => {
+  const llm = new FakeLlm(
+    JSON.stringify({
+      action: "set_direction_and_play",
+      understoodIntent: "listener wants a personalized electronic R&B direction",
+      musicTask: {
+        type: "genre_direction",
+        primaryEntities: [
+          { role: "genre", name: "R&B" },
+          { role: "scene", name: "electronic fusion" },
+        ],
+        workHint: "",
+        styleHint: "modern electronic R&B",
+        negativeConstraints: ["avoid noisy club tracks"],
+        searchGoals: ["R&B 电子融合", "舞曲 R&B", "Electronic R&B"],
+        mustNotSearchLiteralUserSentence: true,
+      },
+      queuePolicy: { durationTracks: 4, continueDirection: true, avoidRepetition: true },
+      uncertainty: { level: "low", reason: "Clear style request.", shouldAskUser: false },
+      djResponse: { speakNow: "我往电子 R&B 的方向接。", tone: "warm_confident" },
+      memoryUpdate: { sessionPreference: ["electronic R&B"], possibleLongTermPreference: [], negativeConstraints: [] },
+    }),
+  );
+  const agent = new DJRequestAgent(llm as any);
+  const decision = await agent.decide("我要听5电的rnb", emptyContext);
+
+  assert.equal(decision.action, "ask_clarifying_question");
+  assert.equal(decision.musicTask.type, "unclear");
+  assert.match(decision.uncertainty.reason, /concrete/i);
+});
+
 test("DJ request agent does not invent local artist decisions when LLM is unavailable", async () => {
   const agent = new DJRequestAgent(new ThrowingLlm() as any);
   const decision = await agent.decide("我要听radiohead", emptyContext);

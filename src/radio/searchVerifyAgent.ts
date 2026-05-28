@@ -1,10 +1,16 @@
 import type { AudioResolver } from "../services/audioResolver.js";
 import type { LLMRouter } from "../services/llmRouter.js";
 import type { NeteaseService } from "../services/neteaseService.js";
-import type { MusicTask, SearchVerification, Track } from "../types.js";
+import type { MemoryPack, MusicTask, SearchVerification, Track } from "../types.js";
 import { asStringList, compactText, dedupe, extractJsonObject, normalizeMatchText } from "../utils/text.js";
 
 const minConfidence = 0.7;
+
+interface QueryPlan {
+  queries: string[];
+  rejectedQueries: string[];
+  generatedQueries: string[];
+}
 
 export class SearchVerifyAgent {
   constructor(
@@ -14,8 +20,19 @@ export class SearchVerifyAgent {
     private readonly llmTimeoutMs = 12000,
   ) {}
 
-  async verify(musicTask: MusicTask, uid: string | null = null, rawUserText = ""): Promise<SearchVerification> {
-    const queries = await this.queries(musicTask, rawUserText);
+  async verify(
+    musicTask: MusicTask,
+    uid: string | null = null,
+    rawUserText = "",
+    contextPack?: MemoryPack,
+  ): Promise<SearchVerification> {
+    const plan = await this.queryPlan(musicTask, rawUserText, contextPack);
+    const queries = plan.queries;
+    if (this.requiresConcreteQueries(musicTask) && !queries.length && plan.rejectedQueries.length) {
+      return this.notFound(musicTask, queries, "Search planner did not produce concrete song queries.", {
+        rejectedQueries: plan.rejectedQueries,
+      });
+    }
     const candidates: Track[] = [];
     for (const query of queries) {
       const found = await this.netease.search(query, 8).catch(() => []);
@@ -25,55 +42,85 @@ export class SearchVerifyAgent {
         }
       }
     }
-    if (!candidates.length) return this.notFound(musicTask, queries, "No playable candidates were found.");
+    if (!candidates.length) {
+      return this.notFound(musicTask, queries, "No playable candidates were found.", {
+        searchedQueries: queries,
+        rejectedQueries: plan.rejectedQueries,
+      });
+    }
 
     const judgement: Record<string, unknown> = await this.judge(musicTask, candidates).catch(() => ({}));
-    let song = this.chosenSong(candidates, judgement);
-    if (!song) song = this.locallyVerifiedSong(candidates, musicTask);
-    if (song && !this.candidateMatchesRequiredEntities(song, musicTask)) {
-      song = null;
-    }
-    if (!song) return this.notFound(musicTask, queries, "No candidate passed verification.");
-
-    const resolved = await this.audioResolver.resolveWithCandidates(song, uid);
-    if (!resolved.ok) {
-      return this.notFound(musicTask, queries, "The verified candidate is not playable.");
+    const rankedSongs = this.rankedSongs(candidates, judgement, musicTask);
+    if (!rankedSongs.length) {
+      return this.notFound(musicTask, queries, "No candidate passed verification.", {
+        searchedQueries: queries,
+        candidateIds: candidates.map((candidate) => candidate.id).filter(Boolean),
+      });
     }
 
-    const selectedSong = { ...song, id: resolved.songId || song.id };
-    return {
-      status: "verified",
-      selectedSong,
-      url: resolved.proxyUrl,
-      verification: {
-        confidence: Number(judgement.confidence || 0.72),
-        matchedEntities: asStringList(judgement.matched_entities, 8),
-        versionNote: compactText(judgement.version_note || "Candidate metadata matches the music task.", 180),
-        risk: compactText(judgement.risk || "", 160),
-      },
-      fallbackCandidates: [],
-      recoveryOptions: [],
-      usedQuery: song.source || queries[0] || "",
-    };
+    const attemptedSongIds: string[] = [];
+    for (const song of rankedSongs) {
+      attemptedSongIds.push(song.id);
+      const resolved = await this.audioResolver.resolveWithCandidates(song, uid);
+      if (!resolved.ok) continue;
+
+      const selectedSong = { ...song, id: resolved.songId || song.id };
+      return {
+        status: "verified",
+        selectedSong,
+        url: resolved.proxyUrl,
+        verification: {
+          confidence: Number(judgement.confidence || 0.72),
+          matchedEntities: asStringList(judgement.matched_entities, 8),
+          versionNote: compactText(judgement.version_note || "Candidate metadata matches the music task.", 180),
+          risk: compactText(judgement.risk || "", 160),
+        },
+        fallbackCandidates: [],
+        recoveryOptions: [],
+        usedQuery: song.source || queries[0] || "",
+      };
+    }
+
+    return this.notFound(musicTask, queries, "Verified candidates were not playable.", {
+      searchedQueries: queries,
+      candidateIds: candidates.map((candidate) => candidate.id).filter(Boolean),
+      attemptedSongIds,
+    });
   }
 
-  async queries(musicTask: MusicTask, rawUserText = ""): Promise<string[]> {
+  async queries(musicTask: MusicTask, rawUserText = "", contextPack?: MemoryPack): Promise<string[]> {
+    return (await this.queryPlan(musicTask, rawUserText, contextPack)).queries;
+  }
+
+  private async queryPlan(musicTask: MusicTask, rawUserText = "", contextPack?: MemoryPack): Promise<QueryPlan> {
     const goals = this.cleanQueries(musicTask.searchGoals, rawUserText);
     const requiresConcrete = this.requiresConcreteQueries(musicTask);
     const fastQueries = this.fastConcreteQueries(musicTask, goals);
-    if (fastQueries.length) return fastQueries;
+    if (fastQueries.length) return { queries: fastQueries, rejectedQueries: [], generatedQueries: [] };
     const concreteGoals = goals.filter((query) => this.looksConcrete(query, musicTask));
-    if (requiresConcrete && concreteGoals.length) return concreteGoals.slice(0, 6);
+    if (requiresConcrete && concreteGoals.length && !this.shouldPersonalizeWithPlanner(musicTask, contextPack)) {
+      return {
+        queries: concreteGoals.slice(0, 6),
+        rejectedQueries: goals.filter((query) => !concreteGoals.includes(query)),
+        generatedQueries: [],
+      };
+    }
 
     const prompt = `Rewrite this DJ music task into concrete NetEase Cloud Music song searches.
 
 Rules:
 - Think as a search-planning agent, not as a keyword matcher.
-- For scene, genre, mood, time, continuation, and artist/band directions, infer 3 to 5 concrete songs first.
+- First infer what this specific listener is likely to mean using their taste profile, recent tracks, session memory, and constraints.
+- For scene, genre, mood, time, continuation, and artist/band directions, curate 4 to 8 concrete songs first.
 - Return queries shaped like "artist title" whenever possible.
 - Do not return only a bare artist, bare genre, playlist bucket, or the literal listener sentence.
 - Avoid playlists, compilations, utility audio, study/sleep audio, KTV, backing tracks, and unrequested covers.
 - Keep performer/composer/work hints when the task asks for a performer or classical work.
+- Prefer songs that fit both the listener's profile and the new request. Use profile anchors as taste signals, not as the only songs to play.
+- If the request is abstract, treat search_goals as seed hints; do not stop after one generic or unplayable candidate.
+
+Personal listener context:
+${JSON.stringify(this.planningContext(contextPack), null, 2)}
 
 Music task:
 ${JSON.stringify(musicTask, null, 2)}
@@ -81,20 +128,32 @@ ${JSON.stringify(musicTask, null, 2)}
 Return only JSON:
 {"search_queries": ["artist title"], "picks": [{"artist": "", "title": "", "query": "", "reason": ""}]}`;
 
-    const generated = await this.llm
+    const generatedRaw = await this.llm
       .chat(prompt, {
         maxTokens: 420,
         system: "You are a DJ search planning agent. Return only valid JSON.",
         responseFormat: { type: "json_object" },
         timeoutMs: this.llmTimeoutMs,
       })
-      .then((text) => this.cleanQueries(this.plannedQueryValues(extractJsonObject(text)), rawUserText))
+      .then((text) => this.plannedQueryValues(extractJsonObject(text)))
       .catch(() => []);
+    const generated = this.cleanQueries(generatedRaw, rawUserText);
 
     const merged = dedupe([...generated, ...goals]);
-    if (!requiresConcrete) return merged.length ? merged.slice(0, 6) : this.structuredFallback(musicTask, rawUserText);
+    if (!requiresConcrete) {
+      const fallback = merged.length ? merged.slice(0, 6) : this.structuredFallback(musicTask, rawUserText);
+      return {
+        queries: fallback,
+        rejectedQueries: generatedRaw.filter((query) => !fallback.includes(query)),
+        generatedQueries: generated,
+      };
+    }
     const concrete = merged.filter((query) => this.looksConcrete(query, musicTask));
-    return concrete.slice(0, 6);
+    return {
+      queries: concrete.slice(0, 6),
+      rejectedQueries: dedupe([...generatedRaw, ...goals]).filter((query) => !concrete.includes(query)),
+      generatedQueries: generated,
+    };
   }
 
   private async judge(musicTask: MusicTask, candidates: Track[]): Promise<Record<string, unknown>> {
@@ -307,13 +366,78 @@ Return only JSON:
     });
   }
 
+  private rankedSongs(candidates: Track[], judgement: Record<string, unknown>, task: MusicTask): Track[] {
+    const ranked: Track[] = [];
+    const chosen = this.chosenSong(candidates, judgement);
+    if (chosen) ranked.push(chosen);
+    const local = this.locallyVerifiedSong(candidates, task);
+    if (local) ranked.push(local);
+    ranked.push(...candidates);
+    return ranked
+      .filter((song) => this.candidateMatchesRequiredEntities(song, task))
+      .filter((song, index, list) => list.findIndex((item) => item.id === song.id) === index)
+      .slice(0, 12);
+  }
+
+  private shouldPersonalizeWithPlanner(task: MusicTask, contextPack?: MemoryPack): boolean {
+    if (!contextPack) return false;
+    if (!["scene_genre_direction", "continuation", "negative_feedback", "artist_direction"].includes(task.type)) return false;
+    return Boolean(
+      compactText(contextPack.userProfileDigest, 40) ||
+        contextPack.retrievedMemories.length ||
+        contextPack.recentTurns.length ||
+        Object.keys(contextPack.sessionWorkingMemory || {}).length ||
+        Object.keys(contextPack.playbackContext || {}).length,
+    );
+  }
+
+  private planningContext(contextPack?: MemoryPack): Record<string, unknown> {
+    if (!contextPack) return {};
+    const playback = contextPack.playbackContext || {};
+    const settings = contextPack.userSettings || {};
+    return {
+      profileDigest: compactText(contextPack.userProfileDigest, 900),
+      sessionMemory: this.compactJson(contextPack.sessionWorkingMemory, 700),
+      recentTurns: contextPack.recentTurns.slice(-5),
+      retrievedMemories: contextPack.retrievedMemories.slice(0, 5),
+      playback: {
+        currentTrack: (playback as Record<string, unknown>).currentTrack,
+        recentTracks: Array.isArray((playback as Record<string, unknown>).recentTracks)
+          ? ((playback as Record<string, unknown>).recentTracks as unknown[]).slice(-8)
+          : [],
+        readyQueue: Array.isArray((playback as Record<string, unknown>).readyQueue)
+          ? ((playback as Record<string, unknown>).readyQueue as unknown[]).slice(0, 5)
+          : [],
+        scene: (playback as Record<string, unknown>).scene,
+      },
+      settings: {
+        currentMode: settings.currentMode,
+        musicNotes: compactText(settings.musicNotes || "", 300),
+        timezoneName: settings.timezoneName,
+        locale: settings.locale,
+        regionHint: settings.regionHint,
+        localTimeBlock: settings.localTimeBlock,
+      },
+      constraints: contextPack.hardConstraints.slice(0, 5),
+    };
+  }
+
+  private compactJson(value: unknown, maxLength: number): string {
+    return compactText(JSON.stringify(value ?? {}), maxLength);
+  }
+
   private structuredFallback(task: MusicTask, rawUserText: string): string[] {
     const parts = [...task.primaryEntities.map((entity) => entity.name), task.workHint, task.styleHint].filter(Boolean);
     const query = compactText(parts.join(" "), 120);
     return query && query !== compactText(rawUserText, 120) ? [query] : [];
   }
 
-  private notFound(task: MusicTask, queries: string[], reason: string): SearchVerification {
+  private notFound(
+    task: MusicTask,
+    queries: string[],
+    reason: string,
+    diagnostics: SearchVerification["diagnostics"] = {},
+  ): SearchVerification {
     const entityText = [...task.primaryEntities.map((entity) => entity.name), task.workHint, task.styleHint].filter(Boolean).join(" ");
     return {
       status: "not_found",
@@ -330,6 +454,12 @@ Return only JSON:
         : [],
       failureReason: reason,
       usedQuery: queries[0] || "",
+      diagnostics: {
+        searchedQueries: diagnostics.searchedQueries || queries,
+        rejectedQueries: diagnostics.rejectedQueries || [],
+        candidateIds: diagnostics.candidateIds || [],
+        attemptedSongIds: diagnostics.attemptedSongIds || [],
+      },
     };
   }
 }

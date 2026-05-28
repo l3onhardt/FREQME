@@ -114,6 +114,12 @@ export interface SearchVerification {
   recoveryOptions: Array<{ type: string; task: string; reason: string }>;
   failureReason?: string;
   usedQuery?: string;
+  diagnostics?: {
+    searchedQueries?: string[];
+    rejectedQueries?: string[];
+    candidateIds?: string[];
+    attemptedSongIds?: string[];
+  };
 }
 
 export interface ListeningIntent {
