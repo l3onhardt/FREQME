@@ -14,7 +14,7 @@ import { resolveSongUrl } from './song-url.js';
 const {
     login_qr_key, login_qr_create, login_qr_check,
     user_playlist, playlist_detail, user_record, recommend_songs,
-    personal_fm, simi_song, song_url, song_url_v1, search,
+    personal_fm, simi_song, song_url, song_url_v1, search, cloudsearch,
     login_refresh, login_status, like_list,
 } = NeteaseCloudMusicApi;
 
@@ -109,7 +109,12 @@ app.get('/song/url', asyncRoute(async (req, res) => {
 }));
 
 app.get('/search', asyncRoute(async (req, res) => {
-    const r = await search({ keywords: req.query.keywords, type: 1, limit: 10 });
+    const r = await search({ keywords: req.query.keywords, type: 1, limit: req.query.limit || 10 });
+    res.json(r.body);
+}));
+
+app.get('/cloudsearch', asyncRoute(async (req, res) => {
+    const r = await cloudsearch(withCookie({ keywords: req.query.keywords, type: 1, limit: req.query.limit || 10 }));
     res.json(r.body);
 }));
 

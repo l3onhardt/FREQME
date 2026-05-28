@@ -7,8 +7,8 @@ BASE = f"http://127.0.0.1:{settings.netease_bridge_port}"
 
 
 class NeteaseAdapter:
-    def __init__(self):
-        self.client = httpx.AsyncClient(timeout=30.0, trust_env=False)
+    def __init__(self, client=None):
+        self.client = client or httpx.AsyncClient(timeout=30.0, trust_env=False)
 
     async def qr_key(self) -> dict:
         try:
@@ -87,17 +87,32 @@ class NeteaseAdapter:
         return ""
 
     async def search(self, keywords: str, limit: int = 5) -> list[dict]:
+        songs = await self._search_endpoint("cloudsearch", keywords, limit)
+        if songs:
+            return songs
+        return await self._search_endpoint("search", keywords, limit)
+
+    async def _search_endpoint(self, endpoint: str, keywords: str, limit: int) -> list[dict]:
         try:
             r = await self.client.get(
-                f"{BASE}/search",
+                f"{BASE}/{endpoint}",
                 params={"keywords": keywords, "limit": limit},
                 timeout=10.0,
             )
             data = r.json()
             result = data.get("result", {}) if isinstance(data, dict) else {}
-            return result.get("songs", []) if isinstance(result, dict) else []
+            songs = result.get("songs", []) if isinstance(result, dict) else []
+            return [self._normalize_search_song(song) for song in songs if isinstance(song, dict)]
         except Exception:
             return []
+
+    def _normalize_search_song(self, song: dict) -> dict:
+        normalized = dict(song)
+        if "ar" not in normalized and isinstance(normalized.get("artists"), list):
+            normalized["ar"] = normalized.get("artists")
+        if "al" not in normalized and isinstance(normalized.get("album"), dict):
+            normalized["al"] = normalized.get("album")
+        return normalized
 
     async def like_list(self, uid: int) -> list[int]:
         try:

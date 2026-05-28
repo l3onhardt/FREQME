@@ -258,15 +258,13 @@ class QueueDirector:
         return value[:240]
 
     def _recovery_text(self, decision, request_text: str = "") -> str:
-        intent = str(self._field(decision, "understood_intent", "") or "").strip()
-        if intent and not self._contains_raw_text(intent, request_text):
-            return f"I tried that direction but could not verify a playable match: {intent}"
-
         task = self._mapping(self._field(decision, "music_task", {}))
-        direction = str(task.get("type") or "this music direction").strip()
-        if self._contains_raw_text(direction, request_text):
-            direction = "this music direction"
-        return f"I tried {direction} but could not verify a playable match."
+        task_type = str(task.get("type") or "").strip()
+        if task_type in {"artist_direction", "artist_work_direction", "specific_track"}:
+            return "我没能确认到足够稳的可播版本，先不乱放。"
+        if task_type in {"scene_genre_direction", "continuation", "negative_feedback"}:
+            return "这个方向我没能确认到合适的可播版本，先不硬切。"
+        return "我没能确认到可播版本，先不乱放。"
 
     def _verification_note(self, verification) -> str:
         data = self._mapping(self._field(verification, "verification", {}))

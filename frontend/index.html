@@ -55,13 +55,13 @@
             <p>先选一个今晚最舒服的陪伴声线。</p>
           </div>
           <div class="choice-grid" id="voice-options">
-            <button class="choice-card selected" data-voice="silver_female" type="button">
-              <strong>知性磁性女声</strong>
-              <span>银色、成熟、低暖，像深夜里懂音乐的电台姐姐</span>
+            <button class="choice-card selected" data-voice="female" type="button">
+              <strong>厚感女主播</strong>
+              <span>成熟、温暖、低沉一点，像深夜里很会陪伴的电台主持人</span>
             </button>
-            <button class="choice-card" data-voice="warm_male" type="button">
-              <strong>温柔磁性男主播</strong>
-              <span>沉稳、克制、有靠近感，像陪你慢慢听歌的主持人</span>
+            <button class="choice-card" data-voice="male" type="button">
+              <strong>厚感男主播</strong>
+              <span>低沉、磁性、胸腔感更明显，像夜里沉稳的电台 DJ</span>
             </button>
           </div>
         </section>
@@ -109,6 +109,22 @@
         <div class="track-stack">
           <div class="track-name" id="track-name">--</div>
           <div class="track-artist" id="track-artist">--</div>
+        </div>
+
+        <div class="spectrum-wrap" aria-hidden="true">
+          <div class="spectrum" id="spectrum-bars">
+            <span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span>
+          </div>
+        </div>
+
+        <div class="progress-wrap" aria-label="播放进度">
+          <div class="progress-meta">
+            <span id="progress-current">0:00</span>
+            <span id="progress-total">0:00</span>
+          </div>
+          <div class="progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+            <div class="progress-fill" id="progress-fill"></div>
+          </div>
         </div>
 
         <div class="dj-message" id="dj-message">

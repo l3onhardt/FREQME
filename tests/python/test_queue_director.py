@@ -315,6 +315,28 @@ class QueueDirectorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(result.recovery_options), 3)
         self.assertEqual(result.recovery_options[0]["task"], "Radiohead live")
 
+    async def test_search_failure_recovery_copy_is_user_facing_chinese_not_internal_english(self):
+        decision = playable_decision(action="play_now")
+        decision.understood_intent = "User wants music around Radiohead."
+        verifier = FakeVerifier(SearchVerification(status="not_found"))
+        director = QueueDirector(FakeDJAgent(decision), verifier, FakeMemoryManager())
+
+        result = await director.handle_song_request(
+            "来点radiohead",
+            playback_queue=PlaybackQueue(),
+            uid="uid-1",
+            session_id=7,
+            profile={},
+            user_settings={},
+            playback_context={},
+        )
+
+        self.assertEqual(result.status, "needs_recovery")
+        self.assertIn("没能确认到", result.dj_text)
+        self.assertNotIn("I tried", result.dj_text)
+        self.assertNotIn("User wants", result.dj_text)
+        self.assertNotIn("Radiohead", result.dj_text)
+
     async def test_recovery_text_does_not_use_understood_intent_when_it_contains_raw_sentence(self):
         queue = PlaybackQueue()
         raw_sentence = "literal unsafe user sentence"

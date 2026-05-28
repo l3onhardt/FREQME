@@ -36,6 +36,16 @@ def _should_retry_mimo_response(response) -> bool:
     return not content and details.get("reasoning_tokens", 0) > 0
 
 
+def _provider_order(budget_ok: bool) -> list[str]:
+    primary = settings.llm_provider
+    fallback = settings.llm_fallback_provider
+    if fallback == primary:
+        return [primary]
+    if budget_ok:
+        return [primary, fallback]
+    return [fallback, primary]
+
+
 def _mimo_chat(msgs: list[dict], maxt: int, api_key: str, base_url: str, model: str) -> str:
     """Use MiMo's OpenAI-compatible chat completions for text generation."""
     response = httpx.post(
@@ -148,16 +158,11 @@ class LLMRouter:
             {"role": "user", "content": user_msg},
         ]
 
-        provider_order = [settings.llm_provider]
-        if settings.llm_fallback_provider != settings.llm_provider:
-            provider_order.append(settings.llm_fallback_provider)
-
         budget_ok = await self.store.check_token_budget()
+        provider_order = _provider_order(budget_ok)
         last_error: Exception | None = None
 
         for provider in provider_order:
-            if not budget_ok and provider != settings.llm_fallback_provider:
-                continue
             try:
                 cfg = PROVIDERS[provider]
                 provider_settings = _settings_for_provider(

@@ -249,7 +249,194 @@ class SearchVerifyAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("安静夜晚歌单", searched)
         self.assertNotIn("晚上 安静 放松 夜晚 mellow 安静 不炸", searched)
 
-    async def test_concrete_scene_track_can_fallback_to_first_playable_when_judge_is_uncertain(self):
+    async def test_scene_direction_asks_llm_for_concrete_picks_before_searching_style_words(self):
+        netease = FakeNetease()
+        netease.results_by_query["Phoebe Bridgers Funeral"] = [
+            {"id": "funeral", "name": "Funeral", "ar": [{"name": "Phoebe Bridgers"}]},
+        ]
+        netease.results_by_query["深夜 emotional 不炸"] = [
+            {"id": "junk", "name": "深夜伤感歌单", "ar": [{"name": "歌单频道"}]},
+        ]
+        llm = FakeLLM([
+            '{"search_queries":["深夜 emotional 不炸"],"picks":[{"title":"Funeral","artist":"Phoebe Bridgers","query":"Phoebe Bridgers Funeral"}]}',
+            '{"chosen_id":"funeral","confidence":0.9}',
+        ])
+        agent = SearchVerifyAgent(llm, netease, AlwaysPlayableResolver())
+
+        result = await agent.verify(
+            {
+                "type": "scene_genre_direction",
+                "style_hint": "深夜 emotional 安静一点 不炸",
+                "search_goals": ["深夜 emotional 不炸"],
+                "must_not_search_literal_user_sentence": True,
+            },
+            raw_user_text="别放炸的，放深夜 emotional 的",
+        )
+
+        self.assertEqual(result.status, "verified")
+        self.assertEqual(result.selected_song["id"], "funeral")
+        searched = [call["keywords"] for call in netease.search_calls]
+        self.assertEqual(searched, ["Phoebe Bridgers Funeral"])
+        self.assertNotIn("深夜 emotional 不炸", searched)
+        self.assertIn("具体歌曲", llm.calls[0]["prompt"])
+        self.assertIn("negative_constraints and avoidance words as hard filters", llm.calls[0]["prompt"])
+        self.assertIn("late-night emotional", llm.calls[0]["prompt"])
+
+    async def test_artist_direction_asks_llm_for_concrete_picks_before_searching_bare_direction(self):
+        netease = FakeNetease()
+        netease.results_by_query["Radiohead No Surprises"] = [
+            {"id": "no-surprises", "name": "No Surprises", "ar": [{"name": "Radiohead"}]},
+        ]
+        netease.results_by_query["Radiohead"] = [
+            {"id": "lau-17", "name": "17岁", "ar": [{"name": "刘德华"}]},
+        ]
+        llm = FakeLLM([
+            '{"search_queries":["Radiohead"],"picks":[{"title":"No Surprises","artist":"Radiohead","query":"Radiohead No Surprises"}]}',
+            '{"chosen_id":"no-surprises","confidence":0.93}',
+        ])
+        agent = SearchVerifyAgent(llm, netease, AlwaysPlayableResolver())
+
+        result = await agent.verify(
+            {
+                "type": "artist_direction",
+                "primary_entities": [{"role": "artist", "name": "Radiohead"}],
+                "style_hint": "Radiohead",
+                "search_goals": ["Radiohead"],
+                "must_not_search_literal_user_sentence": True,
+            },
+            raw_user_text="来点radiohead",
+        )
+
+        self.assertEqual(result.status, "verified")
+        self.assertEqual(result.selected_song["id"], "no-surprises")
+        searched = [call["keywords"] for call in netease.search_calls]
+        self.assertEqual(searched, ["Radiohead No Surprises"])
+        self.assertNotIn("Radiohead", searched[1:])
+
+    async def test_artist_direction_repairs_underplanned_entity_with_llm_not_artist_tool(self):
+        netease = FakeNetease()
+        netease.results_by_query["X JAPAN Endless Rain"] = [
+            {"id": "endless-rain", "name": "Endless Rain", "ar": [{"name": "X JAPAN"}]},
+        ]
+        llm = FakeLLM([
+            '{"search_queries":["xjapan"]}',
+            '{"picks":[{"artist":"X JAPAN","title":"Endless Rain","query":"X JAPAN Endless Rain","reason":"代表性抒情摇滚方向"}]}',
+            '{"chosen_id":"endless-rain","confidence":0.93}',
+        ])
+        agent = SearchVerifyAgent(llm, netease, AlwaysPlayableResolver())
+
+        result = await agent.verify(
+            {
+                "type": "artist_direction",
+                "primary_entities": [{"role": "music_entity", "name": "xjapan"}],
+                "style_hint": "xjapan",
+                "search_goals": ["xjapan"],
+                "must_not_search_literal_user_sentence": True,
+            },
+            raw_user_text="来点xjapan",
+        )
+
+        self.assertEqual(result.status, "verified")
+        self.assertEqual(result.selected_song["id"], "endless-rain")
+        self.assertEqual([call["keywords"] for call in netease.search_calls], ["X JAPAN Endless Rain"])
+        self.assertEqual(len(llm.calls), 3)
+        self.assertIn("second-pass", llm.calls[1]["prompt"])
+        self.assertNotIn("artist_top_song", llm.calls[1]["prompt"])
+
+    async def test_artist_work_direction_repairs_bare_performer_composer_into_specific_work(self):
+        netease = FakeNetease()
+        netease.results_by_query["Krystian Zimerman Chopin Piano Concerto No. 1"] = [
+            {
+                "id": "zimerman-concerto",
+                "name": "Piano Concerto No. 1 in E Minor, Op. 11",
+                "ar": [{"name": "Krystian Zimerman"}],
+                "al": {"name": "Chopin: Piano Concertos"},
+            },
+        ]
+        llm = FakeLLM([
+            '{"search_queries":["齐默尔曼 肖邦"]}',
+            '{"picks":[{"artist":"Krystian Zimerman","title":"Chopin Piano Concerto No. 1","query":"Krystian Zimerman Chopin Piano Concerto No. 1","reason":"把演奏家和作曲家方向落实到可播作品"}]}',
+            '{"chosen_id":"zimerman-concerto","confidence":0.91}',
+            '{"matches":true,"confidence":0.9,"reason":"齐默尔曼 refers to Krystian Zimerman."}',
+        ])
+        agent = SearchVerifyAgent(llm, netease, AlwaysPlayableResolver())
+
+        result = await agent.verify(
+            {
+                "type": "artist_work_direction",
+                "primary_entities": [
+                    {"role": "performer", "name": "齐默尔曼"},
+                    {"role": "work", "name": "肖邦"},
+                ],
+                "work_hint": "肖邦",
+                "style_hint": "齐默尔曼 肖邦",
+                "search_goals": ["齐默尔曼 肖邦"],
+                "must_not_search_literal_user_sentence": True,
+            },
+            raw_user_text="我要听齐默尔曼的肖邦",
+        )
+
+        self.assertEqual(result.status, "verified")
+        self.assertEqual(result.selected_song["id"], "zimerman-concerto")
+        self.assertEqual(
+            [call["keywords"] for call in netease.search_calls],
+            ["Krystian Zimerman Chopin Piano Concerto No. 1"],
+        )
+
+    async def test_underplanned_repair_failure_does_not_search_bare_entity(self):
+        netease = FakeNetease()
+        llm = FakeLLM([
+            '{"search_queries":["xjapan"]}',
+            '{"search_queries":["xjapan"],"picks":[]}',
+            '{"chosen_id":"","confidence":0.0}',
+        ])
+        agent = SearchVerifyAgent(llm, netease, AlwaysPlayableResolver())
+
+        result = await agent.verify(
+            {
+                "type": "artist_direction",
+                "primary_entities": [{"role": "music_entity", "name": "xjapan"}],
+                "style_hint": "xjapan",
+                "search_goals": ["xjapan"],
+            },
+            raw_user_text="来点xjapan",
+        )
+
+        self.assertEqual(result.status, "not_found")
+        self.assertEqual(netease.search_calls, [])
+
+    async def test_artist_direction_repairs_generic_artist_descriptor_queries(self):
+        netease = FakeNetease()
+        netease.results_by_query["Linkin Park Leave Out All The Rest"] = [
+            {"id": "leave-out", "name": "Leave Out All The Rest", "ar": [{"name": "Linkin Park"}]},
+        ]
+        llm = FakeLLM([
+            '{"search_queries":["Linkin Park 不吵 推荐","Linkin Park softer songs"]}',
+            '{"picks":[{"artist":"Linkin Park","title":"Leave Out All The Rest","query":"Linkin Park Leave Out All The Rest","reason":"更柔和的 Linkin Park"}]}',
+            '{"chosen_id":"leave-out","confidence":0.91}',
+        ])
+        agent = SearchVerifyAgent(llm, netease, AlwaysPlayableResolver())
+
+        result = await agent.verify(
+            {
+                "type": "artist_direction",
+                "primary_entities": [{"role": "artist", "name": "Linkin Park"}],
+                "work_hint": "calmer, less loud tracks",
+                "style_hint": "Linkin Park but not too loud",
+                "negative_constraints": ["不要太吵"],
+                "search_goals": ["Linkin Park", "Linkin Park 不吵 推荐"],
+            },
+            raw_user_text="来点林肯公园但别太吵",
+        )
+
+        self.assertEqual(result.status, "verified")
+        self.assertEqual(result.selected_song["id"], "leave-out")
+        self.assertEqual(
+            [call["keywords"] for call in netease.search_calls],
+            ["Linkin Park Leave Out All The Rest"],
+        )
+
+    async def test_concrete_scene_track_can_be_locally_verified_when_judge_is_uncertain(self):
         netease = FakeNetease()
         netease.results_by_query["Joji Slow Dancing in the Dark"] = [
             {"id": "joji", "name": "Slow Dancing in the Dark", "ar": [{"name": "Joji"}]},
@@ -271,13 +458,115 @@ class SearchVerifyAgentTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result.status, "verified")
         self.assertEqual(result.selected_song["id"], "joji")
-        self.assertEqual(result.verification["risk"], "low_confidence_judge_fallback")
+        self.assertEqual(result.verification["risk"], "local_metadata_match")
         self.assertEqual(result.used_query, "Joji Slow Dancing in the Dark")
+
+    async def test_concrete_query_does_not_locally_verify_unmatched_first_candidate(self):
+        netease = FakeNetease()
+        netease.results_by_query["Joji Slow Dancing in the Dark"] = [
+            {"id": "wrong", "name": "17岁", "ar": [{"name": "刘德华"}]},
+        ]
+        llm = FakeLLM([
+            '{"search_queries":["Joji Slow Dancing in the Dark"]}',
+            '{"chosen_id":"","confidence":0.0}',
+        ])
+        resolver = RecordingResolver({"wrong"})
+        agent = SearchVerifyAgent(llm, netease, resolver)
+
+        result = await agent.verify(
+            {
+                "type": "scene_genre_direction",
+                "style_hint": "晚上、放松、舒缓、非炸裂",
+                "search_goals": ["Joji Slow Dancing in the Dark"],
+            }
+        )
+
+        self.assertEqual(result.status, "not_found")
+        self.assertIsNone(result.selected_song)
+        self.assertEqual(resolver.calls, [])
+
+    async def test_artist_direction_does_not_fallback_to_wrong_artist_when_judge_is_uncertain(self):
+        netease = FakeNetease()
+        netease.results_by_query["Radiohead"] = [
+            {"id": "lau-17", "name": "17岁", "ar": [{"name": "刘德华"}]},
+        ]
+        llm = FakeLLM([
+            '{"search_queries":["Radiohead"]}',
+            '{"chosen_id":"","confidence":0.0}',
+        ])
+        resolver = RecordingResolver({"lau-17"})
+        agent = SearchVerifyAgent(llm, netease, resolver)
+
+        result = await agent.verify(
+            {
+                "type": "artist_direction",
+                "primary_entities": [],
+                "search_goals": ["Radiohead"],
+            },
+            raw_user_text="来点radiohead",
+        )
+
+        self.assertEqual(result.status, "not_found")
+        self.assertIsNone(result.selected_song)
+        self.assertEqual(resolver.calls, [])
+
+    async def test_high_confidence_wrong_artist_choice_is_rejected_for_entity_task(self):
+        netease = FakeNetease()
+        netease.results_by_query["Radiohead"] = [
+            {"id": "lau-17", "name": "17岁", "ar": [{"name": "刘德华"}]},
+        ]
+        llm = FakeLLM([
+            '{"search_queries":["Radiohead"]}',
+            '{"chosen_id":"lau-17","confidence":0.99}',
+        ])
+        resolver = RecordingResolver({"lau-17"})
+        agent = SearchVerifyAgent(llm, netease, resolver)
+
+        result = await agent.verify(
+            {
+                "type": "artist_direction",
+                "primary_entities": [{"role": "artist", "name": "Radiohead"}],
+                "search_goals": ["Radiohead"],
+            },
+            raw_user_text="来点radiohead",
+        )
+
+        self.assertEqual(result.status, "not_found")
+        self.assertIsNone(result.selected_song)
+        self.assertEqual(resolver.calls, [])
+
+    async def test_entity_consistency_can_accept_llm_verified_translation_without_alias_cache(self):
+        netease = FakeNetease()
+        netease.results_by_query["Radiohead No Surprises"] = [
+            {"id": "no-surprises", "name": "No Surprises", "ar": [{"name": "Radiohead"}]},
+        ]
+        llm = FakeLLM([
+            '{"search_queries":[],"picks":[{"title":"No Surprises","artist":"Radiohead","query":"Radiohead No Surprises"}]}',
+            '{"chosen_id":"no-surprises","confidence":0.93,"matched_entities":["收音机头","Radiohead"]}',
+            '{"matches":true,"confidence":0.92,"reason":"收音机头 is the Chinese name for Radiohead."}',
+        ])
+        resolver = RecordingResolver({"no-surprises"})
+        agent = SearchVerifyAgent(llm, netease, resolver)
+
+        result = await agent.verify(
+            {
+                "type": "artist_direction",
+                "primary_entities": [{"role": "music_entity", "name": "收音机头"}],
+                "style_hint": "收音机头",
+                "search_goals": ["收音机头"],
+            },
+            raw_user_text="能不能放点收音机头的",
+        )
+
+        self.assertEqual(result.status, "verified")
+        self.assertEqual(result.selected_song["id"], "no-surprises")
+        self.assertEqual(len(llm.calls), 3)
+        self.assertIn("same intended music entity", llm.calls[2]["prompt"])
 
     async def test_invalid_chosen_id_and_bad_confidence_does_not_queue_first_candidate(self):
         netease = FakeNetease()
         netease.results_by_query["Radiohead Creep"] = [
-            {"id": "creep", "name": "Creep", "ar": [{"name": "Radiohead"}]},
+            {"id": "wrong", "name": "17岁", "ar": [{"name": "刘德华"}]},
         ]
         llm = FakeLLM([
             '{"search_queries":["Radiohead Creep"]}',

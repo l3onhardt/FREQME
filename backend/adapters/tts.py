@@ -16,6 +16,8 @@ VOICE_PRESETS = {
     "warm_female": {
         "config_attr": "mimo_tts_voice_warm_female",
         "director": "温暖、磁性、克制的中文电台女主播音色，声音贴近真实广播节目，亲切但不甜腻。",
+        "prompt_attr": "mimo_tts_voice_warm_female_prompt",
+        "fallback_prompt": "你是一位深夜电台女主播。声音要成熟、醇厚、温暖，略带低频共鸣和一点点沙哑感，语气松弛、稳定、有陪伴感。语速偏慢，停顿自然，像在安静的夜里和听众靠近地聊天。不要甜腻、不要过亮、不要像播报新闻，要有电台DJ的厚度和质感。",
     },
     "warm_male": {
         "config_attr": "mimo_tts_voice_warm_male",
@@ -56,6 +58,10 @@ class TTSAdapter:
             key: getattr(settings, preset["config_attr"], "") or ""
             for key, preset in VOICE_PRESETS.items()
         }
+        self.voice_prompt_config = {
+            key: getattr(settings, preset.get("prompt_attr", ""), "") or preset.get("fallback_prompt", "")
+            for key, preset in VOICE_PRESETS.items()
+        }
         self.cache_dir = Path(settings.data_dir) / "tts_cache"
         self.cache_dir.mkdir(parents=True, exist_ok=True)
 
@@ -88,9 +94,11 @@ class TTSAdapter:
         preset = VOICE_PRESETS[preset_key]
         normalized_scene = self._normalize_scene(scene)
         scene_text = SCENE_GUIDANCE.get(normalized_scene, SCENE_GUIDANCE["日常"])
+        prompt = self.voice_prompt_config.get(preset_key, "")
         return (
             f"[角色]{preset['director']}"
             f"[场景]{scene_text}"
+            f"[音色指引]{prompt}"
             "[指导]像真实电台主播一样说话，磁性、温暖、克制、自然。"
             "只读正文含义，不要加入奇怪语气词、拟声词、括号情绪标签或夸张重音；"
             "不要把语气做成刻意卖萌、舞台表演或广告腔。"

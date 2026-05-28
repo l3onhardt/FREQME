@@ -12,6 +12,7 @@ class Settings(BaseSettings):
     mimo_tts_voice_warm_female: str = ""
     mimo_tts_voice_warm_male: str = ""
     mimo_tts_voice_bright_girl: str = ""
+    mimo_tts_voice_warm_female_prompt: str = ""
 
     # LLM
     llm_provider: str = "mimo"

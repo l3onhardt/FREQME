@@ -429,9 +429,7 @@ class DJRequestAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(decision.action, "set_direction_and_play")
         self.assertEqual(decision.music_task["type"], "scene_genre_direction")
         self.assertIn("晚上", decision.music_task["style_hint"])
-        self.assertIn("Joji Slow Dancing in the Dark", decision.music_task["search_goals"])
-        self.assertIn("Cigarettes After Sex Apocalypse", decision.music_task["search_goals"])
-        self.assertNotEqual(decision.music_task["search_goals"][0], "放点晚上听的，别这么炸")
+        self.assertEqual(decision.music_task["search_goals"], [])
         self.assertTrue(decision.queue_policy["continue_direction"])
         self.assertFalse(decision.uncertainty["should_ask_user"])
         self.assertNotIn("没接稳", decision.dj_response["speak_now"])
@@ -458,12 +456,50 @@ class DJRequestAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(decision.music_task["type"], "scene_genre_direction")
         self.assertIn("R&B", decision.music_task["style_hint"])
         self.assertIn("低刺激", decision.music_task["style_hint"])
-        self.assertIn("SZA Good Days", decision.music_task["search_goals"])
-        self.assertIn("Daniel Caesar Best Part", decision.music_task["search_goals"])
+        self.assertEqual(decision.music_task["search_goals"], [])
         self.assertTrue(decision.queue_policy["continue_direction"])
         self.assertFalse(decision.uncertainty["should_ask_user"])
 
-    async def test_scene_request_search_goals_are_concrete_tracks_not_playlists(self):
+    async def test_model_clarification_for_negative_mood_revision_is_overridden(self):
+        agent = DJRequestAgent(FakeLLM("""
+        {
+          "action": "ask_clarifying_question",
+          "understood_intent": "unclear",
+          "music_task": {"type": "unclear", "search_goals": []},
+          "queue_policy": {"duration_tracks": 0, "continue_direction": false},
+          "uncertainty": {"level": "high", "should_ask_user": true},
+          "dj_response": {"speak_now": "这个我没接稳，是想听某个歌手，还是这种氛围？"},
+          "memory_update": {"session_preference": [], "negative_constraints": []}
+        }
+        """))
+
+        decision = await agent.decide(
+            "别放炸的，放深夜 emotional 的",
+            context_pack={
+                "session_working_memory": {
+                    "active_mode": {
+                        "label": "high energy electronic direction",
+                        "expires_after_tracks": 3,
+                    }
+                },
+                "playback_context": {
+                    "current_track": {"name": "Loud Track", "artist": "Club Artist"}
+                },
+            },
+        )
+
+        self.assertEqual(decision.action, "revise_mode_and_play")
+        self.assertEqual(decision.music_task["type"], "scene_genre_direction")
+        self.assertIn("深夜", decision.music_task["style_hint"])
+        self.assertIn("emotional", decision.music_task["style_hint"])
+        self.assertIn("安静一点", decision.music_task["negative_constraints"])
+        self.assertIn("安静一点", decision.memory_update["negative_constraints"])
+        self.assertEqual(decision.music_task["search_goals"], [])
+        self.assertTrue(decision.queue_policy["continue_direction"])
+        self.assertFalse(decision.uncertainty["should_ask_user"])
+        self.assertNotIn("没接稳", decision.dj_response["speak_now"])
+
+    async def test_scene_request_drops_playlist_and_bucket_goals_before_search_planning(self):
         agent = DJRequestAgent(FakeLLM("""
         {
           "action": "set_direction_and_play",
@@ -484,8 +520,7 @@ class DJRequestAgentTests(unittest.IsolatedAsyncioTestCase):
 
         decision = await agent.decide("放点晚上听的，别这么炸", context_pack={})
 
-        self.assertIn("Joji Slow Dancing in the Dark", decision.music_task["search_goals"])
-        self.assertIn("Cigarettes After Sex Apocalypse", decision.music_task["search_goals"])
+        self.assertEqual(decision.music_task["search_goals"], [])
         self.assertNotIn("安静夜晚歌单", decision.music_task["search_goals"])
         self.assertNotIn("夜晚氛围音乐", decision.music_task["search_goals"])
         self.assertNotIn("晚上 安静 放松 夜晚 mellow 安静 不炸", decision.music_task["search_goals"])

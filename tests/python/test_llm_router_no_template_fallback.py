@@ -5,8 +5,12 @@ from backend.adapters.llm_router import LLMRouter
 
 
 class FakeStore:
+    def __init__(self, budget_ok=True):
+        self.budget_ok = budget_ok
+        self.tokens = None
+
     async def check_token_budget(self):
-        return True
+        return self.budget_ok
 
     async def add_tokens(self, tokens):
         self.tokens = tokens
@@ -38,6 +42,39 @@ class PrimaryFailsFallbackSucceedsClient:
 
         if len(self.calls) == 1:
             raise RuntimeError("primary unavailable")
+        return Response()
+
+    async def aclose(self):
+        pass
+
+
+class BudgetFallbackFailsPrimarySucceedsClient:
+    def __init__(self):
+        self.calls = []
+
+    async def post(self, url, *args, **kwargs):
+        self.calls.append({"url": url, "headers": kwargs.get("headers"), "json": kwargs.get("json")})
+
+        class Response:
+            status_code = 200
+
+            def json(self):
+                return {
+                    "choices": [{
+                        "finish_reason": "stop",
+                        "message": {"content": '{"ok":true}'},
+                    }],
+                    "usage": {"total_tokens": 13},
+                }
+
+        if "api.anthropic.com" in url:
+            class Unauthorized:
+                status_code = 401
+
+                def json(self):
+                    return {"error": {"message": "invalid x-api-key"}}
+
+            return Unauthorized()
         return Response()
 
     async def aclose(self):
@@ -237,6 +274,42 @@ class LLMRouterNoTemplateFallbackTests(unittest.IsolatedAsyncioTestCase):
         fallback_call = client.calls[1]
         self.assertEqual(fallback_call["json"]["model"], "fallback-model")
         self.assertEqual(fallback_call["headers"]["x-api-key"], "fallback-key")
+
+    async def test_budget_exceeded_tries_fallback_first_but_returns_to_primary_if_fallback_fails(self):
+        router = LLMRouter()
+        store = FakeStore(budget_ok=False)
+        router.store = store
+        client = BudgetFallbackFailsPrimarySucceedsClient()
+        router.client = client
+        old_provider = llm_router_module.settings.llm_provider
+        old_model = llm_router_module.settings.llm_model
+        old_key = llm_router_module.settings.llm_api_key
+        old_fallback_provider = llm_router_module.settings.llm_fallback_provider
+        old_fallback_model = llm_router_module.settings.llm_fallback_model
+        old_fallback_key = llm_router_module.settings.llm_fallback_api_key
+        try:
+            llm_router_module.settings.llm_provider = "mimo"
+            llm_router_module.settings.llm_model = "primary-model"
+            llm_router_module.settings.llm_api_key = "primary-key"
+            llm_router_module.settings.llm_fallback_provider = "anthropic"
+            llm_router_module.settings.llm_fallback_model = "fallback-model"
+            llm_router_module.settings.llm_fallback_api_key = "bad-fallback-key"
+
+            result = await router.chat("Return JSON", max_tokens=80)
+        finally:
+            llm_router_module.settings.llm_provider = old_provider
+            llm_router_module.settings.llm_model = old_model
+            llm_router_module.settings.llm_api_key = old_key
+            llm_router_module.settings.llm_fallback_provider = old_fallback_provider
+            llm_router_module.settings.llm_fallback_model = old_fallback_model
+            llm_router_module.settings.llm_fallback_api_key = old_fallback_key
+
+        self.assertEqual(result, '{"ok":true}')
+        self.assertEqual(len(client.calls), 2)
+        self.assertIn("api.anthropic.com", client.calls[0]["url"])
+        self.assertEqual(client.calls[0]["json"]["model"], "fallback-model")
+        self.assertEqual(client.calls[1]["json"]["model"], "primary-model")
+        self.assertEqual(store.tokens, 13)
 
     async def test_chat_retries_mimo_with_more_tokens_when_reasoning_uses_budget(self):
         router = LLMRouter()

@@ -22,12 +22,28 @@ let analyserNode = null;
 let sourceNode = null;
 let analyserData = null;
 let analyserActive = false;
+let progressTimer = null;
 const DUCKING_RATIO = 0.25;
 const DUCK_FADE_MS = 700;
 const RESTORE_FADE_MS = 1000;
 const VOLUME_RETARGET_FADE_MS = 300;
 const VOLUME_FADE_STEP_MS = 50;
 const LOCAL_DJ_GREETING = '晚上好，这里是今晚的私人电台。我先把第一首歌轻轻放进来，你不用急，跟着这一点光慢慢听。';
+
+const VOICE_CONFIG = {
+  female: {
+    preset: 'mimo_v2_5_custom_female_radio_dj',
+    label: '厚感女主播',
+    description: '成熟、温暖、低沉一点的女主播音色，带轻微胸腔共鸣，语速从容，像深夜电台里专业、克制、很会陪伴听众的主持人。避免过亮、过甜、过清脆的质感。',
+    prompt: '你是一位深夜电台女主播。声音要成熟、醇厚、温暖，略带低频共鸣和一点点沙哑感，语气松弛、稳定、有陪伴感。语速偏慢，停顿自然，像在安静的夜里和听众靠近地聊天。不要甜腻、不要过亮、不要像播报新闻，要有电台DJ的厚度和质感。',
+  },
+  male: {
+    preset: 'mimo_v2_5_custom_male_radio_dj',
+    label: '厚感男主播',
+    description: '成熟、低沉、磁性更强的男主播音色，胸腔感明显，像深夜电台的主理人，稳、慢、厚，有陪伴感但不油腻。避免年轻、清亮、尖薄的质感。',
+    prompt: '你是一位深夜电台男主播。声音要低沉、醇厚、磁性、稳重，胸腔共鸣明显，语速从容，字头清晰但不锋利，像在夜里轻声把故事和音乐递给听众。不要年轻感、不要清亮感、不要播报腔，要有电台DJ那种厚实、成熟、靠得住的质感。',
+  },
+};
 
 const onboardingSteps = ['voice', 'notes', 'mode'];
 
@@ -39,6 +55,11 @@ const requestInput = document.getElementById('request-input');
 const onboardingPrevBtn = document.getElementById('onboarding-prev-btn');
 const onboardingNextBtn = document.getElementById('onboarding-next-btn');
 const stepDots = Array.from(document.querySelectorAll('#step-indicator .step-dot'));
+const spectrumBars = Array.from(document.querySelectorAll('#spectrum-bars span'));
+const progressFill = document.getElementById('progress-fill');
+const progressCurrent = document.getElementById('progress-current');
+const progressTotal = document.getElementById('progress-total');
+const progressTrack = document.querySelector('.progress-track');
 
 audioMain.volume = userVolume;
 audioTTS.volume = 0.9;
@@ -108,6 +129,32 @@ function setAmbientState(level, phase = 'night') {
   root.style.setProperty('--breath-scale', String(1 + (clamped * 0.008)));
   root.style.setProperty('--time-halo', preset.halo);
   root.style.setProperty('--time-halo-2', preset.halo2);
+  root.style.setProperty('--surface-tint', clamped > 0.5 ? 'rgba(255, 255, 255, 0.045)' : 'rgba(255, 255, 255, 0.03)');
+  root.style.setProperty('--progress-glow', String(0.2 + (clamped * 0.6)));
+}
+
+function updateSpectrum(energy = 0, speaking = false) {
+  if (!spectrumBars.length) return;
+  const total = spectrumBars.length;
+  const center = (total - 1) / 2;
+  const e = Math.max(0, Math.min(1, energy));
+  spectrumBars.forEach((bar, index) => {
+    const dist = Math.abs(index - center) / Math.max(1, center);
+    const centerWeight = Math.pow(1 - dist, 1.65);
+    const phase = breathPhase * (speaking ? 0.13 : 0.19) + index * (speaking ? 0.62 : 0.82);
+    const beat = Math.sin(phase);
+    const flutter = Math.abs(Math.sin(phase * (speaking ? 1.35 : 1.85)));
+    const kick = Math.abs(Math.sin(breathPhase * (speaking ? 0.06 : 0.09) + index * 0.4));
+    const energyLift = speaking ? e * 0.6 : e * 1.55;
+    const movement = speaking ? (Math.abs(beat) * 0.08 + flutter * 0.06 + kick * 0.05) : (Math.abs(beat) * 0.36 + flutter * 0.3 + kick * 0.16);
+    const scale = Math.max(0.08, Math.min(1.9, 0.1 + (centerWeight * (speaking ? 0.34 : 0.62)) + energyLift + movement + (index % 4) * 0.018));
+    const opacity = Math.max(0.12, Math.min(1, 0.14 + (centerWeight * 0.46) + e * (speaking ? 0.4 : 0.88) + movement * 0.38));
+    const glow = Math.max(0.12, Math.min(1, 0.1 + e * 0.9 + centerWeight * 0.28));
+    bar.style.setProperty('--bar-scale', scale.toFixed(3));
+    bar.style.setProperty('--bar-opacity', opacity.toFixed(3));
+    bar.style.boxShadow = `0 0 ${Math.round(10 + glow * 30)}px rgba(242, 157, 109, ${Math.min(0.6, 0.08 + glow * 0.28)})`;
+    bar.style.filter = `saturate(${1 + glow * 0.2}) brightness(${1 + glow * 0.08})`;
+  });
 }
 
 function setBreathLevel(level) {
@@ -138,19 +185,28 @@ function startBreathLoop() {
       analyserNode.getByteTimeDomainData(analyserData);
       let sum = 0;
       let peak = 0;
-      for (let i = 0; i < analyserData.length; i += 1) {
+      const len = analyserData.length;
+      const energyBands = { low: 0, mid: 0, high: 0 };
+      for (let i = 0; i < len; i += 1) {
         const n = (analyserData[i] - 128) / 128;
+        const abs = Math.abs(n);
         sum += n * n;
-        peak = Math.max(peak, Math.abs(n));
+        peak = Math.max(peak, abs);
+        if (i < len * 0.34) energyBands.low += abs;
+        else if (i < len * 0.68) energyBands.mid += abs;
+        else energyBands.high += abs;
       }
-      const rms = Math.sqrt(sum / analyserData.length);
-      const energy = Math.min(1, (rms * 2.1) + (peak * 0.35));
-      breathLevel = breathLevel + ((energy - breathLevel) * 0.08);
+      const rms = Math.sqrt(sum / len);
+      const rawEnergy = (rms * 2.6) + (peak * 0.5) + ((energyBands.low / len) * 0.8) + ((energyBands.mid / len) * 0.6) + ((energyBands.high / len) * 0.9);
+      const energy = Math.min(1, rawEnergy * 0.95 + 0.12);
+      breathLevel = breathLevel + ((energy - breathLevel) * 0.18);
       setAmbientState(breathLevel, currentDayPhase());
+      updateSpectrum(Math.min(1, energy + (energyBands.low / len) * 0.4 + (energyBands.high / len) * 0.5), false);
     } else {
       const ambient = 0.18 + (Math.sin(breathPhase / 90) * 0.03);
       breathLevel = breathLevel + ((ambient - breathLevel) * 0.05);
       setAmbientState(breathLevel, currentDayPhase());
+      updateSpectrum(breathLevel * 0.22, false);
     }
 
     breathTimer = runtimeWindow.requestAnimationFrame(tick);
@@ -165,6 +221,13 @@ function stopBreathLoop() {
       runtimeWindow.cancelAnimationFrame(breathTimer);
     }
     breathTimer = null;
+  }
+  if (progressTimer) {
+    const runtimeWindow = typeof window !== 'undefined' ? window : null;
+    if (runtimeWindow?.cancelAnimationFrame) {
+      runtimeWindow.cancelAnimationFrame(progressTimer);
+    }
+    progressTimer = null;
   }
 }
 
@@ -255,6 +318,7 @@ async function playTTS(hash, text, onEnd) {
   audioTTS.src = url;
   startBreathLoop();
   setAmbientState(0.42);
+  updateSpectrum(0.32, true);
   updateBreathState('speaking', true);
   duckMainForDJ();
   audioTTS.onended = () => {
@@ -277,10 +341,13 @@ async function playTrack(track, url) {
   applyMainVolume({ immediate: true });
   await connectAudioAnalyser();
   setAmbientState(0.54);
+  updateProgressUI();
+  updateSpectrum(0.45, false);
   startBreathLoop();
   audioMain.play().catch(() => {});
   isPlaying = true;
   document.getElementById('btn-play').textContent = '⏸';
+  startProgressLoop();
 }
 
 function clearIntroFallbackTimer() {
@@ -341,6 +408,7 @@ function resetIntroGate() {
   restoreMainAfterDJ();
   stopBreathLoop();
   setBreathLevel(0.15);
+  updateSpectrum(0.08, false);
 }
 
 function updateBreathState(kind, active) {
@@ -353,6 +421,42 @@ function updateBreathState(kind, active) {
   if (active) {
     setBreathLevel(map[kind] ?? 0.15);
   }
+}
+
+function formatTime(seconds) {
+  const safe = Math.max(0, Math.floor(seconds || 0));
+  const m = Math.floor(safe / 60);
+  const s = safe % 60;
+  return `${m}:${String(s).padStart(2, '0')}`;
+}
+
+function updateProgressUI() {
+  const duration = Number.isFinite(audioMain.duration) ? audioMain.duration : 0;
+  const current = Number.isFinite(audioMain.currentTime) ? audioMain.currentTime : 0;
+  const percent = duration > 0 ? Math.min(100, Math.max(0, (current / duration) * 100)) : 0;
+  if (progressFill) progressFill.style.width = `${percent}%`;
+  if (progressFill) progressFill.style.setProperty('--progress-percent', `${percent}%`);
+  if (progressFill) progressFill.style.setProperty('--progress-shimmer', `${0.25 + (percent / 100) * 0.55}`);
+  if (progressTrack) {
+    progressTrack.setAttribute('aria-valuenow', String(Math.round(percent)));
+    progressTrack.style.setProperty('--progress-glow', `${0.2 + (percent / 100) * 0.75}`);
+  }
+  if (progressCurrent) progressCurrent.textContent = formatTime(current);
+  if (progressTotal) progressTotal.textContent = formatTime(duration);
+}
+
+function startProgressLoop() {
+  if (progressTimer) return;
+  const runtimeWindow = typeof window !== 'undefined' ? window : null;
+  if (!runtimeWindow?.requestAnimationFrame) {
+    updateProgressUI();
+    return;
+  }
+  const tick = () => {
+    updateProgressUI();
+    progressTimer = runtimeWindow.requestAnimationFrame(tick);
+  };
+  progressTimer = runtimeWindow.requestAnimationFrame(tick);
 }
 
 // ---- QR Login ----
@@ -528,6 +632,22 @@ function selectChoice(containerId, attrName, value) {
   });
 }
 
+function getSelectedVoiceConfig() {
+  const selectedVoice = document.querySelector('#voice-options .choice-card.selected');
+  const voiceKey = selectedVoice?.dataset.voice === 'warm_male' ? 'male' : 'female';
+  return VOICE_CONFIG[voiceKey];
+}
+
+function getVoicePromptPayload() {
+  const voiceConfig = getSelectedVoiceConfig();
+  return {
+    voice_preset: voiceConfig.preset,
+    voice_prompt: voiceConfig.prompt,
+    voice_label: voiceConfig.label,
+    voice_description: voiceConfig.description,
+  };
+}
+
 document.getElementById('voice-options').addEventListener('click', (event) => {
   const button = event.target.closest('[data-voice]');
   if (!button) return;
@@ -554,10 +674,9 @@ document.getElementById('onboarding-next-btn').addEventListener('click', async (
     return;
   }
 
-  const selectedVoice = document.querySelector('#voice-options .choice-card.selected');
   const selectedMode = document.querySelector('#mode-options .choice-card.selected');
   const payload = {
-    voice_preset: selectedVoice?.dataset.voice || 'silver_female',
+    ...getVoicePromptPayload(),
     display_name: document.getElementById('display-name-input').value,
     music_notes: document.getElementById('music-notes-input').value,
     current_mode: selectedMode?.dataset.mode || '陪伴',
@@ -769,6 +888,7 @@ audioMain.addEventListener('ended', () => {
   }
   stopBreathLoop();
   setBreathLevel(0.18);
+  updateProgressUI();
   updateBreathState('loading', true);
 });
 
@@ -791,18 +911,22 @@ document.getElementById('btn-play').addEventListener('click', () => {
     document.getElementById('btn-play').textContent = '▶';
     stopBreathLoop();
     setBreathLevel(0.15);
+    updateSpectrum(0.1, false);
   } else {
     if (audioTTS.src && !audioTTS.ended) {
       audioTTS.play().catch(() => {});
       startBreathLoop();
       updateBreathState('speaking', true);
+      updateSpectrum(0.25, true);
     } else {
       audioMain.play().catch(() => {});
       startBreathLoop();
       updateBreathState('playing', true);
+      updateSpectrum(0.5, false);
     }
     isPlaying = true;
     document.getElementById('btn-play').textContent = '⏸';
+    startProgressLoop();
   }
 });
 
@@ -817,7 +941,9 @@ document.getElementById('btn-skip').addEventListener('click', () => {
     ws.send(JSON.stringify({ type: 'skip' }));
   }
   startBreathLoop();
+  updateProgressUI();
   updateBreathState('loading', true);
+  updateSpectrum(0.12, false);
 });
 
 if (requestForm && requestInput) {

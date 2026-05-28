@@ -109,6 +109,7 @@ Return only JSON:
     "primary_entities": [{{"role": "artist|performer|composer|work|genre", "name": "canonical or inferred name"}}],
     "work_hint": "",
     "style_hint": "",
+    "negative_constraints": ["hard musical avoid constraints such as 别炸, 不要太吵, avoid covers"],
     "search_goals": ["concrete NetEase-friendly search query"],
     "must_not_search_literal_user_sentence": true
   }},
@@ -191,7 +192,7 @@ Return only JSON:
 
     def _fallback_decision_for_clear_request(self, raw_text: str, context_pack: dict) -> DJDecision | None:
         entity = self._extract_clear_entity_request(raw_text)
-        if entity:
+        if entity and not self._contains_scene_or_constraint(entity):
             performer_work = self._split_performer_work_entity(entity)
             if performer_work:
                 return self._artist_work_direction_decision(raw_text, *performer_work)
@@ -206,7 +207,7 @@ Return only JSON:
 
         scene = self._extract_scene_direction(raw_text, context_pack)
         if scene:
-            return self._scene_direction_decision(raw_text, scene)
+            return self._scene_direction_decision(raw_text, scene, context_pack)
 
         return None
 
@@ -219,6 +220,7 @@ Return only JSON:
                 "primary_entities": [{"role": "music_entity", "name": entity}],
                 "work_hint": "",
                 "style_hint": entity,
+                "negative_constraints": [],
                 "search_goals": [entity],
                 "must_not_search_literal_user_sentence": True,
             },
@@ -250,6 +252,7 @@ Return only JSON:
                 ],
                 "work_hint": work,
                 "style_hint": search_goal,
+                "negative_constraints": [],
                 "search_goals": [search_goal] if search_goal else [],
                 "must_not_search_literal_user_sentence": True,
             },
@@ -268,19 +271,21 @@ Return only JSON:
             raw_text=raw_text,
         )
 
-    def _scene_direction_decision(self, raw_text: str, scene: dict) -> DJDecision:
+    def _scene_direction_decision(self, raw_text: str, scene: dict, context_pack: dict | None = None) -> DJDecision:
         label = scene["label"]
         search_goals = scene["search_goals"]
         constraints = scene.get("constraints", [])
         preference = [label] + constraints
+        action = "revise_mode_and_play" if self._looks_like_direction_revision(raw_text, context_pack or {}) else "set_direction_and_play"
         return DJDecision(
-            action="set_direction_and_play",
+            action=action,
             understood_intent=f"User wants {label}.",
             music_task={
                 "type": "scene_genre_direction",
                 "primary_entities": [{"role": "scene", "name": label}],
                 "work_hint": "",
                 "style_hint": "，".join(preference),
+                "negative_constraints": constraints,
                 "search_goals": search_goals,
                 "must_not_search_literal_user_sentence": True,
             },
@@ -384,7 +389,7 @@ Return only JSON:
 
     def _extract_scene_direction(self, text: str, context_pack: dict) -> dict | None:
         clean = str(text or "").strip()
-        if not clean or not self._starts_with_request_marker(clean):
+        if not clean:
             return None
         if not self._contains_scene_or_constraint(clean):
             return None
@@ -413,6 +418,10 @@ Return only JSON:
             constraints.append("低刺激")
         if any(token in clean.lower() for token in ("low-key", "low key", "not too loud", "quiet", "mellow", "soft")):
             constraints.append("低刺激")
+        if any(token in clean.lower() for token in ("emotional", "emo", "sad", "melancholy")):
+            labels.append("深夜 emotional")
+        if any(token in clean for token in ("别放", "不要放", "别来", "不要来")):
+            constraints.append("安静一点")
 
         label = "、".join(self._dedupe(labels + constraints)) or "当前氛围"
         search_goals = self._scene_track_search_goals(
@@ -451,12 +460,18 @@ Return only JSON:
             "不炸",
             "困",
             "累",
+            "别放",
+            "不要放",
             "rnb",
             "r&b",
             "jazz",
             "爵士",
             "trip hop",
             "triphop",
+            "emotional",
+            "emo",
+            "sad",
+            "melancholy",
             "night",
             "late night",
             "bedtime",
@@ -469,6 +484,23 @@ Return only JSON:
             "soft",
         )
         return any(token in lowered for token in tokens)
+
+    def _looks_like_direction_revision(self, text: str, context_pack: dict) -> bool:
+        lowered = str(text or "").lower()
+        strong_revision_tokens = ("别放", "不要放", "别来", "不要来", "不是", "换掉", "换成")
+        if any(token in lowered for token in strong_revision_tokens):
+            return True
+        active_mode = self._active_mode(context_pack)
+        return bool(active_mode and self._contains_scene_or_constraint(text))
+
+    def _active_mode(self, context_pack: dict) -> dict:
+        if not isinstance(context_pack, dict):
+            return {}
+        session = context_pack.get("session_working_memory")
+        if not isinstance(session, dict):
+            return {}
+        active = session.get("active_mode")
+        return active if isinstance(active, dict) else {}
 
     def _dedupe(self, values: list[str]) -> list[str]:
         result = []
@@ -582,6 +614,7 @@ Return only JSON:
             "primary_entities": self._normalize_primary_entities(source.get("primary_entities")),
             "work_hint": str(source.get("work_hint") or ""),
             "style_hint": str(source.get("style_hint") or ""),
+            "negative_constraints": self._normalize_string_list(source.get("negative_constraints")),
             "search_goals": search_goals,
             "must_not_search_literal_user_sentence": True,
         }
@@ -597,6 +630,9 @@ Return only JSON:
         )
 
     def _normalize_search_goals(self, value) -> list[str]:
+        return self._normalize_string_list(value)
+
+    def _normalize_string_list(self, value) -> list[str]:
         if not isinstance(value, list):
             return []
         goals = []
@@ -607,29 +643,13 @@ Return only JSON:
         return goals
 
     def _scene_track_search_goals(self, source: dict, goals: list[str]) -> list[str]:
-        text = self._scene_task_text(source, goals)
-        concrete = [goal for goal in goals if not self._looks_like_scene_bucket_query(goal)]
-        seeds = []
-        lowered = text.lower()
-        if "rnb" in lowered or "r&b" in lowered:
-            seeds.extend(["SZA Good Days", "Daniel Caesar Best Part", "H.E.R. Focus"])
-        if "trip hop" in lowered or "triphop" in lowered:
-            seeds.extend(["Portishead Roads", "Massive Attack Teardrop", "Morcheeba The Sea"])
-        if any(token in text for token in ("晚上", "夜晚", "深夜", "睡前", "安静", "舒缓", "放松", "非炸", "不炸", "别这么炸")):
-            seeds.extend([
-                "Joji Slow Dancing in the Dark",
-                "Cigarettes After Sex Apocalypse",
-                "Frank Ocean Pink + White",
-                "Sufjan Stevens Mystery of Love",
-            ])
-        if any(token in text for token in ("下午", "午后")) and not seeds:
-            seeds.extend(["SZA Good Days", "Raveena Honey", "Daniel Caesar Japanese Denim"])
-        if seeds:
-            concrete = [
-                goal for goal in concrete
-                if not self._looks_like_scene_descriptor_query(goal)
-            ]
-        return self._dedupe(concrete + seeds)[:8]
+        concrete = [
+            goal
+            for goal in goals
+            if not self._looks_like_scene_bucket_query(goal)
+            and not self._looks_like_scene_descriptor_query(goal)
+        ]
+        return self._dedupe(concrete)[:8]
 
     def _scene_task_text(self, source: dict, goals: list[str]) -> str:
         parts = [str(source.get("style_hint") or ""), str(source.get("work_hint") or "")]
