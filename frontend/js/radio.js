@@ -17,6 +17,8 @@ let mainVolumeFadeTimer = null;
 let breathTimer = null;
 let breathPhase = 0;
 let breathLevel = 0;
+let geoContextPromise = null;
+let latestGeoContext = { permission: 'unavailable' };
 let audioContext = null;
 let analyserNode = null;
 let sourceNode = null;
@@ -435,11 +437,15 @@ function updateProgressUI() {
   const current = Number.isFinite(audioMain.currentTime) ? audioMain.currentTime : 0;
   const percent = duration > 0 ? Math.min(100, Math.max(0, (current / duration) * 100)) : 0;
   if (progressFill) progressFill.style.width = `${percent}%`;
-  if (progressFill) progressFill.style.setProperty('--progress-percent', `${percent}%`);
-  if (progressFill) progressFill.style.setProperty('--progress-shimmer', `${0.25 + (percent / 100) * 0.55}`);
+  if (progressFill?.style?.setProperty) {
+    progressFill.style.setProperty('--progress-percent', `${percent}%`);
+    progressFill.style.setProperty('--progress-shimmer', `${0.25 + (percent / 100) * 0.55}`);
+  }
   if (progressTrack) {
     progressTrack.setAttribute('aria-valuenow', String(Math.round(percent)));
-    progressTrack.style.setProperty('--progress-glow', `${0.2 + (percent / 100) * 0.75}`);
+    if (progressTrack.style?.setProperty) {
+      progressTrack.style.setProperty('--progress-glow', `${0.2 + (percent / 100) * 0.75}`);
+    }
   }
   if (progressCurrent) progressCurrent.textContent = formatTime(current);
   if (progressTotal) progressTotal.textContent = formatTime(duration);
@@ -604,6 +610,41 @@ function showPlayerAndConnect() {
   connectWebSocket();
 }
 
+function getGeoContext() {
+  if (geoContextPromise) return geoContextPromise;
+  geoContextPromise = new Promise((resolve) => {
+    if (!navigator.geolocation) {
+      latestGeoContext = { permission: 'unavailable' };
+      resolve(latestGeoContext);
+      return;
+    }
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        const coords = position.coords || {};
+        const lat = Number(coords.latitude);
+        const lon = Number(coords.longitude);
+        latestGeoContext = {
+          permission: 'granted',
+          lat: Number.isFinite(lat) ? Math.round(lat * 100) / 100 : undefined,
+          lon: Number.isFinite(lon) ? Math.round(lon * 100) / 100 : undefined,
+          accuracyM: Number.isFinite(coords.accuracy) ? Math.round(coords.accuracy) : undefined,
+        };
+        resolve(latestGeoContext);
+      },
+      () => {
+        latestGeoContext = { permission: 'denied' };
+        resolve(latestGeoContext);
+      },
+      {
+        enableHighAccuracy: false,
+        maximumAge: 60 * 60 * 1000,
+        timeout: 2500,
+      },
+    );
+  });
+  return geoContextPromise;
+}
+
 // ---- Onboarding ----
 function resetOnboardingSteps() {
   onboardingStepIndex = 0;
@@ -732,6 +773,7 @@ function connectWebSocket() {
     document.getElementById('dj-text').textContent = '正在连接电台...';
     startBreathLoop();
     updateBreathState('loading', true);
+    getGeoContext().catch(() => {});
     ws.send(JSON.stringify({
       type: 'handshake',
       uid: uid,
@@ -739,6 +781,7 @@ function connectWebSocket() {
       timezone_name: Intl.DateTimeFormat().resolvedOptions().timeZone || '',
       locale: navigator.language || 'zh-CN',
       region_hint: inferRegionHint(),
+      geo: latestGeoContext,
       settings: onboardingSettings,
     }));
   };
