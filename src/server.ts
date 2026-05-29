@@ -12,6 +12,7 @@ import { NeteaseService, extractProfile } from "./services/neteaseService.js";
 import { AudioResolver } from "./services/audioResolver.js";
 import { LLMRouter } from "./services/llmRouter.js";
 import { TTSService } from "./services/ttsService.js";
+import { LyricService } from "./services/lyricService.js";
 import { ProfileEngine } from "./radio/profileEngine.js";
 import { DJMemoryManager } from "./radio/djMemory.js";
 import { DJRequestAgent } from "./radio/djRequestAgent.js";
@@ -30,6 +31,7 @@ const netease = new NeteaseService();
 const llm = new LLMRouter(store);
 const tts = new TTSService(store);
 const audioResolver = new AudioResolver(netease, store);
+const lyrics = new LyricService(netease);
 const profileEngine = new ProfileEngine(netease, llm, store);
 const djMemory = new DJMemoryManager(store);
 const djRequestAgent = new DJRequestAgent(llm);
@@ -139,6 +141,16 @@ app.get("/api/radio/audio/:songId", async (req, res) => {
     return;
   }
   await proxyAudio(resolved.url, req.headers.range, res, songId);
+});
+
+app.get("/api/radio/lyrics/:songId", async (req, res) => {
+  const songId = String(req.params.songId || "");
+  res.json(
+    await lyrics.forSong(songId, {
+      name: String(req.query.name || ""),
+      artist: String(req.query.artist || ""),
+    }),
+  );
 });
 
 const server = http.createServer(app);
@@ -435,7 +447,6 @@ async function handleRadioSocket(socket: WebSocket): Promise<void> {
         const requestText = compactText(message.text || "", 120);
         if (!requestText) return;
         introSendCancelled = true;
-        queue.clearReady();
         store.logPlaybackEvent("song_request", { uid, songId: currentSongId, reason: requestText });
         const result = await queueDirector.handleSongRequest({
           requestText,

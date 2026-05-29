@@ -46,7 +46,7 @@ export class TTSService {
   hash(text: string, scene: string, voicePreset?: string, settings?: Partial<UserSettings>): string {
     const preset = this.voicePreset(voicePreset || settings?.voicePreset);
     const voice = this.resolveVoice(preset);
-    return crypto.createHash("md5").update(`${text}|${scene}|${preset}|${voice}`).digest("hex");
+    return crypto.createHash("md5").update(`${text}|${scene}|${preset}|${config.mimoTtsModel}|${voice}`).digest("hex");
   }
 
   async synthesize(
@@ -96,30 +96,67 @@ export class TTSService {
 
   private async requestMimo(text: string, scene: string, preset: string): Promise<Buffer | null> {
     if (!config.mimoApiKey) return null;
+    const body = this.requestBody(text, scene, preset);
     const response = await fetch(`${config.mimoApiBase.replace(/\/$/, "")}/chat/completions`, {
       method: "POST",
       headers: {
         "api-key": config.mimoApiKey,
         "content-type": "application/json",
       },
-      body: JSON.stringify({
-        model: config.mimoTtsModel,
-        messages: [
-          { role: "user", content: this.directorPrompt(scene, preset) },
-          { role: "assistant", content: text },
-        ],
-        audio: {
-          format: "wav",
-          voice: this.resolveVoice(preset),
-        },
-      }),
+      body: JSON.stringify(body),
     });
-    if (!response.ok) return null;
+    if (!response.ok) {
+      await this.logFailure(response);
+      return null;
+    }
     const data = (await response.json()) as {
       choices?: Array<{ message?: { audio?: { data?: string } } }>;
     };
     const audioBase64 = data.choices?.[0]?.message?.audio?.data || "";
     return audioBase64 ? Buffer.from(audioBase64, "base64") : null;
+  }
+
+  private requestBody(text: string, scene: string, preset: string): Record<string, unknown> {
+    const audio: Record<string, unknown> = { format: "wav" };
+    const director = this.directorPrompt(scene, preset);
+    if (!this.usesVoiceDesign()) {
+      audio.voice = this.resolveVoice(preset);
+      return {
+        model: config.mimoTtsModel,
+        messages: [
+          { role: "user", content: director },
+          { role: "assistant", content: text },
+        ],
+        audio,
+      };
+    }
+
+    return {
+      model: config.mimoTtsModel,
+      messages: [
+        { role: "user", content: `${director}\n[音色设计]${this.resolveVoice(preset)}` },
+        { role: "assistant", content: text },
+      ],
+      audio,
+    };
+  }
+
+  private usesVoiceDesign(): boolean {
+    return config.mimoTtsModel.toLowerCase().includes("voicedesign");
+  }
+
+  private async logFailure(response: Response): Promise<void> {
+    let body = "";
+    try {
+      body = await response.text();
+    } catch {
+      body = "";
+    }
+    console.warn("[TTS] MiMo synthesis failed", {
+      status: response.status,
+      model: config.mimoTtsModel,
+      body: body.slice(0, 500),
+    });
   }
 
   private voicePreset(value?: string): string {

@@ -431,7 +431,7 @@ test("planner output that remains only style buckets falls back to concrete scen
 
   assert.equal(result.status, "verified");
   assert.equal(result.selectedSong?.id, "sza");
-  assert.ok(netease.queries.includes("SZA Snooze"));
+  assert.ok(netease.queries.includes("Daniel Caesar Japanese Denim"));
   assert.ok(netease.queries.every((query) => !["R&B", "R&B tracks", "R&B playlist", "R&B evening"].includes(query)));
   assert.deepEqual(result.diagnostics?.rejectedQueries, ["R&B 电子融合", "舞曲 R&B", "Electronic R&B"]);
 });
@@ -690,9 +690,133 @@ test("scene fallback does not search profile prose or play candidates when verif
   const result = await agent.verify(task, "42", "我要听rnb", personalContext);
 
   assert.equal(result.status, "not_found");
-  assert.ok(netease.queries.includes("SZA Snooze"));
+  assert.ok(netease.queries.includes("Daniel Caesar Japanese Denim"));
   assert.ok(netease.queries.every((query) => !query.includes("anchors include") && !query.includes("prefers intimate")));
   assert.deepEqual(result.diagnostics?.attemptedSongIds, []);
+});
+
+test("late night R&B fallback avoids defaulting to a recently played Snooze candidate", async () => {
+  class BucketOnlyLlm {
+    async chat(prompt: string): Promise<string> {
+      if (prompt.includes("Rewrite this DJ music task")) {
+        return JSON.stringify({
+          search_queries: ["R&B evening"],
+          picks: [{ artist: "", title: "", query: "R&B evening" }],
+        });
+      }
+      return JSON.stringify({
+        chosen_id: "snooze",
+        confidence: 0.91,
+        matched_entities: ["late-night R&B"],
+        version_note: "semantic fit",
+        risk: "",
+      });
+    }
+  }
+  const localContext: MemoryPack = {
+    ...personalContext,
+    playbackContext: {
+      ...personalContext.playbackContext,
+      recentTracks: [{ name: "Snooze", artist: "SZA" }],
+      readyQueue: [{ name: "Snooze", artist: "SZA" }],
+    },
+  };
+  const task: MusicTask = {
+    type: "scene_genre_direction",
+    primaryEntities: [
+      { role: "scene", name: "evening" },
+      { role: "genre", name: "R&B" },
+    ],
+    workHint: "",
+    styleHint: "evening R&B",
+    negativeConstraints: [],
+    searchGoals: ["R&B evening"],
+    mustNotSearchLiteralUserSentence: true,
+  };
+  const netease = {
+    queries: [] as string[],
+    async search(query: string): Promise<Track[]> {
+      this.queries.push(query);
+      if (query === "SZA Snooze") return [{ id: "snooze", name: "Snooze", artist: "SZA", source: query }];
+      if (query === "Daniel Caesar Japanese Denim") {
+        return [{ id: "daniel", name: "Japanese Denim", artist: "Daniel Caesar", source: query }];
+      }
+      return [{ id: "other", name: "Pink + White", artist: "Frank Ocean", source: query }];
+    },
+  };
+  const audioResolver = {
+    attempted: [] as string[],
+    async resolveWithCandidates(track: Track): Promise<any> {
+      this.attempted.push(track.id);
+      return { ok: true, songId: track.id, proxyUrl: `/api/radio/audio/${track.id}` };
+    },
+  };
+  const agent = new SearchVerifyAgent(new BucketOnlyLlm() as any, netease as any, audioResolver as any);
+
+  const result = await agent.verify(task, "42", "我要听晚上的rnb", localContext);
+
+  assert.equal(result.status, "verified");
+  assert.equal(result.selectedSong?.id, "daniel");
+  assert.ok(netease.queries.includes("Daniel Caesar Japanese Denim"));
+  assert.ok(!audioResolver.attempted.includes("snooze"));
+});
+
+test("abstract R&B requests expand and demote a single default Snooze query", async () => {
+  class SingleDefaultLlm {
+    async chat(prompt: string): Promise<string> {
+      if (prompt.includes("Rewrite this DJ music task")) {
+        return JSON.stringify({
+          search_queries: ["SZA Snooze"],
+          picks: [{ artist: "SZA", title: "Snooze", query: "SZA Snooze" }],
+        });
+      }
+      return JSON.stringify({
+        chosen_id: "snooze",
+        confidence: 0.93,
+        matched_entities: ["evening R&B"],
+        version_note: "semantic fit",
+        risk: "",
+      });
+    }
+  }
+  const task: MusicTask = {
+    type: "scene_genre_direction",
+    primaryEntities: [
+      { role: "scene", name: "evening" },
+      { role: "genre", name: "R&B" },
+    ],
+    workHint: "",
+    styleHint: "evening R&B",
+    negativeConstraints: [],
+    searchGoals: ["SZA Snooze"],
+    mustNotSearchLiteralUserSentence: true,
+  };
+  const netease = {
+    queries: [] as string[],
+    async search(query: string): Promise<Track[]> {
+      this.queries.push(query);
+      if (query === "SZA Snooze") return [{ id: "snooze", name: "Snooze", artist: "SZA", source: query }];
+      if (query === "Daniel Caesar Japanese Denim") {
+        return [{ id: "daniel", name: "Japanese Denim", artist: "Daniel Caesar", source: query }];
+      }
+      return [{ id: "other", name: "Pink + White", artist: "Frank Ocean", source: query }];
+    },
+  };
+  const audioResolver = {
+    attempted: [] as string[],
+    async resolveWithCandidates(track: Track): Promise<any> {
+      this.attempted.push(track.id);
+      return { ok: true, songId: track.id, proxyUrl: `/api/radio/audio/${track.id}` };
+    },
+  };
+  const agent = new SearchVerifyAgent(new SingleDefaultLlm() as any, netease as any, audioResolver as any);
+
+  const result = await agent.verify(task, "42", "I want evening rnb", personalContext);
+
+  assert.equal(result.status, "verified");
+  assert.equal(result.selectedSong?.id, "daniel");
+  assert.ok(netease.queries.includes("Daniel Caesar Japanese Denim"));
+  assert.ok(!audioResolver.attempted.includes("snooze"));
 });
 
 test("not-found verification returns searched queries and candidate diagnostics", async () => {

@@ -32,6 +32,18 @@ export interface Track {
   raw?: Record<string, unknown>;
 }
 
+export interface LyricLine {
+  timeMs: number;
+  text: string;
+}
+
+export interface TrackLyrics {
+  songId: string;
+  source: "netease" | "none";
+  lines: LyricLine[];
+  translatedLines: LyricLine[];
+}
+
 export interface SelectionReason {
   type: string;
   text: string;

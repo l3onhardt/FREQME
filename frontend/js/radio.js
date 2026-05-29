@@ -77,7 +77,16 @@ const progressFill = document.getElementById('progress-fill');
 const progressCurrent = document.getElementById('progress-current');
 const progressTotal = document.getElementById('progress-total');
 const progressTrack = document.querySelector('.progress-track');
+const lyricsPanel = document.getElementById('lyrics-panel');
+const lyricsCurrent = document.getElementById('lyrics-current');
+const lyricsNext = document.getElementById('lyrics-next');
 const RADIO_STATE_KEY = 'freqme.radioState.v1';
+
+let currentLyrics = [];
+let translatedLyrics = [];
+let lyricFetchToken = 0;
+let lyricStatus = 'empty';
+let lyricLoadedSongId = '';
 
 audioMain.volume = userVolume;
 audioTTS.volume = 0.9;
@@ -398,6 +407,133 @@ function restoreMainAfterDJ() {
   applyMainVolume({ durationMs: RESTORE_FADE_MS });
 }
 
+function resetLyrics() {
+  currentLyrics = [];
+  translatedLyrics = [];
+  lyricLoadedSongId = '';
+  lyricStatus = 'empty';
+  lyricFetchToken += 1;
+  if (lyricsCurrent) lyricsCurrent.textContent = '';
+  if (lyricsNext) lyricsNext.textContent = '';
+  lyricsPanel?.classList?.add('empty');
+  lyricsPanel?.classList?.remove('loading');
+  lyricsPanel?.classList?.remove('unavailable');
+}
+
+function showLyricStatus(status, text) {
+  lyricStatus = status;
+  if (lyricsCurrent) lyricsCurrent.textContent = text || '';
+  if (lyricsNext) lyricsNext.textContent = '';
+  lyricsPanel?.classList?.toggle('empty', status === 'empty');
+  lyricsPanel?.classList?.toggle('loading', status === 'loading');
+  lyricsPanel?.classList?.toggle('unavailable', status === 'unavailable');
+}
+
+function closestTranslatedLine(timeMs) {
+  if (!translatedLyrics.length) return null;
+  let best = null;
+  let bestDistance = Infinity;
+  for (const line of translatedLyrics) {
+    const distance = Math.abs(Number(line.timeMs || 0) - timeMs);
+    if (distance < bestDistance) {
+      best = line;
+      bestDistance = distance;
+    }
+  }
+  return bestDistance <= 350 ? best : null;
+}
+
+function lyricDisplayText(line) {
+  if (!line?.text) return '';
+  const translated = closestTranslatedLine(Number(line.timeMs || 0));
+  if (!translated?.text || translated.text === line.text) return line.text;
+  return `${line.text} / ${translated.text}`;
+}
+
+function activeLyricIndex(currentMs) {
+  if (!currentLyrics.length) return -1;
+  const syncedMs = currentMs + 250;
+  let activeIndex = -1;
+  for (let index = 0; index < currentLyrics.length; index += 1) {
+    if (Number(currentLyrics[index].timeMs || 0) <= syncedMs) {
+      activeIndex = index;
+    } else {
+      break;
+    }
+  }
+  return activeIndex;
+}
+
+function lyricLookupQuery(track) {
+  const params = [];
+  if (track?.name) params.push(`name=${encodeURIComponent(track.name)}`);
+  if (track?.artist) params.push(`artist=${encodeURIComponent(track.artist)}`);
+  return params.length ? `?${params.join('&')}` : '';
+}
+
+function updateLyricsUI() {
+  if (!lyricsPanel || !lyricsCurrent || !lyricsNext) return;
+  if (!currentLyrics.length) {
+    if (lyricStatus === 'loading' || lyricStatus === 'unavailable') return;
+    lyricsCurrent.textContent = '';
+    lyricsNext.textContent = '';
+    lyricsPanel.classList.add('empty');
+    return;
+  }
+
+  const currentMs = (Number.isFinite(audioMain.currentTime) ? audioMain.currentTime : 0) * 1000;
+  const activeIndex = activeLyricIndex(currentMs);
+  const currentLine = currentLyrics[Math.max(0, activeIndex)] || null;
+  const nextLine = currentLyrics[Math.max(0, activeIndex) + 1] || null;
+
+  lyricsCurrent.textContent = lyricDisplayText(currentLine);
+  lyricsNext.textContent = nextLine ? nextLine.text : '';
+  lyricsPanel.classList.toggle('empty', !lyricsCurrent.textContent && !lyricsNext.textContent);
+}
+
+async function loadLyrics(track) {
+  const songId = track?.id ? String(track.id) : '';
+  if (!songId) return;
+  lyricLoadedSongId = songId;
+  const token = lyricFetchToken;
+  showLyricStatus('loading', '歌词加载中...');
+  try {
+    const resp = await fetch(`/api/radio/lyrics/${encodeURIComponent(songId)}${lyricLookupQuery(track)}`);
+    if (!resp.ok || token !== lyricFetchToken) return;
+    const data = await resp.json();
+    if (token !== lyricFetchToken) return;
+    currentLyrics = Array.isArray(data?.lines) ? data.lines : [];
+    translatedLyrics = Array.isArray(data?.translatedLines) ? data.translatedLines : [];
+    if (currentLyrics.length || translatedLyrics.length) {
+      lyricStatus = 'ready';
+      lyricsPanel?.classList?.remove('loading');
+      lyricsPanel?.classList?.remove('unavailable');
+      updateLyricsUI();
+    } else {
+      showLyricStatus('unavailable', '暂无同步歌词');
+    }
+  } catch {
+    if (token === lyricFetchToken) showLyricStatus('unavailable', '暂无同步歌词');
+  }
+}
+
+function currentAudioSongId() {
+  const src = audioMain?.currentSrc || audioMain?.src || '';
+  const match = src.match(/\/api\/radio\/audio\/([^?/#]+)/);
+  return match ? decodeURIComponent(match[1]) : '';
+}
+
+function loadLyricsFromCurrentAudio() {
+  const songId = currentAudioSongId();
+  if (!songId || songId === lyricLoadedSongId) return;
+  const track = {
+    id: songId,
+    name: document.getElementById('track-name')?.textContent || '',
+    artist: document.getElementById('track-artist')?.textContent || '',
+  };
+  void loadLyrics(track);
+}
+
 async function playTTS(hash, text, onEnd) {
   if (text) {
     document.getElementById('dj-text').textContent = text;
@@ -433,6 +569,8 @@ async function playTTS(hash, text, onEnd) {
 async function playTrack(track, url) {
   document.getElementById('track-name').textContent = track.name || '--';
   document.getElementById('track-artist').textContent = track.artist || '--';
+  resetLyrics();
+  void loadLyrics(track);
   audioMain.src = url;
   applyMainVolume({ immediate: true });
   await connectAudioAnalyser();
@@ -556,6 +694,8 @@ function updateProgressUI() {
   }
   if (progressCurrent) progressCurrent.textContent = formatTime(current);
   if (progressTotal) progressTotal.textContent = formatTime(duration);
+  loadLyricsFromCurrentAudio();
+  updateLyricsUI();
 }
 
 function startProgressLoop() {

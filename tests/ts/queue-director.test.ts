@@ -34,6 +34,8 @@ const decision: DJDecision = {
 };
 
 class FakeMemoryManager {
+  sourcePlaybackContext?: Record<string, unknown>;
+
   readonly contextPack: MemoryPack = {
     userProfileDigest: "prefers Frank Ocean, SZA, Daniel Caesar, intimate late-night vocals",
     sessionWorkingMemory: { activeMode: { label: "quiet night radio" } },
@@ -45,7 +47,9 @@ class FakeMemoryManager {
   };
   playbackEvents: Array<{ eventType: string; options: Record<string, unknown> }> = [];
 
-  buildContextPack(): MemoryPack {
+  buildContextPack(args?: { playbackContext?: Record<string, unknown> }): MemoryPack {
+    this.sourcePlaybackContext = args?.playbackContext;
+    if (this.sourcePlaybackContext) this.contextPack.playbackContext = this.sourcePlaybackContext;
     return this.contextPack;
   }
 
@@ -95,7 +99,7 @@ test("queue director passes private DJ memory context into search verification",
   const queue = new PlaybackQueue();
 
   const result = await director.handleSongRequest({
-    requestText: "放点深夜听的rnb",
+    requestText: decision.rawText,
     playbackQueue: queue,
     uid: "42",
     sessionId: 7,
@@ -109,6 +113,42 @@ test("queue director passes private DJ memory context into search verification",
   assert.equal(result.nextSong?.name, "Japanese Denim");
   assert.equal(verifier.receivedContext, memory.contextPack);
   assert.equal(queue.readyItems()[0]?.selectionReason.understoodIntent, decision.understoodIntent);
+});
+
+test("queue director passes ready queue memory before replacing queued tracks", async () => {
+  const memory = new FakeMemoryManager();
+  const verifier = new CapturingVerifier();
+  const director = new QueueDirector(new FakeDjAgent() as any, verifier as any, memory as any);
+  const queue = new PlaybackQueue();
+  const requestText = decision.rawText;
+  queue.addReady(
+    { id: "snooze", name: "Snooze", artist: "SZA" },
+    "/api/radio/audio/snooze",
+    { type: "scheduler", text: "previous ready track" },
+  );
+
+  const result = await director.handleSongRequest({
+    requestText,
+    playbackQueue: queue,
+    uid: "42",
+    sessionId: 7,
+    profile: null,
+    userSettings: {},
+    playbackContext: {
+      currentTrack: { id: "nights", name: "Nights", artist: "Frank Ocean" },
+      recentTracks: [],
+      readyQueue: queue.readyItems().map((item) => item.track),
+      scene: "late night",
+    },
+    recentTurns: [],
+  });
+
+  assert.equal(result.status, "queued");
+  assert.deepEqual(verifier.receivedContext?.playbackContext.readyQueue, [
+    { id: "snooze", name: "Snooze", artist: "SZA", selectionReason: { type: "scheduler", text: "previous ready track" } },
+  ]);
+  assert.equal(queue.readyItems().length, 1);
+  assert.equal(queue.readyItems()[0]?.track.name, "Japanese Denim");
 });
 
 test("queue director records verification diagnostics when a playable direction cannot be queued", async () => {

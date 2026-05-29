@@ -115,6 +115,9 @@ function loadRadio({ fetchImpl, spectrumBarCount = 0 } = {}) {
     'start-radio-btn',
     'track-artist',
     'track-name',
+    'lyrics-panel',
+    'lyrics-current',
+    'lyrics-next',
     'voice-options',
     'volume-slider',
   ];
@@ -536,6 +539,125 @@ test('first track starts immediately even if intro never arrives', async () => {
 
   assert.equal(audioMain.src, '/api/radio/audio/1');
   assert.equal(elements.get('track-name').textContent, 'First');
+});
+
+test('play track fetches lyrics and syncs the visible lyric with audio time', async () => {
+  const requests = [];
+  const { context, elements } = loadRadio({
+    fetchImpl: async (url) => {
+      requests.push(url);
+      if (url === '/api/radio/lyrics/1?name=First&artist=Artist') {
+        return {
+          ok: true,
+          json: async () => ({
+            songId: '1',
+            source: 'netease',
+            lines: [
+              { timeMs: 1000, text: 'First lyric' },
+              { timeMs: 3500, text: 'Second lyric' },
+            ],
+            translatedLines: [
+              { timeMs: 1000, text: '第一句' },
+              { timeMs: 3500, text: '第二句' },
+            ],
+          }),
+        };
+      }
+      return { ok: true, json: async () => ({}) };
+    },
+  });
+  const audioMain = elements.get('audio-main');
+
+  await context.handleMessage({
+    type: 'play_track',
+    track: { id: '1', name: 'First', artist: 'Artist' },
+    url: '/api/radio/audio/1',
+  });
+  await waitFor(() => elements.get('lyrics-current').textContent.includes('First lyric'), 80);
+
+  assert.ok(requests.includes('/api/radio/lyrics/1?name=First&artist=Artist'));
+  assert.ok(!elements.get('lyrics-panel').activeClasses.has('empty'));
+  assert.equal(elements.get('lyrics-current').textContent, 'First lyric / 第一句');
+  assert.equal(elements.get('lyrics-next').textContent, 'Second lyric');
+
+  audioMain.currentTime = 3.6;
+  context.updateProgressUI();
+
+  assert.equal(elements.get('lyrics-current').textContent, 'Second lyric / 第二句');
+  assert.equal(elements.get('lyrics-next').textContent, '');
+});
+
+test('play track shows a lyric loading state before empty lyrics resolve', async () => {
+  let resolveLyrics;
+  const lyricPromise = new Promise((resolve) => {
+    resolveLyrics = resolve;
+  });
+  const { context, elements } = loadRadio({
+    fetchImpl: async (url) => {
+      if (url === '/api/radio/lyrics/1?name=First&artist=Artist') {
+        await lyricPromise;
+        return {
+          ok: true,
+          json: async () => ({
+            songId: '1',
+            source: 'none',
+            lines: [],
+            translatedLines: [],
+          }),
+        };
+      }
+      return { ok: true, json: async () => ({}) };
+    },
+  });
+
+  await context.handleMessage({
+    type: 'play_track',
+    track: { id: '1', name: 'First', artist: 'Artist' },
+    url: '/api/radio/audio/1',
+  });
+
+  assert.equal(elements.get('lyrics-current').textContent, '歌词加载中...');
+  assert.ok(elements.get('lyrics-panel').activeClasses.has('loading'));
+  assert.ok(!elements.get('lyrics-panel').activeClasses.has('empty'));
+
+  resolveLyrics();
+  await waitFor(() => elements.get('lyrics-current').textContent === '暂无同步歌词', 80);
+
+  assert.equal(elements.get('lyrics-current').textContent, '暂无同步歌词');
+  assert.ok(elements.get('lyrics-panel').activeClasses.has('unavailable'));
+  assert.ok(!elements.get('lyrics-panel').activeClasses.has('empty'));
+});
+
+test('progress update backfills lyrics for an already playing audio source', async () => {
+  const requests = [];
+  const { context, elements } = loadRadio({
+    fetchImpl: async (url) => {
+      requests.push(url);
+      if (url === '/api/radio/lyrics/1?name=First&artist=Artist') {
+        return {
+          ok: true,
+          json: async () => ({
+            songId: '1',
+            source: 'netease',
+            lines: [{ timeMs: 1000, text: 'Recovered lyric' }],
+            translatedLines: [],
+          }),
+        };
+      }
+      return { ok: true, json: async () => ({}) };
+    },
+  });
+  const audioMain = elements.get('audio-main');
+  audioMain.src = '/api/radio/audio/1';
+  audioMain.currentTime = 1.2;
+  elements.get('track-name').textContent = 'First';
+  elements.get('track-artist').textContent = 'Artist';
+
+  context.updateProgressUI();
+  await waitFor(() => elements.get('lyrics-current').textContent === 'Recovered lyric', 80);
+
+  assert.ok(requests.includes('/api/radio/lyrics/1?name=First&artist=Artist'));
+  assert.equal(elements.get('lyrics-current').textContent, 'Recovered lyric');
 });
 
 test('volume changes during DJ speech retarget the duck and restore smoothly', async () => {

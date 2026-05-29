@@ -10,6 +10,7 @@ interface QueryPlan {
   queries: string[];
   rejectedQueries: string[];
   generatedQueries: string[];
+  preferQueryOrder?: boolean;
 }
 
 type QueryResultDiagnostic = NonNullable<NonNullable<SearchVerification["diagnostics"]>["queryResults"]>[number];
@@ -68,7 +69,7 @@ export class SearchVerifyAgent {
     }
 
     const judgement: Record<string, unknown> = await this.judge(musicTask, candidates).catch(() => ({}));
-    const rankedSongs = this.rankedSongs(candidates, judgement, musicTask);
+    const rankedSongs = this.rankedSongs(candidates, judgement, musicTask, contextPack, plan);
     if (!rankedSongs.length) {
       return this.notFound(musicTask, queries, "No candidate passed verification.", {
         searchedQueries: queries,
@@ -202,16 +203,21 @@ Return only JSON:
     const concrete = merged.filter(
       (query) => this.looksConcrete(query, musicTask) && !this.violatesNegativeConstraints(query, musicTask),
     );
-    const fallback = concrete.length ? [] : this.fallbackQueries(musicTask, goals, rawUserText, contextPack);
+    const shouldDemoteSingleAnchor = this.shouldDemoteSingleAnchorQuery(musicTask, concrete, contextPack);
+    const fallback =
+      concrete.length && !shouldDemoteSingleAnchor ? [] : this.fallbackQueries(musicTask, goals, rawUserText, contextPack);
     const fallbackQueries = fallback.filter(
       (query) => !concrete.includes(query) && !this.violatesNegativeConstraints(query, musicTask),
     );
+    const preferQueryOrder = shouldDemoteSingleAnchor && fallbackQueries.length > 0;
+    const queries = preferQueryOrder ? dedupe([...fallbackQueries, ...concrete]) : dedupe([...concrete, ...fallbackQueries]);
     return {
-      queries: dedupe([...concrete, ...fallbackQueries]).slice(0, 6),
+      queries: queries.slice(0, 6),
       rejectedQueries: dedupe([...generatedRaw, ...goals]).filter(
         (query) => !concrete.includes(query) && !fallbackQueries.includes(query),
       ),
       generatedQueries: generated,
+      preferQueryOrder,
     };
   }
 
@@ -438,15 +444,25 @@ Return only JSON:
     });
   }
 
-  private rankedSongs(candidates: Track[], judgement: Record<string, unknown>, task: MusicTask): Track[] {
+  private rankedSongs(
+    candidates: Track[],
+    judgement: Record<string, unknown>,
+    task: MusicTask,
+    contextPack?: MemoryPack,
+    plan?: QueryPlan,
+  ): Track[] {
     if (this.isExplicitVerifierRejection(judgement)) return [];
     const ranked: Track[] = [];
     const chosen = this.chosenSong(candidates, judgement);
     if (chosen) ranked.push(chosen);
     const local = this.locallyVerifiedSong(candidates, task);
-    if (local) ranked.push(local);
+    if (plan?.preferQueryOrder && local) ranked.unshift(local);
+    else if (local) ranked.push(local);
     if (ranked.length) ranked.push(...candidates);
-    return ranked.filter((song, index, list) => list.findIndex((item) => item.id === song.id) === index).slice(0, 12);
+    const unique = ranked.filter((song, index, list) => list.findIndex((item) => item.id === song.id) === index);
+    const recent = this.recentTrackKeys(contextPack);
+    const fresh = unique.filter((song) => !recent.has(this.trackKey(song)));
+    return (fresh.length ? fresh : unique).slice(0, 12);
   }
 
   private shouldPersonalizeWithPlanner(task: MusicTask, contextPack?: MemoryPack): boolean {
@@ -508,6 +524,45 @@ Return only JSON:
       : this.entityFallbackQueries(task, goals, rawUserText);
   }
 
+  private shouldDemoteSingleAnchorQuery(
+    task: MusicTask,
+    concreteQueries: string[],
+    contextPack?: MemoryPack,
+  ): boolean {
+    if (!["scene_genre_direction", "continuation", "negative_feedback"].includes(task.type)) return false;
+    if (concreteQueries.length !== 1 || !contextPack) return false;
+    const query = concreteQueries[0] || "";
+    if (this.recentQueryKeys(contextPack).has(normalizeMatchText(query))) return true;
+    const text = [
+      contextPack.userProfileDigest,
+      JSON.stringify(contextPack.retrievedMemories || []),
+      JSON.stringify(this.recentTracks(contextPack)),
+    ].join(" ");
+    const normalizedContext = normalizeMatchText(text);
+    if (!normalizedContext) return false;
+    const styleText = [
+      task.styleHint,
+      task.workHint,
+      ...task.primaryEntities.map((entity) => entity.name),
+      ...task.searchGoals,
+    ].join(" ");
+    const isStyleSeed = this.styleSeedQueries(styleText, task, contextPack).some(
+      (seed) => normalizeMatchText(seed) === normalizeMatchText(query),
+    );
+    if (!isStyleSeed) return false;
+    return this.queryAnchorKeys(query).some((key) => normalizedContext.includes(key));
+  }
+
+  private queryAnchorKeys(query: string): string[] {
+    const tokens = query.match(/[A-Za-z0-9][A-Za-z0-9'.+&-]*|[\u4e00-\u9fff]+/gu) || [];
+    if (tokens.length < 2) return [];
+    const keys = [
+      normalizeMatchText(tokens[0]),
+      normalizeMatchText(tokens.slice(0, 2).join(" ")),
+    ].filter((key) => key.length >= 3);
+    return dedupe(keys);
+  }
+
   private entityFallbackQueries(task: MusicTask, goals: string[], rawUserText: string): string[] {
     if (!["artist_direction", "artist_work_direction"].includes(task.type)) return [];
     const entities = task.primaryEntities
@@ -538,9 +593,10 @@ Return only JSON:
     ];
     if (!task.negativeConstraints.length) positiveParts.push(rawUserText);
     const text = positiveParts.join(" ");
-    const styleSeeds = this.styleSeedQueries(text, task);
+    const styleSeeds = this.styleSeedQueries(text, task, contextPack);
     return this.cleanQueries(styleSeeds, rawUserText)
       .filter((query) => this.looksConcrete(query, task))
+      .filter((query) => !this.recentQueryKeys(contextPack).has(normalizeMatchText(query)))
       .filter((query) => !this.violatesNegativeConstraints(query, task))
       .slice(0, 6);
   }
@@ -554,19 +610,25 @@ Return only JSON:
     return dedupe(values);
   }
 
-  private styleSeedQueries(normalizedText: string, task: MusicTask): string[] {
+  private styleSeedQueries(normalizedText: string, task: MusicTask, contextPack?: MemoryPack): string[] {
     const normalized = normalizeMatchText(normalizedText);
     const blocked = this.normalizedNegativeText(task);
     const blocksRnb = blocked.includes("rnb") || blocked.includes("rb");
     if (!blocksRnb && this.hasRnbMarker(normalizedText)) {
-      return [
-        "SZA Snooze",
-        "Daniel Caesar Japanese Denim",
-        "Frank Ocean Pink + White",
-        "H.E.R. Focus",
-        "Kelela LMK",
-        "Brent Faiyaz Clouded",
-      ];
+      return this.preferFreshQueries(
+        [
+          "Daniel Caesar Japanese Denim",
+          "Frank Ocean Pink + White",
+          "SZA Broken Clocks",
+          "Summer Walker Session 32",
+          "Jhené Aiko While We're Young",
+          "H.E.R. Focus",
+          "Kelela LMK",
+          "Brent Faiyaz Clouded",
+          "SZA Snooze",
+        ],
+        contextPack,
+      );
     }
     if (normalized.includes("futurebass") || normalized.includes("melodicfuturebass")) {
       return [
@@ -605,6 +667,48 @@ Return only JSON:
       return ["Slowdive Sugar for the Pill", "my bloody valentine When You Sleep", "Ride Vapour Trail"];
     }
     return [];
+  }
+
+  private preferFreshQueries(queries: string[], contextPack?: MemoryPack): string[] {
+    const recent = this.recentQueryKeys(contextPack);
+    const fresh = queries.filter((query) => !recent.has(normalizeMatchText(query)));
+    return fresh.length ? [...fresh, ...queries.filter((query) => recent.has(normalizeMatchText(query)))] : queries;
+  }
+
+  private recentQueryKeys(contextPack?: MemoryPack): Set<string> {
+    const keys = new Set<string>();
+    for (const track of this.recentTracks(contextPack)) {
+      const key = this.trackKey(track);
+      if (key) keys.add(key);
+    }
+    return keys;
+  }
+
+  private recentTrackKeys(contextPack?: MemoryPack): Set<string> {
+    const keys = new Set<string>();
+    for (const track of this.recentTracks(contextPack)) {
+      const key = this.trackKey(track);
+      if (key) keys.add(key);
+    }
+    return keys;
+  }
+
+  private recentTracks(contextPack?: MemoryPack): Track[] {
+    const playback = contextPack?.playbackContext || {};
+    const values = [
+      (playback as Record<string, unknown>).currentTrack,
+      ...this.asTrackList((playback as Record<string, unknown>).recentTracks),
+      ...this.asTrackList((playback as Record<string, unknown>).readyQueue),
+    ];
+    return values.filter((item): item is Track => Boolean(item && typeof item === "object" && !Array.isArray(item)));
+  }
+
+  private asTrackList(value: unknown): unknown[] {
+    return Array.isArray(value) ? value : [];
+  }
+
+  private trackKey(track: Partial<Track>): string {
+    return normalizeMatchText(`${track.artist || ""} ${track.name || ""}`);
   }
 
   private hasRnbMarker(text: string): boolean {

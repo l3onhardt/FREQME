@@ -219,6 +219,10 @@ export class NeteaseService {
     return firstPlayableUrl(legacy);
   }
 
+  async lyrics(songId: string): Promise<Record<string, unknown>> {
+    return this.cachedCall("lyric_new", this.withCookie({ id: songId }), 60 * 60 * 1000);
+  }
+
   normalizeTrack(song: Record<string, unknown>, source = ""): Track {
     const artists = Array.isArray(song.ar)
       ? (song.ar as Record<string, unknown>[])
