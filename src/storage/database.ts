@@ -20,6 +20,7 @@ export class AppDatabase {
       CREATE TABLE IF NOT EXISTS auth_account (
         uid TEXT PRIMARY KEY,
         account_json TEXT NOT NULL,
+        cookie TEXT,
         created_at TEXT DEFAULT CURRENT_TIMESTAMP,
         updated_at TEXT DEFAULT CURRENT_TIMESTAMP
       );
@@ -121,6 +122,12 @@ export class AppDatabase {
       CREATE INDEX IF NOT EXISTS idx_playback_event_uid_song ON playback_event(uid, song_id, created_at);
       CREATE INDEX IF NOT EXISTS idx_dj_memory_event_uid_created ON dj_memory_event(uid, created_at);
     `);
+    this.ensureColumn("auth_account", "cookie", "TEXT");
+  }
+
+  private ensureColumn(table: string, column: string, definition: string): void {
+    const rows = this.db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name?: string }>;
+    if (rows.some((row) => row.name === column)) return;
+    this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
   }
 }
-

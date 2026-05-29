@@ -4,6 +4,7 @@ let uid = null;
 let isPlaying = false;
 const ttsCache = {};
 let retryTimer = null;
+let authPollInterval = null;
 let onboardingSettings = null;
 let onboardingStepIndex = 0;
 let particlesCreated = false;
@@ -66,6 +67,8 @@ const audioTTS = document.getElementById('audio-tts');
 const volumeSlider = document.getElementById('volume-slider');
 const requestForm = document.getElementById('request-form');
 const requestInput = document.getElementById('request-input');
+const accountList = document.getElementById('account-list');
+const addAccountBtn = document.getElementById('add-account-btn');
 const onboardingPrevBtn = document.getElementById('onboarding-prev-btn');
 const onboardingNextBtn = document.getElementById('onboarding-next-btn');
 const stepDots = Array.from(document.querySelectorAll('#step-indicator .step-dot'));
@@ -74,6 +77,7 @@ const progressFill = document.getElementById('progress-fill');
 const progressCurrent = document.getElementById('progress-current');
 const progressTotal = document.getElementById('progress-total');
 const progressTrack = document.querySelector('.progress-track');
+const RADIO_STATE_KEY = 'freqme.radioState.v1';
 
 audioMain.volume = userVolume;
 audioTTS.volume = 0.9;
@@ -551,7 +555,133 @@ function startProgressLoop() {
   progressTimer = setTimeout(tick, 0);
 }
 
+function safeStorageGet(key) {
+  try {
+    return window.localStorage?.getItem(key) || '';
+  } catch {
+    return '';
+  }
+}
+
+function safeStorageSet(key, value) {
+  try {
+    window.localStorage?.setItem(key, value);
+  } catch {
+    // local storage can be blocked; radio still works without resume.
+  }
+}
+
+function safeStorageRemove(key) {
+  try {
+    window.localStorage?.removeItem(key);
+  } catch {
+    // ignore
+  }
+}
+
+function savedRadioState() {
+  try {
+    const raw = safeStorageGet(RADIO_STATE_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+function saveRadioState(active) {
+  if (!active || !uid) {
+    safeStorageRemove(RADIO_STATE_KEY);
+    return;
+  }
+  safeStorageSet(RADIO_STATE_KEY, JSON.stringify({
+    uid: String(uid),
+    active: true,
+    savedAt: Date.now(),
+  }));
+}
+
+function shouldResumeRadio(profile) {
+  const saved = savedRadioState();
+  if (!saved?.active || !profile?.userId) return false;
+  if (String(saved.uid) !== String(profile.userId)) return false;
+  return Date.now() - Number(saved.savedAt || 0) < 12 * 60 * 60 * 1000;
+}
+
 // ---- QR Login ----
+function stopLoginPolling() {
+  if (authPollInterval) {
+    clearInterval(authPollInterval);
+    authPollInterval = null;
+  }
+}
+
+async function refreshAccountList(activeUid = uid) {
+  if (!accountList) return;
+  try {
+    const resp = await fetch('/api/auth/accounts');
+    if (!resp.ok) return;
+    const data = await resp.json();
+    const accounts = Array.isArray(data.accounts) ? data.accounts : [];
+    accountList.hidden = accounts.length === 0;
+    accountList.innerHTML = '';
+    accounts.forEach((account) => {
+      const profile = account.profile || {};
+      const accountUid = String(account.uid || profile.userId || '');
+      if (!accountUid) return;
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = `account-item${String(activeUid || data.active_uid || '') === accountUid ? ' active' : ''}`;
+      button.dataset.uid = accountUid;
+      const nickname = profile.nickname || profile.userName || `网易云账号 ${accountUid}`;
+      button.innerHTML = `<span class="account-name"></span><span class="account-state"></span>`;
+      button.querySelector('.account-name').textContent = nickname;
+      button.querySelector('.account-state').textContent = String(activeUid || data.active_uid || '') === accountUid ? '当前' : '切换';
+      button.addEventListener('click', () => switchAccount(accountUid));
+      accountList.appendChild(button);
+    });
+  } catch {
+    // Account list is a convenience; QR login remains the fallback.
+  }
+}
+
+async function switchAccount(nextUid) {
+  if (!nextUid) return;
+  document.getElementById('qr-status').textContent = '正在切换账号...';
+  try {
+    const resp = await fetch('/api/auth/switch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ uid: nextUid }),
+    });
+    if (!resp.ok) throw new Error('switch failed');
+    const data = await resp.json();
+    const profile = data.profile || data.status?.data?.profile || data.status?.profile || { userId: nextUid };
+    uid = profile.userId || nextUid;
+    document.getElementById('qr-status').textContent = `已切换: ${profile.nickname || uid}`;
+    await refreshAccountList(uid);
+    await showOnboardingOrStart(profile);
+  } catch {
+    document.getElementById('qr-status').textContent = '切换失败，请重新扫码登录。';
+    await startQrLogin();
+  }
+}
+
+async function startQrLogin() {
+  stopLoginPolling();
+  try {
+    await fetch('/api/auth/logout', { method: 'POST' });
+  } catch {
+    // ignore; qr flow can still try to continue
+  }
+  uid = null;
+  onboardingSettings = null;
+  safeStorageRemove(RADIO_STATE_KEY);
+  document.getElementById('start-radio-btn').style.display = 'none';
+  document.getElementById('qr-img').removeAttribute('src');
+  document.getElementById('qr-status').textContent = '准备添加新的网易云账号...';
+  initLogin();
+}
+
 async function initLogin() {
   try {
     const keyResp = await fetch('/api/auth/qr/key');
@@ -572,14 +702,15 @@ async function initLogin() {
     document.getElementById('qr-img').src = qrimg;
     document.getElementById('qr-status').textContent = '请用网易云音乐APP扫描二维码';
 
-    const pollInterval = setInterval(async () => {
+    stopLoginPolling();
+    authPollInterval = setInterval(async () => {
       try {
         const checkResp = await fetch(`/api/auth/qr/check?key=${unikey}`);
         const checkData = await checkResp.json();
         const code = checkData.data?.code || checkData.code;
 
         if (code === 803) {
-          clearInterval(pollInterval);
+          stopLoginPolling();
           document.getElementById('qr-status').textContent = '登录成功！';
 
           const statusResp = await fetch('/api/auth/status');
@@ -589,12 +720,13 @@ async function initLogin() {
             uid = profile.userId;
             document.getElementById('qr-status').textContent =
               `已登录: ${profile.nickname}`;
+            await refreshAccountList(uid);
             await showOnboardingOrStart(profile);
           }
         } else if (code === 800) {
           document.getElementById('qr-status').textContent =
             '二维码已过期，刷新页面重试';
-          clearInterval(pollInterval);
+          stopLoginPolling();
         } else if (code === 802) {
           document.getElementById('qr-status').textContent =
             '已扫描，请在手机上确认登录';
@@ -639,7 +771,13 @@ async function showOnboardingOrStart(profile) {
   }
   if (data.onboarded && data.settings) {
     onboardingSettings = data.settings;
-    document.getElementById('start-radio-btn').style.display = 'block';
+    if (shouldResumeRadio(profile)) {
+      showPlayerAndConnect();
+      return;
+    }
+    const startButton = document.getElementById('start-radio-btn');
+    startButton.disabled = false;
+    startButton.style.display = 'block';
     return;
   }
 
@@ -670,6 +808,7 @@ async function bootAuth() {
     if (profile?.userId) {
       uid = profile.userId;
       document.getElementById('qr-status').textContent = `已登录: ${profile.nickname}`;
+      await refreshAccountList(uid);
       await showOnboardingOrStart(profile);
       return;
     }
@@ -688,6 +827,7 @@ function showPlayerAndConnect() {
   const startButton = document.getElementById('start-radio-btn');
   startButton.disabled = true;
   startButton.style.display = 'none';
+  saveRadioState(true);
   document.getElementById('login-screen').classList.remove('active');
   document.getElementById('onboarding-screen').classList.remove('active');
   document.getElementById('player-screen').classList.add('active');
@@ -845,6 +985,12 @@ document.getElementById('start-radio-btn').addEventListener('click', async () =>
   }
   showPlayerAndConnect();
 });
+
+if (addAccountBtn) {
+  addAccountBtn.addEventListener('click', () => {
+    startQrLogin();
+  });
+}
 
 // ---- WebSocket ----
 function connectWebSocket() {
@@ -1037,6 +1183,7 @@ document.getElementById('btn-play').addEventListener('click', () => {
     audioMain.pause();
     audioTTS.pause();
     isPlaying = false;
+    saveRadioState(false);
     document.getElementById('btn-play').textContent = '▶';
     stopBreathLoop();
     setBreathLevel(0.15);
@@ -1054,6 +1201,7 @@ document.getElementById('btn-play').addEventListener('click', () => {
       updateSpectrum(0.5, false);
     }
     isPlaying = true;
+    saveRadioState(true);
     document.getElementById('btn-play').textContent = '⏸';
     startProgressLoop();
   }
@@ -1095,4 +1243,5 @@ volumeSlider.addEventListener('input', (e) => {
 });
 
 // ---- Boot ----
+if (addAccountBtn) addAccountBtn.hidden = false;
 bootAuth();

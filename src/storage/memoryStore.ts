@@ -22,14 +22,17 @@ function today(): string {
 export class MemoryStore {
   constructor(private readonly database: AppDatabase) {}
 
-  saveAuthAccount(uid: string, account: Record<string, unknown>): void {
+  saveAuthAccount(uid: string, account: Record<string, unknown>, cookie = ""): void {
     this.database.db
       .prepare(`
-        INSERT INTO auth_account (uid, account_json, updated_at)
-        VALUES (?, ?, CURRENT_TIMESTAMP)
-        ON CONFLICT(uid) DO UPDATE SET account_json=excluded.account_json, updated_at=CURRENT_TIMESTAMP
+        INSERT INTO auth_account (uid, account_json, cookie, updated_at)
+        VALUES (?, ?, NULLIF(?, ''), CURRENT_TIMESTAMP)
+        ON CONFLICT(uid) DO UPDATE SET
+          account_json=excluded.account_json,
+          cookie=COALESCE(excluded.cookie, auth_account.cookie),
+          updated_at=CURRENT_TIMESTAMP
       `)
-      .run(uid, json(account));
+      .run(uid, json(account), cookie);
   }
 
   getAuthAccount(uid: string): Record<string, unknown> | null {
@@ -37,6 +40,28 @@ export class MemoryStore {
       .prepare("SELECT account_json FROM auth_account WHERE uid=?")
       .get(uid) as { account_json?: string } | undefined;
     return row ? parse(row.account_json, {}) : null;
+  }
+
+  getAuthCookie(uid: string): string {
+    const row = this.database.db
+      .prepare("SELECT cookie FROM auth_account WHERE uid=?")
+      .get(uid) as { cookie?: string } | undefined;
+    return row?.cookie || "";
+  }
+
+  listAuthAccounts(): Array<{ uid: string; account: Record<string, unknown>; updatedAt: string }> {
+    const rows = this.database.db
+      .prepare("SELECT uid, account_json, updated_at FROM auth_account ORDER BY updated_at DESC")
+      .all() as Array<{ uid: string; account_json?: string; updated_at?: string }>;
+    return rows.map((row) => ({
+      uid: row.uid,
+      account: parse(row.account_json, {}),
+      updatedAt: row.updated_at || "",
+    }));
+  }
+
+  deleteAuthAccount(uid: string): void {
+    this.database.db.prepare("DELETE FROM auth_account WHERE uid=?").run(uid);
   }
 
   saveUserSettings(uid: string, settings: UserSettings): void {
@@ -375,4 +400,3 @@ export class MemoryStore {
     return result;
   }
 }
-

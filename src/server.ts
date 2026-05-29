@@ -57,10 +57,42 @@ app.get("/api/auth/status", async (_req, res) => {
   const status = await netease.loginStatus();
   const profile = extractProfile(status);
   const uid = profile.userId == null ? "" : String(profile.userId);
-  if (uid) store.saveAuthAccount(uid, profile);
+  if (uid) store.saveAuthAccount(uid, profile, netease.activeCookie());
   res.json(status);
 });
 app.post("/api/auth/refresh", async (_req, res) => res.json(await netease.loginRefresh()));
+app.get("/api/auth/accounts", (_req, res) => {
+  res.json({
+    active_uid: currentStoredUid(),
+    accounts: store.listAuthAccounts().map((account) => ({
+      uid: account.uid,
+      profile: account.account,
+      updated_at: account.updatedAt,
+    })),
+  });
+});
+app.post("/api/auth/switch", async (req, res) => {
+  const uid = compactText((req.body as Record<string, unknown> | undefined)?.uid || "", 80);
+  const cookie = uid ? store.getAuthCookie(uid) : "";
+  if (!uid || !cookie) {
+    res.status(404).json({ error: "account not found" });
+    return;
+  }
+  netease.useCookie(cookie);
+  const status = await netease.loginStatus();
+  const profile = extractProfile(status);
+  const activeUid = profile.userId == null ? "" : String(profile.userId);
+  if (activeUid && activeUid !== uid) {
+    res.status(409).json({ error: "account cookie mismatch" });
+    return;
+  }
+  if (activeUid) store.saveAuthAccount(activeUid, profile, netease.activeCookie());
+  res.json({ active_uid: activeUid || uid, profile, status });
+});
+app.post("/api/auth/logout", (_req, res) => {
+  netease.clearCookie();
+  res.json({ ok: true });
+});
 
 app.get("/api/radio/onboarding/:uid", async (req, res) => {
   const uid = String(req.params.uid);
@@ -125,6 +157,15 @@ async function uidMatchesActiveLogin(uid: string): Promise<boolean> {
   const profile = extractProfile(status);
   const activeUid = profile.userId == null ? "" : String(profile.userId);
   return !activeUid || activeUid === uid;
+}
+
+function currentStoredUid(): string {
+  const statusCookie = netease.activeCookie();
+  if (!statusCookie) return "";
+  for (const account of store.listAuthAccounts()) {
+    if (store.getAuthCookie(account.uid) === statusCookie) return account.uid;
+  }
+  return "";
 }
 
 function normalizeSettings(payload: Record<string, unknown>): UserSettings {

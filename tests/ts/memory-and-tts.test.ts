@@ -20,6 +20,36 @@ test("memory stores session feedback without turning one skip into permanent dis
   assert.equal(store.wasTrackRecentlyFailed("song-b", "42"), true);
 });
 
+test("auth accounts keep separate cookies for account switching", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "freqme-test-"));
+  const db = new AppDatabase(path.join(dir, "test.db"));
+  const store = new MemoryStore(db);
+
+  store.saveAuthAccount("42", { userId: 42, nickname: "First" }, "cookie-a");
+  store.saveAuthAccount("99", { userId: 99, nickname: "Second" }, "cookie-b");
+  store.saveAuthAccount("42", { userId: 42, nickname: "First Updated" });
+
+  assert.equal(store.getAuthCookie("42"), "cookie-a");
+  assert.equal(store.getAuthCookie("99"), "cookie-b");
+  assert.deepEqual(
+    store.listAuthAccounts().map((account) => account.uid).sort(),
+    ["42", "99"],
+  );
+  assert.equal(store.getAuthAccount("42")?.nickname, "First Updated");
+});
+
+test("database upgrades auth_account with cookie column", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "freqme-test-"));
+  const dbPath = path.join(dir, "test.db");
+  const first = new AppDatabase(dbPath);
+  first.db.exec("CREATE TABLE legacy_auth_account (uid TEXT PRIMARY KEY)");
+
+  const second = new AppDatabase(dbPath);
+  const columns = second.db.prepare("PRAGMA table_info(auth_account)").all() as Array<{ name?: string }>;
+
+  assert.ok(columns.some((column) => column.name === "cookie"));
+});
+
 test("tts failure returns a stable hash and does not throw", async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "freqme-test-"));
   const db = new AppDatabase(path.join(dir, "test.db"));
@@ -30,4 +60,3 @@ test("tts failure returns a stable hash and does not throw", async () => {
   assert.match(result.hash, /^[a-f0-9]{32}$/);
   assert.equal(typeof result.ok, "boolean");
 });
-

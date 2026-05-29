@@ -27,8 +27,15 @@ function loadCookie(filePath: string): string {
 }
 
 function saveCookie(filePath: string, cookie: string): void {
-  if (!cookie) return;
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  if (!cookie) {
+    try {
+      fs.rmSync(filePath, { force: true });
+    } catch {
+      // ignore stale cookie cleanup errors
+    }
+    return;
+  }
   const tmpPath = `${filePath}.tmp`;
   fs.writeFileSync(tmpPath, JSON.stringify({ cookie, updatedAt: new Date().toISOString() }, null, 2), {
     encoding: "utf8",
@@ -68,6 +75,21 @@ export class NeteaseService {
 
   private withCookie(args: Record<string, unknown> = {}): Record<string, unknown> {
     return this.cookie ? { ...args, cookie: this.cookie } : args;
+  }
+
+  activeCookie(): string {
+    return this.cookie;
+  }
+
+  useCookie(cookie: string): void {
+    this.cookie = cookie;
+    this.responseCache.clear();
+    this.inflight.clear();
+    saveCookie(config.neteaseCookiePath, this.cookie);
+  }
+
+  clearCookie(): void {
+    this.useCookie("");
   }
 
   private async call(name: string, args: Record<string, unknown> = {}): Promise<Record<string, unknown>> {

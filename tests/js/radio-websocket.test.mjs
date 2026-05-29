@@ -88,6 +88,8 @@ function loadRadio({ fetchImpl, spectrumBarCount = 0 } = {}) {
   const ids = [
     'audio-main',
     'audio-tts',
+    'account-list',
+    'add-account-btn',
     'btn-play',
     'btn-skip',
     'display-name-input',
@@ -136,6 +138,19 @@ function loadRadio({ fetchImpl, spectrumBarCount = 0 } = {}) {
     }
   }
 
+  const storage = new Map();
+  const localStorage = {
+    getItem(key) {
+      return storage.has(key) ? storage.get(key) : null;
+    },
+    setItem(key, value) {
+      storage.set(key, String(value));
+    },
+    removeItem(key) {
+      storage.delete(key);
+    },
+  };
+
   const context = {
     WebSocket: MockWebSocket,
     URL: { createObjectURL: () => 'blob:tts' },
@@ -171,6 +186,9 @@ function loadRadio({ fetchImpl, spectrumBarCount = 0 } = {}) {
     },
     navigator: {
       language: 'zh-CN',
+    },
+    window: {
+      localStorage,
     },
     setInterval() {
       return 1;
@@ -287,14 +305,16 @@ test('bootAuth refreshes persisted login before falling back to QR', async () =>
     },
   });
 
-  await waitFor(() => elements.get('start-radio-btn').style.display === 'block');
+  await waitFor(() => requests.includes('/api/radio/onboarding/42'), 80);
+  await waitFor(() => elements.get('start-radio-btn').style.display === 'block', 80);
 
   assert.equal(JSON.stringify(requests.slice(0, 4)), JSON.stringify([
     '/api/auth/status',
     '/api/auth/refresh',
     '/api/auth/status',
-    '/api/radio/onboarding/42',
+    '/api/auth/accounts',
   ]));
+  assert.ok(requests.includes('/api/radio/onboarding/42'));
   assert.equal(elements.get('start-radio-btn').style.display, 'block');
 });
 
@@ -309,6 +329,9 @@ test('onboarding fetch failure shows default onboarding instead of QR fallback',
           json: async () => ({ data: { profile: { userId: 42, nickname: 'Saved' } } }),
         };
       }
+      if (url === '/api/auth/accounts') {
+        return { ok: true, json: async () => ({ accounts: [], active_uid: '42' }) };
+      }
       if (url === '/api/radio/onboarding/42') {
         return { ok: false, json: async () => ({}) };
       }
@@ -320,11 +343,46 @@ test('onboarding fetch failure shows default onboarding instead of QR fallback',
 
   assert.equal(
     JSON.stringify(requests),
-    JSON.stringify(['/api/auth/status', '/api/radio/onboarding/42']),
+    JSON.stringify(['/api/auth/status', '/api/auth/accounts', '/api/radio/onboarding/42']),
   );
   assert.ok(elements.get('onboarding-screen').activeClasses.has('active'));
   assert.ok(!elements.get('login-screen').activeClasses.has('active'));
   assert.ok(elements.get('onboarding-status').textContent.length > 0);
+});
+
+test('bootAuth resumes the radio after refresh for the same saved user', async () => {
+  const { elements, sockets, context } = loadRadio({
+    fetchImpl: async (url) => {
+      if (url === '/api/auth/status') {
+        return {
+          ok: true,
+          json: async () => ({ data: { profile: { userId: 42, nickname: 'Saved' } } }),
+        };
+      }
+      if (url === '/api/auth/accounts') {
+        return { ok: true, json: async () => ({ accounts: [], active_uid: '42' }) };
+      }
+      if (url === '/api/radio/onboarding/42') {
+        return {
+          ok: true,
+          json: async () => ({ onboarded: true, settings: { voice_preset: 'warm_male' } }),
+        };
+      }
+      return { ok: true, json: async () => ({}) };
+    },
+  });
+
+  context.window.localStorage.setItem('freqme.radioState.v1', JSON.stringify({
+    uid: '42',
+    active: true,
+    savedAt: Date.now(),
+  }));
+
+  await waitFor(() => elements.get('player-screen').activeClasses.has('active'));
+
+  assert.equal(sockets.length, 1);
+  assert.ok(elements.get('player-screen').activeClasses.has('active'));
+  assert.equal(elements.get('start-radio-btn').style.display, 'none');
 });
 
 test('text-only segue stays visible briefly before starting next track', async () => {
