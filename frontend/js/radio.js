@@ -28,6 +28,7 @@ let analyserNode = null;
 let sourceNode = null;
 let analyserData = null;
 let analyserActive = false;
+let spectrumLevels = [];
 let progressTimer = null;
 const DUCKING_RATIO = 0.25;
 const DUCK_FADE_MS = 700;
@@ -107,8 +108,10 @@ async function connectAudioAnalyser() {
     if (!audioContext) {
       audioContext = new AC();
       analyserNode = audioContext.createAnalyser();
-      analyserNode.fftSize = 128;
-      analyserNode.smoothingTimeConstant = 0.78;
+      analyserNode.fftSize = 256;
+      analyserNode.minDecibels = -88;
+      analyserNode.maxDecibels = -18;
+      analyserNode.smoothingTimeConstant = 0.72;
       analyserData = new Uint8Array(analyserNode.frequencyBinCount);
     }
     if (audioContext.state === 'suspended') {
@@ -159,22 +162,91 @@ function setAmbientStateThrottled(level, phase = currentDayPhase()) {
   setAmbientState(level, phase);
 }
 
-function updateSpectrum(energy = 0, speaking = false) {
+function ensureSpectrumState(total) {
+  while (spectrumLevels.length < total) {
+    spectrumLevels.push(0.12);
+  }
+  if (spectrumLevels.length > total) {
+    spectrumLevels = spectrumLevels.slice(0, total);
+  }
+}
+
+function spectrumBucketRange(index, total, binCount) {
+  const startRatio = Math.pow(index / total, 1.72);
+  const endRatio = Math.pow((index + 1) / total, 1.72);
+  const start = Math.min(binCount - 1, Math.floor(startRatio * binCount));
+  const end = Math.min(binCount, Math.max(start + 1, Math.ceil(endRatio * binCount)));
+  return { start, end };
+}
+
+function readSpectrumSnapshot() {
+  if (!analyserNode || !analyserData || !spectrumBars.length) {
+    return { energy: 0.16, levels: null };
+  }
+  analyserNode.getByteFrequencyData(analyserData);
+  const totalBars = spectrumBars.length;
+  const levels = [];
+  let weightedEnergy = 0;
+  let peak = 0;
+
+  for (let index = 0; index < totalBars; index += 1) {
+    const { start, end } = spectrumBucketRange(index, totalBars, analyserData.length);
+    let sum = 0;
+    let localPeak = 0;
+    let samples = 0;
+    for (let bin = start; bin < end; bin += 1) {
+      const normalized = analyserData[bin] / 255;
+      const shaped = Math.pow(normalized, 1.28);
+      sum += shaped;
+      localPeak = Math.max(localPeak, shaped);
+      samples += 1;
+    }
+    const avg = samples ? sum / samples : 0;
+    const level = Math.min(1, (avg * 0.82) + (localPeak * 0.32));
+    levels.push(level);
+    weightedEnergy += level * (index < totalBars * 0.42 ? 1.12 : 0.9);
+    peak = Math.max(peak, level);
+  }
+
+  const average = weightedEnergy / Math.max(1, totalBars);
+  return {
+    energy: Math.min(1, (average * 1.45) + (peak * 0.18) + 0.08),
+    levels,
+  };
+}
+
+function syntheticSpectrumLevel(index, total, energy, speaking) {
+  const center = (total - 1) / 2;
+  const dist = Math.abs(index - center) / Math.max(1, center);
+  const centerWeight = Math.pow(1 - dist, 1.45);
+  const phase = breathPhase * (speaking ? 0.11 : 0.15) + index * (speaking ? 0.7 : 0.92);
+  const beat = (Math.sin(phase) + 1) / 2;
+  const flutter = (Math.sin(phase * 1.83 + index * 0.37) + 1) / 2;
+  const lift = Math.max(0, Math.min(1, energy));
+  return Math.min(1, (lift * (speaking ? 0.52 : 0.74)) + (centerWeight * 0.2) + (beat * 0.12) + (flutter * 0.08));
+}
+
+function updateSpectrum(input = 0, speaking = false) {
   if (!spectrumBars.length) return;
   const total = spectrumBars.length;
-  const center = (total - 1) / 2;
-  const e = Math.max(0, Math.min(1, energy));
+  const levels = Array.isArray(input) ? input : null;
+  const scalarEnergy = levels ? 0 : Math.max(0, Math.min(1, input));
+  ensureSpectrumState(total);
   spectrumBars.forEach((bar, index) => {
-    const dist = Math.abs(index - center) / Math.max(1, center);
-    const centerWeight = Math.pow(1 - dist, 1.65);
-    const phase = breathPhase * (speaking ? 0.13 : 0.19) + index * (speaking ? 0.62 : 0.82);
-    const beat = Math.sin(phase);
-    const flutter = Math.abs(Math.sin(phase * (speaking ? 1.35 : 1.85)));
-    const kick = Math.abs(Math.sin(breathPhase * (speaking ? 0.06 : 0.09) + index * 0.4));
-    const energyLift = speaking ? e * 0.6 : e * 1.55;
-    const movement = speaking ? (Math.abs(beat) * 0.08 + flutter * 0.06 + kick * 0.05) : (Math.abs(beat) * 0.36 + flutter * 0.3 + kick * 0.16);
-    const scale = Math.max(0.08, Math.min(1.9, 0.1 + (centerWeight * (speaking ? 0.34 : 0.62)) + energyLift + movement + (index % 4) * 0.018));
-    const opacity = Math.max(0.12, Math.min(1, 0.14 + (centerWeight * 0.46) + e * (speaking ? 0.4 : 0.88) + movement * 0.38));
+    const target = levels
+      ? Math.max(0, Math.min(1, levels[index] || 0))
+      : syntheticSpectrumLevel(index, total, scalarEnergy, speaking);
+    const previous = spectrumLevels[index] || 0.12;
+    const attack = target > previous ? (speaking ? 0.32 : 0.42) : (speaking ? 0.16 : 0.2);
+    const level = previous + ((target - previous) * attack);
+    const laneVariation = 0.9 + (Math.sin((index + 1) * 1.618) * 0.055);
+    spectrumLevels[index] = level;
+
+    const scaleBase = speaking ? 0.12 : 0.1;
+    const scaleLift = speaking ? 0.74 : 0.98;
+    const scaleCeiling = speaking ? 0.92 : 1.08;
+    const scale = Math.max(0.08, Math.min(scaleCeiling, scaleBase + (Math.pow(level, 0.82) * scaleLift * laneVariation)));
+    const opacity = Math.max(0.18, Math.min(0.94, 0.22 + (Math.pow(level, 0.7) * (speaking ? 0.5 : 0.72))));
     bar.style.setProperty('--bar-scale', scale.toFixed(3));
     bar.style.setProperty('--bar-opacity', opacity.toFixed(3));
   });
@@ -223,26 +295,11 @@ function startBreathLoop() {
     breathPhase += 1;
 
     if (analyserActive && analyserNode && analyserData) {
-      analyserNode.getByteTimeDomainData(analyserData);
-      let sum = 0;
-      let peak = 0;
-      const len = analyserData.length;
-      const energyBands = { low: 0, mid: 0, high: 0 };
-      for (let i = 0; i < len; i += 1) {
-        const n = (analyserData[i] - 128) / 128;
-        const abs = Math.abs(n);
-        sum += n * n;
-        peak = Math.max(peak, abs);
-        if (i < len * 0.34) energyBands.low += abs;
-        else if (i < len * 0.68) energyBands.mid += abs;
-        else energyBands.high += abs;
-      }
-      const rms = Math.sqrt(sum / len);
-      const rawEnergy = (rms * 2.6) + (peak * 0.5) + ((energyBands.low / len) * 0.8) + ((energyBands.mid / len) * 0.6) + ((energyBands.high / len) * 0.9);
-      const energy = Math.min(1, rawEnergy * 0.95 + 0.12);
+      const snapshot = readSpectrumSnapshot();
+      const energy = snapshot.energy;
       breathLevel = breathLevel + ((energy - breathLevel) * 0.18);
       setAmbientStateThrottled(breathLevel);
-      updateSpectrum(Math.min(1, energy + (energyBands.low / len) * 0.4 + (energyBands.high / len) * 0.5), false);
+      updateSpectrum(snapshot.levels || energy, false);
     } else {
       const ambient = 0.18 + (Math.sin(breathPhase / 90) * 0.03);
       breathLevel = breathLevel + ((ambient - breathLevel) * 0.05);

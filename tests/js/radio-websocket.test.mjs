@@ -8,6 +8,17 @@ const radioPath = resolve('frontend/js/radio.js');
 
 function createElement(id = '') {
   const listeners = new Map();
+  const styleValues = new Map();
+  const style = {
+    setProperty(name, value) {
+      const stringValue = String(value);
+      styleValues.set(name, stringValue);
+      this[name] = stringValue;
+    },
+    getPropertyValue(name) {
+      return styleValues.get(name) || this[name] || '';
+    },
+  };
   const element = {
     id,
     className: '',
@@ -16,7 +27,7 @@ function createElement(id = '') {
     ended: true,
     paused: true,
     src: '',
-    style: {},
+    style,
     textContent: '',
     value: '',
     volume: 1,
@@ -73,7 +84,7 @@ function createElement(id = '') {
   return element;
 }
 
-function loadRadio({ fetchImpl } = {}) {
+function loadRadio({ fetchImpl, spectrumBarCount = 0 } = {}) {
   const ids = [
     'audio-main',
     'audio-tts',
@@ -100,6 +111,7 @@ function loadRadio({ fetchImpl } = {}) {
     'volume-slider',
   ];
   const elements = new Map(ids.map((id) => [id, createElement(id)]));
+  const spectrumBars = Array.from({ length: spectrumBarCount }, (_, index) => createElement(`spectrum-${index}`));
   const sockets = [];
   const timers = [];
   let now = 0;
@@ -144,7 +156,8 @@ function loadRadio({ fetchImpl } = {}) {
       querySelector() {
         return null;
       },
-      querySelectorAll() {
+      querySelectorAll(selector) {
+        if (selector === '#spectrum-bars span') return spectrumBars;
         return [];
       },
     },
@@ -200,7 +213,7 @@ function loadRadio({ fetchImpl } = {}) {
     now = target;
   }
 
-  return { context, elements, sockets, timers, advanceTimersBy };
+  return { context, elements, sockets, timers, spectrumBars, advanceTimersBy };
 }
 
 async function flushAsyncWork(rounds = 8) {
@@ -563,6 +576,29 @@ test('request form sends song request text without changing playback locally', a
   assert.equal(sent.type, 'song_request');
   assert.equal(sent.text, '想听夜路上放空的歌');
   assert.equal(requestInput.value, '');
+});
+
+test('spectrum renderer preserves frequency variation and avoids uniform clipping', () => {
+  const { context, spectrumBars } = loadRadio({ spectrumBarCount: 32 });
+  const levels = Array.from({ length: 32 }, (_, index) => {
+    const bass = index < 7 ? 0.86 - index * 0.055 : 0;
+    const mids = index >= 10 && index < 20 ? 0.38 + Math.sin(index * 0.9) * 0.16 : 0;
+    const highs = index >= 24 ? 0.16 + ((index % 4) * 0.055) : 0;
+    return Math.max(0.02, bass, mids, highs);
+  });
+
+  context.updateSpectrum(levels, false);
+  context.updateSpectrum(levels, false);
+
+  const scales = spectrumBars.map((bar) => Number(bar.style.getPropertyValue('--bar-scale')));
+  const uniqueScales = new Set(scales.map((scale) => scale.toFixed(2)));
+  const topCount = scales.filter((scale) => scale > 1.02).length;
+  const spread = Math.max(...scales) - Math.min(...scales);
+
+  assert.equal(scales.length, 32);
+  assert.ok(uniqueScales.size >= 10, `expected varied bars, got ${JSON.stringify(scales)}`);
+  assert.ok(spread > 0.25, `expected visible height spread, got ${spread}`);
+  assert.ok(topCount <= 3, `too many bars are clipping near the top: ${topCount}`);
 });
 
 test('request status tells listener whether the requested direction is queued', async () => {

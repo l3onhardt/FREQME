@@ -78,13 +78,14 @@ button, input, textarea {
 .ambient {
   position: fixed;
   border-radius: 50%;
-  filter: blur(80px);
+  filter: blur(42px);
   opacity: 0.3;
   pointer-events: none;
   z-index: 0;
   animation: floatAmbient 20s infinite ease-in-out;
   will-change: transform, opacity;
   transform: translateZ(0);
+  contain: paint;
 }
 
 .ambient-a {
@@ -221,11 +222,12 @@ button, input, textarea {
   border: 1px solid var(--glass-border);
   border-radius: 28px;
   box-shadow: var(--glass-shadow);
-  backdrop-filter: blur(28px) saturate(210%);
-  -webkit-backdrop-filter: blur(28px) saturate(210%);
+  backdrop-filter: blur(14px) saturate(150%);
+  -webkit-backdrop-filter: blur(14px) saturate(150%);
   padding: 32px;
   transition: border-color 0.4s ease, box-shadow 0.4s ease, transform 0.4s ease;
-  will-change: transform, border-color, box-shadow;
+  will-change: transform, opacity;
+  contain: paint;
 }
 
 /* Glass Inner Highlight reflection */
@@ -544,7 +546,7 @@ button, input, textarea {
   display: flex;
   flex-direction: column;
   gap: 24px;
-  contain: none; /* Disable paint containment to allow glowing shadows to spill outside cards */
+  contain: layout paint;
 }
 
 /* Dynamic glow based on status */
@@ -554,7 +556,7 @@ button, input, textarea {
   inset: auto -10% -20% -10%;
   height: 50%;
   background: radial-gradient(circle at center, rgba(255, 111, 97, 0.12) 0%, transparent 70%);
-  filter: blur(40px);
+  filter: blur(20px);
   pointer-events: none;
   animation: glowPulse 8s infinite ease-in-out;
   z-index: -1;
@@ -655,6 +657,7 @@ button, input, textarea {
   position: relative;
   padding: 10px 0;
   margin-bottom: 4px;
+  contain: layout paint;
 }
 
 /* Neon backing reflection */
@@ -664,7 +667,7 @@ button, input, textarea {
   inset: auto 10% 0 10%;
   height: 60px;
   background: radial-gradient(ellipse at center, rgba(255, 111, 97, 0.18) 0%, transparent 70%);
-  filter: blur(15px);
+  filter: blur(10px);
   pointer-events: none;
 }
 
@@ -676,11 +679,12 @@ button, input, textarea {
   justify-content: space-between;
   gap: 3px;
   transform: translateZ(0); /* Force GPU compositing */
+  contain: layout paint;
 }
 
 .spectrum span {
   flex: 1;
-  height: 45%;
+  height: 72%;
   background: linear-gradient(180deg, 
                 var(--accent-2) 0%, 
                 var(--accent) 50%, 
