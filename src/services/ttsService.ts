@@ -36,6 +36,7 @@ const sceneGuidance: Record<string, string> = {
 
 export class TTSService {
   private readonly cacheDir: string;
+  private readonly inflight = new Map<string, Promise<{ hash: string; ok: boolean }>>();
 
   constructor(private readonly store: MemoryStore) {
     this.cacheDir = path.join(config.dataDir, "tts_cache");
@@ -67,12 +68,22 @@ export class TTSService {
       this.store.cacheTts(hash, cachePath);
       return { hash, ok: true };
     }
+    const existing = this.inflight.get(hash);
+    if (existing) return existing;
 
-    const audio = await this.requestMimo(clean, scene, preset).catch(() => null);
-    if (!audio?.length) return { hash, ok: false };
-    fs.writeFileSync(cachePath, audio);
-    this.store.cacheTts(hash, cachePath);
-    return { hash, ok: true };
+    const task = this.requestMimo(clean, scene, preset)
+      .then((audio) => {
+        if (!audio?.length) return { hash, ok: false };
+        fs.writeFileSync(cachePath, audio);
+        this.store.cacheTts(hash, cachePath);
+        return { hash, ok: true };
+      })
+      .catch(() => ({ hash, ok: false }))
+      .finally(() => {
+        this.inflight.delete(hash);
+      });
+    this.inflight.set(hash, task);
+    return task;
   }
 
   getCachedPath(hash: string): string | null {
@@ -125,4 +136,3 @@ export class TTSService {
     return `[角色]${voice.director}[场景]${sceneText}[音色指引]${voice.prompt || ""}[指导]像真实电台主播一样说话，克制、自然、温暖。只读正文含义，不要加入夸张语气词、括号提示或舞台表演。`;
   }
 }
-

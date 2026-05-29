@@ -49,7 +49,7 @@ export type MusicTaskType =
   | "unclear";
 
 export interface MusicEntity {
-  role: "artist" | "performer" | "composer" | "work" | "genre" | "scene" | "music_entity";
+  role: "artist" | "performer" | "composer" | "arranger" | "producer" | "work" | "genre" | "scene" | "music_entity";
   name: string;
 }
 
@@ -117,8 +117,35 @@ export interface SearchVerification {
   diagnostics?: {
     searchedQueries?: string[];
     rejectedQueries?: string[];
+    generatedQueries?: string[];
     candidateIds?: string[];
     attemptedSongIds?: string[];
+    queryResults?: Array<{
+      query: string;
+      results: Array<{
+        id: string;
+        name: string;
+        artist: string;
+        album?: string;
+        accepted: boolean;
+        reason?: string;
+      }>;
+    }>;
+    verifier?: {
+      chosenId?: string;
+      confidence?: number;
+      matchedEntities?: string[];
+      risk?: string;
+    };
+    audioAttempts?: Array<{
+      songId: string;
+      name?: string;
+      artist?: string;
+      sourceQuery?: string;
+      ok: boolean;
+      reason?: string;
+      resolvedSongId?: string;
+    }>;
   };
 }
 

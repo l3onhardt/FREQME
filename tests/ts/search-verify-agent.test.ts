@@ -123,6 +123,140 @@ test("artist direction must use LLM planned concrete song queries instead of bar
   assert.ok(searched.every((query) => query !== "我要听radiohead"));
 });
 
+test("performer request like Zimerman is planned into concrete recordings and verified semantically", async () => {
+  class ZimermanLlm {
+    calls: Array<{ prompt: string; options: Record<string, unknown> }> = [];
+
+    async chat(prompt: string, options: Record<string, unknown>): Promise<string> {
+      this.calls.push({ prompt, options });
+      if (prompt.includes("Rewrite this DJ music task")) {
+        assert.match(prompt, /Krystian Zimerman/);
+        return JSON.stringify({
+          picks: [
+            {
+              artist: "Krystian Zimerman",
+              title: "Chopin Ballade No. 1",
+              query: "Krystian Zimerman Chopin Ballade No. 1",
+              reason: "representative piano recording",
+            },
+            {
+              artist: "Krystian Zimerman",
+              title: "Beethoven Piano Concerto No. 5",
+              query: "Krystian Zimerman Beethoven Piano Concerto No. 5",
+              reason: "well-known concerto recording",
+            },
+          ],
+          search_queries: [
+            "Krystian Zimerman Chopin Ballade No. 1",
+            "Krystian Zimerman Beethoven Piano Concerto No. 5",
+          ],
+        });
+      }
+      return JSON.stringify({
+        chosen_id: "zim1",
+        confidence: 0.94,
+        matched_entities: ["齐默尔曼", "Krystian Zimerman", "Chopin"],
+        version_note: "Performer alias and work match.",
+        risk: "",
+      });
+    }
+  }
+  const task: MusicTask = {
+    type: "artist_direction",
+    primaryEntities: [{ role: "performer", name: "Krystian Zimerman" }],
+    workHint: "",
+    styleHint: "classical piano",
+    negativeConstraints: [],
+    searchGoals: ["Krystian Zimerman"],
+    mustNotSearchLiteralUserSentence: true,
+  };
+  const netease = {
+    queries: [] as string[],
+    async search(query: string): Promise<Track[]> {
+      this.queries.push(query);
+      return [
+        {
+          id: "zim1",
+          name: "Ballade No. 1 in G Minor, Op. 23",
+          artist: "Krystian Zimerman",
+          album: "Chopin: 4 Ballades",
+          source: query,
+        },
+      ];
+    },
+  };
+  const audioResolver = {
+    async resolveWithCandidates(track: Track): Promise<any> {
+      return { ok: true, songId: track.id, proxyUrl: `/api/radio/audio/${track.id}` };
+    },
+  };
+  const agent = new SearchVerifyAgent(new ZimermanLlm() as any, netease as any, audioResolver as any);
+
+  const result = await agent.verify(task, "42", "我要听齐默尔曼", personalContext);
+
+  assert.equal(result.status, "verified");
+  assert.equal(result.selectedSong?.id, "zim1");
+  assert.equal(result.url, "/api/radio/audio/zim1");
+  assert.deepEqual(netease.queries, ["Krystian Zimerman Chopin Ballade No. 1", "Krystian Zimerman Beethoven Piano Concerto No. 5"]);
+});
+
+test("performer request still searches entity candidates when planner only returns a bare name", async () => {
+  class BareNameLlm {
+    async chat(prompt: string): Promise<string> {
+      if (prompt.includes("Rewrite this DJ music task")) {
+        return JSON.stringify({
+          search_queries: ["Krystian Zimerman"],
+          picks: [{ artist: "Krystian Zimerman", title: "", query: "Krystian Zimerman" }],
+        });
+      }
+      return JSON.stringify({
+        chosen_id: "zim1",
+        confidence: 0.91,
+        matched_entities: ["Krystian Zimerman"],
+        version_note: "Performer matches the listener request.",
+        risk: "",
+      });
+    }
+  }
+  const task: MusicTask = {
+    type: "artist_direction",
+    primaryEntities: [{ role: "performer", name: "Krystian Zimerman" }],
+    workHint: "",
+    styleHint: "classical piano",
+    negativeConstraints: [],
+    searchGoals: ["Krystian Zimerman"],
+    mustNotSearchLiteralUserSentence: true,
+  };
+  const netease = {
+    queries: [] as string[],
+    async search(query: string): Promise<Track[]> {
+      this.queries.push(query);
+      return [
+        {
+          id: "zim1",
+          name: "Ballade No. 1 in G Minor, Op. 23",
+          artist: "Krystian Zimerman",
+          album: "Chopin: 4 Ballades",
+          source: query,
+        },
+      ];
+    },
+  };
+  const audioResolver = {
+    async resolveWithCandidates(track: Track): Promise<any> {
+      return { ok: true, songId: track.id, proxyUrl: `/api/radio/audio/${track.id}` };
+    },
+  };
+  const agent = new SearchVerifyAgent(new BareNameLlm() as any, netease as any, audioResolver as any);
+
+  const result = await agent.verify(task, "42", "我要听齐默尔曼", personalContext);
+
+  assert.equal(result.status, "verified");
+  assert.equal(result.selectedSong?.id, "zim1");
+  assert.ok(netease.queries.includes("Krystian Zimerman Chopin"));
+  assert.ok(netease.queries.includes("Krystian Zimerman"));
+});
+
 test("specific track can keep a direct concrete query without planner expansion", async () => {
   const task: MusicTask = {
     type: "specific_track",
@@ -245,7 +379,7 @@ test("abstract scene planning uses listener profile and memory instead of genre 
   assert.ok(llm.calls[0].prompt.includes("Personal listener context"));
 });
 
-test("planner output that remains only style buckets is rejected with diagnostics", async () => {
+test("planner output that remains only style buckets falls back to concrete scene songs", async () => {
   class BucketOnlyLlm {
     async chat(prompt: string): Promise<string> {
       if (prompt.includes("Rewrite this DJ music task")) {
@@ -258,7 +392,13 @@ test("planner output that remains only style buckets is rejected with diagnostic
           search_queries: ["R&B 电子融合", "舞曲 R&B", "Electronic R&B"],
         });
       }
-      return JSON.stringify({ chosen_id: "", confidence: 0 });
+      return JSON.stringify({
+        chosen_id: "sza",
+        confidence: 0.88,
+        matched_entities: ["R&B"],
+        version_note: "concrete R&B fallback candidate",
+        risk: "",
+      });
     }
   }
   const task: MusicTask = {
@@ -273,15 +413,177 @@ test("planner output that remains only style buckets is rejected with diagnostic
     searchGoals: ["R&B 电子融合", "舞曲 R&B", "Electronic R&B"],
     mustNotSearchLiteralUserSentence: true,
   };
-  const netease = new FakeNetease();
-  const agent = new SearchVerifyAgent(new BucketOnlyLlm() as any, netease as any, new FakeAudioResolver() as any);
+  const netease = {
+    queries: [] as string[],
+    async search(query: string): Promise<Track[]> {
+      this.queries.push(query);
+      return [{ id: "sza", name: "Snooze", artist: "SZA", source: query }];
+    },
+  };
+  const audioResolver = {
+    async resolveWithCandidates(track: Track): Promise<any> {
+      return { ok: true, songId: track.id, proxyUrl: `/api/radio/audio/${track.id}` };
+    },
+  };
+  const agent = new SearchVerifyAgent(new BucketOnlyLlm() as any, netease as any, audioResolver as any);
 
   const result = await agent.verify(task, "42", "我要听5电的rnb", personalContext);
 
-  assert.equal(result.status, "not_found");
-  assert.equal(netease.queries.length, 0);
-  assert.equal(result.failureReason, "Search planner did not produce concrete song queries.");
+  assert.equal(result.status, "verified");
+  assert.equal(result.selectedSong?.id, "sza");
+  assert.ok(netease.queries.includes("SZA Snooze"));
+  assert.ok(netease.queries.every((query) => !["R&B", "R&B tracks", "R&B playlist", "R&B evening"].includes(query)));
   assert.deepEqual(result.diagnostics?.rejectedQueries, ["R&B 电子融合", "舞曲 R&B", "Electronic R&B"]);
+});
+
+test("afternoon R&B request does not fail when planner returns only broad R&B goals", async () => {
+  class BroadOnlyLlm {
+    async chat(prompt: string): Promise<string> {
+      if (prompt.includes("Rewrite this DJ music task")) {
+        return JSON.stringify({
+          search_queries: ["R&B tracks", "R&B playlist", "R&B evening"],
+          picks: [{ artist: "", title: "", query: "R&B tracks" }],
+        });
+      }
+      return JSON.stringify({
+        chosen_id: "daniel",
+        confidence: 0.9,
+        matched_entities: ["R&B", "evening"],
+        version_note: "specific relaxed R&B track",
+        risk: "",
+      });
+    }
+  }
+  const task: MusicTask = {
+    type: "scene_genre_direction",
+    primaryEntities: [
+      { role: "genre", name: "R&B" },
+      { role: "scene", name: "下午5点" },
+    ],
+    workHint: "",
+    styleHint: "适合傍晚放松或带点氛围感的R&B",
+    negativeConstraints: [],
+    searchGoals: ["R&B", "R&B playlist", "R&B evening"],
+    mustNotSearchLiteralUserSentence: true,
+  };
+  const netease = {
+    queries: [] as string[],
+    async search(query: string): Promise<Track[]> {
+      this.queries.push(query);
+      return [{ id: "daniel", name: "Japanese Denim", artist: "Daniel Caesar", source: query }];
+    },
+  };
+  const audioResolver = {
+    async resolveWithCandidates(track: Track): Promise<any> {
+      return { ok: true, songId: track.id, proxyUrl: `/api/radio/audio/${track.id}` };
+    },
+  };
+  const agent = new SearchVerifyAgent(new BroadOnlyLlm() as any, netease as any, audioResolver as any);
+
+  const result = await agent.verify(task, "42", "我要听下午5点的rnb", personalContext);
+
+  assert.equal(result.status, "verified");
+  assert.equal(result.selectedSong?.id, "daniel");
+  assert.ok(netease.queries.includes("Daniel Caesar Japanese Denim"));
+  assert.ok(netease.queries.every((query) => query !== "R&B tracks" && query !== "R&B playlist" && query !== "R&B evening"));
+});
+
+test("descriptive R&B search goals are not treated as concrete NetEase queries", async () => {
+  class DescriptiveLlm {
+    async chat(prompt: string): Promise<string> {
+      if (prompt.includes("Rewrite this DJ music task")) {
+        return JSON.stringify({
+          search_queries: ["R&B tracks matching user's taste summary (intimate, warm, melancholy)"],
+          picks: [
+            {
+              artist: "",
+              title: "",
+              query: "R&B tracks matching user's taste summary (intimate, warm, melancholy)",
+            },
+          ],
+        });
+      }
+      return JSON.stringify({
+        chosen_id: "frank",
+        confidence: 0.9,
+        matched_entities: ["R&B", "warm"],
+        version_note: "specific profile-adjacent R&B track",
+        risk: "",
+      });
+    }
+  }
+  const task: MusicTask = {
+    type: "scene_genre_direction",
+    primaryEntities: [{ role: "genre", name: "R&B" }],
+    workHint: "",
+    styleHint: "intimate warm R&B",
+    negativeConstraints: [],
+    searchGoals: ["R&B tracks matching user's taste summary (intimate, warm, melancholy)"],
+    mustNotSearchLiteralUserSentence: true,
+  };
+  const netease = {
+    queries: [] as string[],
+    async search(query: string): Promise<Track[]> {
+      this.queries.push(query);
+      return [{ id: "frank", name: "Pink + White", artist: "Frank Ocean", source: query }];
+    },
+  };
+  const audioResolver = {
+    async resolveWithCandidates(track: Track): Promise<any> {
+      return { ok: true, songId: track.id, proxyUrl: `/api/radio/audio/${track.id}` };
+    },
+  };
+  const agent = new SearchVerifyAgent(new DescriptiveLlm() as any, netease as any, audioResolver as any);
+
+  const result = await agent.verify(task, "42", "我要听rnb", personalContext);
+
+  assert.equal(result.status, "verified");
+  assert.equal(result.selectedSong?.id, "frank");
+  assert.ok(netease.queries.includes("Frank Ocean Pink + White"));
+  assert.ok(netease.queries.every((query) => !query.includes("taste summary")));
+});
+
+test("scene fallback does not search profile prose or play candidates when verifier does not choose", async () => {
+  class EmptyJudgeLlm {
+    async chat(prompt: string): Promise<string> {
+      if (prompt.includes("Rewrite this DJ music task")) {
+        return JSON.stringify({
+          search_queries: ["R&B tracks with intimate vocals and warm production"],
+          picks: [{ artist: "", title: "", query: "R&B tracks with intimate vocals and warm production" }],
+        });
+      }
+      return JSON.stringify({ chosen_id: "", confidence: 0, matched_entities: [], risk: "" });
+    }
+  }
+  const task: MusicTask = {
+    type: "scene_genre_direction",
+    primaryEntities: [{ role: "genre", name: "R&B" }],
+    workHint: "",
+    styleHint: "warm textures intimate vocals",
+    negativeConstraints: [],
+    searchGoals: ["R&B tracks with intimate vocals and warm production"],
+    mustNotSearchLiteralUserSentence: true,
+  };
+  const netease = {
+    queries: [] as string[],
+    async search(query: string): Promise<Track[]> {
+      this.queries.push(query);
+      return [{ id: "sleep", name: "Baby Sleep Anchor", artist: "Serena Nightlight", source: query }];
+    },
+  };
+  const audioResolver = {
+    async resolveWithCandidates(track: Track): Promise<any> {
+      return { ok: true, songId: track.id, proxyUrl: `/api/radio/audio/${track.id}` };
+    },
+  };
+  const agent = new SearchVerifyAgent(new EmptyJudgeLlm() as any, netease as any, audioResolver as any);
+
+  const result = await agent.verify(task, "42", "我要听rnb", personalContext);
+
+  assert.equal(result.status, "not_found");
+  assert.ok(netease.queries.includes("SZA Snooze"));
+  assert.ok(netease.queries.every((query) => !query.includes("anchors include") && !query.includes("prefers intimate")));
+  assert.deepEqual(result.diagnostics?.attemptedSongIds, []);
 });
 
 test("not-found verification returns searched queries and candidate diagnostics", async () => {

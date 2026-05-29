@@ -57,7 +57,7 @@ export class ProfileEngine {
     };
     const playlists = await this.netease.userPlaylist(uid);
     const playlistTracks: Track[] = [];
-    for (const playlist of playlists.slice(0, 6)) {
+    for (const playlist of playlists.slice(0, 3)) {
       const id = playlist.id;
       if (!id) continue;
       const detail = await this.netease.playlistDetail(String(id));
@@ -68,19 +68,19 @@ export class ProfileEngine {
           : [];
       if (Array.isArray(tracks)) {
         playlistTracks.push(
-          ...tracks.slice(0, 40).map((song) => this.netease.normalizeTrack(song as Record<string, unknown>, "playlist")),
+          ...tracks.slice(0, 20).map((song) => this.netease.normalizeTrack(song as Record<string, unknown>, "playlist")),
         );
       }
     }
     const records = await this.netease.userRecord(uid);
     const weekData = Array.isArray(records.weekData) ? (records.weekData as Array<Record<string, unknown>>) : [];
     const recentTracks = weekData
-      .slice(0, 50)
+      .slice(0, 30)
       .map((item) => (item.song && typeof item.song === "object" ? this.netease.normalizeTrack(item.song as Record<string, unknown>, "recent") : null))
       .filter((track): track is Track => Boolean(track?.id))
-      .slice(0, 30);
+      .slice(0, 20);
     const liked = await this.netease.likeList(uid);
-    const anchors = playlistTracks.filter((track) => track.id).slice(0, 40);
+    const anchors = playlistTracks.filter((track) => track.id).slice(0, 30);
     let profile = defaultProfile(uid, settings, anchors, recentTracks, liked.slice(0, 500));
 
     if (anchors.length || recentTracks.length || settings.musicNotes) {
@@ -170,4 +170,3 @@ ${compactText(settings.musicNotes || "", 500)}
     };
   }
 }
-

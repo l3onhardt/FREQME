@@ -95,35 +95,34 @@ test("genre requests like R&B are accepted as executable LLM decisions", async (
   assert.equal(decision.uncertainty.shouldAskUser, false);
 });
 
-test("abstract genre decisions must include concrete artist-title candidates, not only bucket searches", async () => {
+test("DJ request agent accepts abstract performer/entity decisions and leaves track planning downstream", async () => {
   const llm = new FakeLlm(
     JSON.stringify({
       action: "set_direction_and_play",
-      understoodIntent: "listener wants a personalized electronic R&B direction",
+      understoodIntent: "listener wants music by pianist Krystian Zimerman",
       musicTask: {
-        type: "genre_direction",
-        primaryEntities: [
-          { role: "genre", name: "R&B" },
-          { role: "scene", name: "electronic fusion" },
-        ],
+        type: "artist_direction",
+        primaryEntities: [{ role: "performer", name: "Krystian Zimerman" }],
         workHint: "",
-        styleHint: "modern electronic R&B",
-        negativeConstraints: ["avoid noisy club tracks"],
-        searchGoals: ["R&B 电子融合", "舞曲 R&B", "Electronic R&B"],
+        styleHint: "classical piano",
+        negativeConstraints: [],
+        searchGoals: ["Krystian Zimerman"],
         mustNotSearchLiteralUserSentence: true,
       },
       queuePolicy: { durationTracks: 4, continueDirection: true, avoidRepetition: true },
-      uncertainty: { level: "low", reason: "Clear style request.", shouldAskUser: false },
-      djResponse: { speakNow: "我往电子 R&B 的方向接。", tone: "warm_confident" },
-      memoryUpdate: { sessionPreference: ["electronic R&B"], possibleLongTermPreference: [], negativeConstraints: [] },
+      uncertainty: { level: "low", reason: "Clear performer request.", shouldAskUser: false },
+      djResponse: { speakNow: "???????????????", tone: "warm_confident" },
+      memoryUpdate: { sessionPreference: ["Krystian Zimerman"], possibleLongTermPreference: [], negativeConstraints: [] },
     }),
   );
   const agent = new DJRequestAgent(llm as any);
-  const decision = await agent.decide("我要听5电的rnb", emptyContext);
+  const decision = await agent.decide("???????", emptyContext);
 
-  assert.equal(decision.action, "ask_clarifying_question");
-  assert.equal(decision.musicTask.type, "unclear");
-  assert.match(decision.uncertainty.reason, /concrete/i);
+  assert.equal(decision.action, "set_direction_and_play");
+  assert.equal(decision.musicTask.type, "artist_direction");
+  assert.equal(decision.musicTask.primaryEntities[0]?.role, "performer");
+  assert.equal(decision.musicTask.primaryEntities[0]?.name, "Krystian Zimerman");
+  assert.deepEqual(decision.musicTask.searchGoals, ["Krystian Zimerman"]);
 });
 
 test("DJ request agent does not invent local artist decisions when LLM is unavailable", async () => {

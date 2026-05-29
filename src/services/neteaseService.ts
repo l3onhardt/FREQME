@@ -9,6 +9,13 @@ import type { Track } from "../types.js";
 type ApiFn = (args: Record<string, unknown>) => Promise<{ body: Record<string, unknown> }>;
 
 const api = NeteaseCloudMusicApi as unknown as Record<string, ApiFn>;
+const shortCacheTtlMs = 5 * 60 * 1000;
+const profileCacheTtlMs = 30 * 60 * 1000;
+
+interface CacheEntry {
+  expiresAt: number;
+  value: Record<string, unknown>;
+}
 
 function loadCookie(filePath: string): string {
   try {
@@ -56,6 +63,8 @@ function extractSongs(body: Record<string, unknown>): Record<string, unknown>[] 
 
 export class NeteaseService {
   private cookie = loadCookie(config.neteaseCookiePath);
+  private readonly responseCache = new Map<string, CacheEntry>();
+  private readonly inflight = new Map<string, Promise<Record<string, unknown>>>();
 
   private withCookie(args: Record<string, unknown> = {}): Record<string, unknown> {
     return this.cookie ? { ...args, cookie: this.cookie } : args;
@@ -73,6 +82,27 @@ export class NeteaseService {
         message: error instanceof Error ? error.message : "NetEase request failed",
       };
     }
+  }
+
+  private async cachedCall(name: string, args: Record<string, unknown> = {}, ttlMs = shortCacheTtlMs): Promise<Record<string, unknown>> {
+    const key = `${name}:${JSON.stringify(args)}`;
+    const now = Date.now();
+    const cached = this.responseCache.get(key);
+    if (cached && cached.expiresAt > now) return cached.value;
+    const existing = this.inflight.get(key);
+    if (existing) return existing;
+    const task = this.call(name, args)
+      .then((value) => {
+        if (Number(value.code || 200) !== -1) {
+          this.responseCache.set(key, { value, expiresAt: Date.now() + ttlMs });
+        }
+        return value;
+      })
+      .finally(() => {
+        this.inflight.delete(key);
+      });
+    this.inflight.set(key, task);
+    return task;
   }
 
   async qrKey(): Promise<Record<string, unknown>> {
@@ -107,20 +137,20 @@ export class NeteaseService {
   }
 
   async userPlaylist(uid: string): Promise<Record<string, unknown>[]> {
-    const body = await this.call("user_playlist", this.withCookie({ uid }));
+    const body = await this.cachedCall("user_playlist", this.withCookie({ uid }), profileCacheTtlMs);
     return Array.isArray(body.playlist) ? (body.playlist as Record<string, unknown>[]) : [];
   }
 
   async playlistDetail(id: string | number): Promise<Record<string, unknown>> {
-    return this.call("playlist_detail", this.withCookie({ id }));
+    return this.cachedCall("playlist_detail", this.withCookie({ id }), profileCacheTtlMs);
   }
 
   async userRecord(uid: string): Promise<Record<string, unknown>> {
-    return this.call("user_record", this.withCookie({ uid, type: 1 }));
+    return this.cachedCall("user_record", this.withCookie({ uid, type: 1 }), profileCacheTtlMs);
   }
 
   async recommendSongs(): Promise<Track[]> {
-    const body = await this.call("recommend_songs", this.withCookie());
+    const body = await this.cachedCall("recommend_songs", this.withCookie(), shortCacheTtlMs);
     const data = body.data;
     const songs =
       data && typeof data === "object" && !Array.isArray(data) && Array.isArray((data as Record<string, unknown>).dailySongs)
@@ -130,28 +160,28 @@ export class NeteaseService {
   }
 
   async personalFm(): Promise<Track[]> {
-    const body = await this.call("personal_fm", this.withCookie());
+    const body = await this.cachedCall("personal_fm", this.withCookie(), shortCacheTtlMs);
     const songs = Array.isArray(body.data) ? (body.data as Record<string, unknown>[]) : [];
     return songs.map((song) => this.normalizeTrack(song, "personal_fm")).filter((track) => track.id);
   }
 
   async similarSongs(songId: string): Promise<Track[]> {
-    const body = await this.call("simi_song", { id: songId });
+    const body = await this.cachedCall("simi_song", { id: songId }, shortCacheTtlMs);
     const songs = Array.isArray(body.songs) ? (body.songs as Record<string, unknown>[]) : [];
     return songs.map((song) => this.normalizeTrack(song, "similar")).filter((track) => track.id);
   }
 
   async likeList(uid: string): Promise<string[]> {
-    const body = await this.call("like_list", this.withCookie({ uid }));
+    const body = await this.cachedCall("like_list", this.withCookie({ uid }), profileCacheTtlMs);
     const ids = Array.isArray(body.ids) ? body.ids : [];
     return ids.map((id) => String(id));
   }
 
   async search(keywords: string, limit = 8): Promise<Track[]> {
-    const cloud = await this.call("cloudsearch", this.withCookie({ keywords, type: 1, limit }));
+    const cloud = await this.cachedCall("cloudsearch", this.withCookie({ keywords, type: 1, limit }), shortCacheTtlMs);
     let songs = extractSongs(cloud);
     if (!songs.length) {
-      const fallback = await this.call("search", { keywords, type: 1, limit });
+      const fallback = await this.cachedCall("search", { keywords, type: 1, limit }, shortCacheTtlMs);
       songs = extractSongs(fallback);
     }
     return songs.map((song) => this.normalizeTrack(song, "search")).filter((track) => track.id);

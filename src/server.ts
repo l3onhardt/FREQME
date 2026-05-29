@@ -187,7 +187,7 @@ async function handleRadioSocket(socket: WebSocket): Promise<void> {
   let trackIndex = 0;
   const playedTracks: Track[] = [];
   const loggedTrackIds = new Set<string>();
-  const queue = new PlaybackQueue(3);
+  const queue = new PlaybackQueue(1);
   const schedulerState = scheduler.newSessionState();
   const recentTurns: Array<Record<string, unknown>> = [];
   let prewarmTask: Promise<void> | null = null;
@@ -341,7 +341,12 @@ async function handleRadioSocket(socket: WebSocket): Promise<void> {
         settings.localTimeBlock = localTimeBlock(scene);
         profile = uid ? store.getProfile(uid) : null;
         if (!profile && uid) {
-          profile = await profileEngine.analyze(uid).catch(() => null);
+          void profileEngine
+            .analyze(uid)
+            .then((analyzed) => {
+              profile = analyzed;
+            })
+            .catch(() => undefined);
         }
         sessionId = uid ? store.createSession(uid) : null;
         const defaultIntro = djEngine.defaultIntro(scene);

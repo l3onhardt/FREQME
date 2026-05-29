@@ -1,6 +1,6 @@
 import type { DJDecision, MemoryPack, MusicTask } from "../types.js";
 import type { LLMRouter } from "../services/llmRouter.js";
-import { asStringList, compactText, extractJsonObject, normalizeMatchText } from "../utils/text.js";
+import { asStringList, compactText, extractJsonObject } from "../utils/text.js";
 
 const allowedActions = new Set<DJDecision["action"]>([
   "play_now",
@@ -74,8 +74,8 @@ Rules:
 - Fuzzy artists, bands, performers, composers, works, scenes, genres, corrections, refusals, and continuation requests must become structured music tasks.
 - A genre/style request is actionable by itself. R&B, jazz, hip-hop, city pop, shoegaze, Cantonese pop, or "quiet night music" should become scene_genre_direction, not a clarification.
 - Most requests should play or set a direction; ask only when context still cannot resolve the ambiguity.
-- For artist or style directions, search_goals must be concrete NetEase-friendly songs, preferably "artist title".
-- Do not put only buckets such as "R&B", "Electronic R&B", "late night playlist", "舞曲 R&B", or "深夜 R&B 歌单" in search_goals. If you cannot think of concrete songs from the profile and request, use ask_clarifying_question instead of pretending the bucket is playable.
+- Search goals are helpful but not mandatory. If the listener asks for a performer, composer, arranger, producer, style, scene, memory-based mood, or other abstract music direction, preserve that intent as structured entities and let the downstream search-planning agent infer concrete playable tracks.
+- Only ask a clarification when the musical intent itself is genuinely ambiguous, not just because you cannot name a specific song yet.
 - For negative feedback, capture immediate constraints without turning one skip into a permanent dislike.
 - The DJ response should be short, natural Chinese. Do not mention systems, agents, algorithms, prompts, JSON, search, or models.
 
@@ -85,7 +85,7 @@ Return only JSON:
   "understood_intent": "internal understanding",
   "music_task": {
     "type": "specific_track | artist_direction | artist_work_direction | scene_genre_direction | negative_feedback | continuation",
-    "primary_entities": [{"role": "artist|performer|composer|work|genre|scene|music_entity", "name": "canonical or inferred name"}],
+    "primary_entities": [{"role": "artist|performer|composer|arranger|producer|work|genre|scene|music_entity", "name": "canonical or inferred name"}],
     "work_hint": "",
     "style_hint": "",
     "negative_constraints": ["directions to avoid right now"],
@@ -106,9 +106,6 @@ Return only JSON:
     const musicTask = this.normalizeMusicTask(this.field(data, "music_task", "musicTask"));
     if (playableActions.has(action) && !this.isExecutable(musicTask)) {
       return this.safeQuestion(rawText, "The agent returned a playable action without an executable music task.");
-    }
-    if (playableActions.has(action) && this.requiresConcreteSearchGoals(musicTask) && !this.hasConcreteSearchGoal(musicTask)) {
-      return this.safeQuestion(rawText, "The agent returned an abstract direction without concrete artist-title search goals.");
     }
     return {
       action,
@@ -216,72 +213,6 @@ Return only JSON:
         task.styleHint.trim() ||
         task.negativeConstraints.length,
     );
-  }
-
-  private requiresConcreteSearchGoals(task: MusicTask): boolean {
-    return ["artist_direction", "artist_work_direction", "scene_genre_direction", "continuation", "negative_feedback"].includes(task.type);
-  }
-
-  private hasConcreteSearchGoal(task: MusicTask): boolean {
-    return task.searchGoals.some((goal) => this.looksConcreteSearchGoal(goal, task));
-  }
-
-  private looksConcreteSearchGoal(goal: string, task: MusicTask): boolean {
-    const text = compactText(goal);
-    if (!text || this.looksStyleBucket(text, task)) return false;
-    const ascii = text.match(/[A-Za-z0-9][A-Za-z0-9'.+&-]*/gu) || [];
-    const cjk = text.match(/[\u4e00-\u9fff]+/gu) || [];
-    if (ascii.length >= 2) return true;
-    if (cjk.length >= 2 && /\s/u.test(text)) return true;
-    return Boolean(ascii.length && cjk.length && /\s/u.test(text));
-  }
-
-  private looksStyleBucket(goal: string, task: MusicTask): boolean {
-    const normalized = normalizeMatchText(goal);
-    const styleValues = [...task.primaryEntities.map((entity) => entity.name), task.styleHint, task.workHint]
-      .map((value) => normalizeMatchText(value))
-      .filter(Boolean);
-    const tokens = goal.match(/[A-Za-z0-9][A-Za-z0-9'.+&-]*|[\u4e00-\u9fff]+/gu) || [];
-    const generic = new Set([
-      "r",
-      "b",
-      "rb",
-      "rnb",
-      "electronic",
-      "electronica",
-      "modern",
-      "fusion",
-      "dance",
-      "playlist",
-      "mix",
-      "song",
-      "songs",
-      "track",
-      "tracks",
-      "artist",
-      "artists",
-      "music",
-      "chill",
-      "mellow",
-      "night",
-      "late",
-      "lateNight",
-      "电子",
-      "电子融合",
-      "舞曲",
-      "深夜",
-      "半夜",
-      "氛围",
-      "舒缓",
-      "歌单",
-      "歌曲",
-      "音乐",
-    ].map(normalizeMatchText));
-    const contentTokens = tokens
-      .map((token) => normalizeMatchText(token))
-      .filter((token) => token && !generic.has(token) && !styleValues.some((style) => style.includes(token) || token.includes(style)));
-    const hasStyle = styleValues.some((value) => normalized.includes(value) || value.includes(normalized));
-    return hasStyle ? contentTokens.length < 2 : contentTokens.length === 0;
   }
 
   private promptContext(contextPack: MemoryPack): Record<string, unknown> {

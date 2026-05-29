@@ -84,6 +84,7 @@ export class QueueDirector {
         reason: args.requestText,
         payload: {
           requestText: args.requestText,
+          decision: this.decisionDiagnostic(decision),
           failureReason: verification.failureReason || "",
           usedQuery: verification.usedQuery || "",
           diagnostics: verification.diagnostics || {},
@@ -104,6 +105,18 @@ export class QueueDirector {
       text: note,
       understoodIntent: decision.understoodIntent,
       verificationNote: verification.verification.versionNote,
+    });
+    this.memoryManager.logPlaybackEvent("song_request_verified", {
+      uid: args.uid,
+      songId: verification.selectedSong.id,
+      reason: args.requestText,
+      payload: {
+        requestText: args.requestText,
+        selectedSong: verification.selectedSong,
+        usedQuery: verification.usedQuery || "",
+        decision: this.decisionDiagnostic(decision),
+        diagnostics: verification.diagnostics || {},
+      },
     });
     return {
       status: "queued",
@@ -129,6 +142,16 @@ export class QueueDirector {
   private safeDjText(text: string, fallback: string): string {
     const clean = String(text || "").trim();
     return clean ? clean.slice(0, 240) : fallback;
+  }
+
+  private decisionDiagnostic(decision: DJDecision): Record<string, unknown> {
+    return {
+      action: decision.action,
+      understoodIntent: decision.understoodIntent,
+      musicTask: decision.musicTask,
+      uncertainty: decision.uncertainty,
+      queuePolicy: decision.queuePolicy,
+    };
   }
 
   private recoveryText(decision: DJDecision): string {

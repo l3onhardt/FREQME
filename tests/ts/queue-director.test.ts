@@ -146,7 +146,10 @@ test("queue director records verification diagnostics when a playable direction 
 
   assert.equal(result.status, "needs_recovery");
   assert.equal(memory.playbackEvents[0]?.eventType, "song_request_not_found");
-  assert.deepEqual(memory.playbackEvents[0]?.options.payload, {
+  const payload = memory.playbackEvents[0]?.options.payload as Record<string, unknown>;
+  assert.equal(((payload.decision as Record<string, unknown>).musicTask as MusicTask).type, "scene_genre_direction");
+  delete payload.decision;
+  assert.deepEqual(payload, {
     requestText: "我要听5电的rnb",
     failureReason: "Search planner did not produce concrete song queries.",
     usedQuery: "",

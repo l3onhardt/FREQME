@@ -12,6 +12,9 @@ interface QueryPlan {
   generatedQueries: string[];
 }
 
+type QueryResultDiagnostic = NonNullable<NonNullable<SearchVerification["diagnostics"]>["queryResults"]>[number];
+type AudioAttemptDiagnostic = NonNullable<NonNullable<SearchVerification["diagnostics"]>["audioAttempts"]>[number];
+
 export class SearchVerifyAgent {
   constructor(
     private readonly llm: LLMRouter,
@@ -31,21 +34,36 @@ export class SearchVerifyAgent {
     if (this.requiresConcreteQueries(musicTask) && !queries.length && plan.rejectedQueries.length) {
       return this.notFound(musicTask, queries, "Search planner did not produce concrete song queries.", {
         rejectedQueries: plan.rejectedQueries,
+        generatedQueries: plan.generatedQueries,
       });
     }
     const candidates: Track[] = [];
+    const queryResults: QueryResultDiagnostic[] = [];
     for (const query of queries) {
       const found = await this.netease.search(query, 8).catch(() => []);
+      const results: QueryResultDiagnostic["results"] = [];
       for (const candidate of found.slice(0, 8)) {
-        if (!this.isBadCandidate(candidate, musicTask)) {
+        const rejectedReason = this.badCandidateReason(candidate, musicTask);
+        results.push({
+          id: candidate.id,
+          name: candidate.name,
+          artist: candidate.artist,
+          album: candidate.album,
+          accepted: !rejectedReason,
+          reason: rejectedReason,
+        });
+        if (!rejectedReason) {
           candidates.push({ ...candidate, source: query });
         }
       }
+      queryResults.push({ query, results });
     }
     if (!candidates.length) {
       return this.notFound(musicTask, queries, "No playable candidates were found.", {
         searchedQueries: queries,
         rejectedQueries: plan.rejectedQueries,
+        generatedQueries: plan.generatedQueries,
+        queryResults,
       });
     }
 
@@ -55,13 +73,26 @@ export class SearchVerifyAgent {
       return this.notFound(musicTask, queries, "No candidate passed verification.", {
         searchedQueries: queries,
         candidateIds: candidates.map((candidate) => candidate.id).filter(Boolean),
+        generatedQueries: plan.generatedQueries,
+        queryResults,
+        verifier: this.verifierDiagnostic(judgement),
       });
     }
 
     const attemptedSongIds: string[] = [];
+    const audioAttempts: AudioAttemptDiagnostic[] = [];
     for (const song of rankedSongs) {
       attemptedSongIds.push(song.id);
       const resolved = await this.audioResolver.resolveWithCandidates(song, uid);
+      audioAttempts.push({
+        songId: song.id,
+        name: song.name,
+        artist: song.artist,
+        sourceQuery: song.source,
+        ok: resolved.ok,
+        reason: resolved.reason,
+        resolvedSongId: resolved.songId,
+      });
       if (!resolved.ok) continue;
 
       const selectedSong = { ...song, id: resolved.songId || song.id };
@@ -78,6 +109,16 @@ export class SearchVerifyAgent {
         fallbackCandidates: [],
         recoveryOptions: [],
         usedQuery: song.source || queries[0] || "",
+        diagnostics: {
+          searchedQueries: queries,
+          rejectedQueries: plan.rejectedQueries,
+          generatedQueries: plan.generatedQueries,
+          candidateIds: candidates.map((candidate) => candidate.id).filter(Boolean),
+          attemptedSongIds,
+          queryResults,
+          verifier: this.verifierDiagnostic(judgement),
+          audioAttempts,
+        },
       };
     }
 
@@ -85,6 +126,10 @@ export class SearchVerifyAgent {
       searchedQueries: queries,
       candidateIds: candidates.map((candidate) => candidate.id).filter(Boolean),
       attemptedSongIds,
+      generatedQueries: plan.generatedQueries,
+      queryResults,
+      verifier: this.verifierDiagnostic(judgement),
+      audioAttempts,
     });
   }
 
@@ -114,6 +159,8 @@ Rules:
 - For scene, genre, mood, time, continuation, and artist/band directions, curate 4 to 8 concrete songs first.
 - Return queries shaped like "artist title" whenever possible.
 - Do not return only a bare artist, bare genre, playlist bucket, or the literal listener sentence.
+- If the task names a performer/composer/arranger/producer/music entity rather than a song, infer representative recordings or works and include useful aliases/transliterations in the queries.
+- For classical performers, pianist names, conductors, or composers, queries may be "performer composer work" or "performer work".
 - Avoid playlists, compilations, utility audio, study/sleep audio, KTV, backing tracks, and unrequested covers.
 - Keep performer/composer/work hints when the task asks for a performer or classical work.
 - Prefer songs that fit both the listener's profile and the new request. Use profile anchors as taste signals, not as the only songs to play.
@@ -149,9 +196,13 @@ Return only JSON:
       };
     }
     const concrete = merged.filter((query) => this.looksConcrete(query, musicTask));
+    const fallback = concrete.length ? [] : this.fallbackQueries(musicTask, goals, rawUserText, contextPack);
+    const fallbackQueries = fallback.filter((query) => !concrete.includes(query));
     return {
-      queries: concrete.slice(0, 6),
-      rejectedQueries: dedupe([...generatedRaw, ...goals]).filter((query) => !concrete.includes(query)),
+      queries: dedupe([...concrete, ...fallbackQueries]).slice(0, 6),
+      rejectedQueries: dedupe([...generatedRaw, ...goals]).filter(
+        (query) => !concrete.includes(query) && !fallbackQueries.includes(query),
+      ),
       generatedQueries: generated,
     };
   }
@@ -173,7 +224,7 @@ ${JSON.stringify(musicTask, null, 2)}
 Candidates:
 ${JSON.stringify(bounded, null, 2)}
 
-Reject playlists, utility audio, study/sleep audio, KTV/backing tracks, wrong artists, wrong performers, and unrequested covers.
+Use semantic matching, aliases, translations, and transliterations when judging performers/composers/works. Reject playlists, utility audio, study/sleep audio, KTV/backing tracks, wrong artists, wrong performers, and unrequested covers.
 
 Return only JSON:
 {"chosen_id": "candidate id or empty", "confidence": 0.0, "matched_entities": [], "version_note": "", "risk": "", "fallback_candidates": [], "recovery_options": []}`;
@@ -228,6 +279,7 @@ Return only JSON:
     if (
       !text ||
       this.looksSceneBucket(text) ||
+      this.looksDescriptiveSearchGoal(text) ||
       this.looksStyleBucket(text, task) ||
       this.looksBareEntity(text, task) ||
       this.looksCommandSentence(text)
@@ -245,6 +297,11 @@ Return only JSON:
     const normalized = normalizeMatchText(query);
     const values = [...task.primaryEntities.map((entity) => entity.name), task.styleHint, task.workHint].filter(Boolean);
     return values.some((value) => normalizeMatchText(value) === normalized);
+  }
+
+  private looksDescriptiveSearchGoal(query: string): boolean {
+    const normalized = normalizeMatchText(query);
+    return /(matching|similar|basedon|taste|summary|profile|vibe|mood|tracks|songs|playlist|recommendations)/iu.test(normalized);
   }
 
   private looksStyleBucket(query: string, task: MusicTask): boolean {
@@ -310,6 +367,10 @@ Return only JSON:
     return (bucket && scene && !specificAscii) || (scene && query.split(/\s+/u).length <= 3 && !specificAscii);
   }
 
+  private badCandidateReason(track: Track, task: MusicTask): string {
+    return this.isBadCandidate(track, task) ? "filtered_candidate" : "";
+  }
+
   private isBadCandidate(track: Track, task: MusicTask): boolean {
     const text = `${track.name} ${track.artist} ${track.album || ""} ${(track.aliases || []).join(" ")}`.toLowerCase();
     if (/(歌单|playlist|study|学习|自习|white noise|白噪音|sleep music|睡眠|助眠|sound effect|背景音乐|纯音乐盒)/iu.test(text)) {
@@ -372,11 +433,8 @@ Return only JSON:
     if (chosen) ranked.push(chosen);
     const local = this.locallyVerifiedSong(candidates, task);
     if (local) ranked.push(local);
-    ranked.push(...candidates);
-    return ranked
-      .filter((song) => this.candidateMatchesRequiredEntities(song, task))
-      .filter((song, index, list) => list.findIndex((item) => item.id === song.id) === index)
-      .slice(0, 12);
+    if (ranked.length) ranked.push(...candidates);
+    return ranked.filter((song, index, list) => list.findIndex((item) => item.id === song.id) === index).slice(0, 12);
   }
 
   private shouldPersonalizeWithPlanner(task: MusicTask, contextPack?: MemoryPack): boolean {
@@ -432,6 +490,84 @@ Return only JSON:
     return query && query !== compactText(rawUserText, 120) ? [query] : [];
   }
 
+  private fallbackQueries(task: MusicTask, goals: string[], rawUserText: string, contextPack?: MemoryPack): string[] {
+    return task.type === "scene_genre_direction"
+      ? this.sceneFallbackQueries(task, rawUserText, contextPack)
+      : this.entityFallbackQueries(task, goals, rawUserText);
+  }
+
+  private entityFallbackQueries(task: MusicTask, goals: string[], rawUserText: string): string[] {
+    if (!["artist_direction", "artist_work_direction"].includes(task.type)) return [];
+    const entities = task.primaryEntities
+      .filter((entity) => ["artist", "performer", "composer", "arranger", "producer", "music_entity"].includes(entity.role))
+      .map((entity) => entity.name);
+    const seeds = dedupe([...entities, ...goals]).filter((query) => !this.looksSceneBucket(query) && !this.looksCommandSentence(query));
+    const work = compactText(task.workHint, 80);
+    const style = compactText(task.styleHint, 80);
+    const raw = compactText(rawUserText, 120);
+    const queries: string[] = [];
+    for (const seed of seeds) {
+      if (work) queries.push(`${seed} ${work}`);
+      if (/piano|classical|chopin|beethoven|brahms|concerto|sonata|ballade|nocturne|古典|钢琴|肖邦|贝多芬|勃拉姆斯/u.test(`${seed} ${style} ${work}`)) {
+        queries.push(`${seed} Chopin`);
+        queries.push(`${seed} piano recordings`);
+      }
+      queries.push(seed);
+    }
+    return this.cleanQueries(queries, raw).filter((query) => query !== raw).slice(0, 6);
+  }
+
+  private sceneFallbackQueries(task: MusicTask, rawUserText: string, contextPack?: MemoryPack): string[] {
+    const text = normalizeMatchText(
+      `${rawUserText} ${task.styleHint} ${task.primaryEntities.map((entity) => entity.name).join(" ")}`,
+    );
+    const styleSeeds = this.styleSeedQueries(text);
+    return this.cleanQueries(styleSeeds, rawUserText)
+      .filter((query) => this.looksConcrete(query, task))
+      .slice(0, 6);
+  }
+
+  private profileAnchorQueries(contextPack: MemoryPack | undefined, task: MusicTask): string[] {
+    const digest = contextPack?.userProfileDigest || "";
+    const matches = [...digest.matchAll(/([A-Za-z][A-Za-z0-9'.+&-]*(?:\s+[A-Za-z][A-Za-z0-9'.+&-]*){0,2})\s+([A-Za-z][A-Za-z0-9'.+&-]*(?:\s+[A-Za-z][A-Za-z0-9'.+&-]*){0,4})/gu)];
+    const values = matches
+      .map((match) => compactText(`${match[1]} ${match[2]}`, 100))
+      .filter((query) => this.looksConcrete(query, task) && !this.looksStyleBucket(query, task));
+    return dedupe(values);
+  }
+
+  private styleSeedQueries(normalizedText: string): string[] {
+    if (normalizedText.includes("rnb") || normalizedText.includes("r&b")) {
+      return [
+        "SZA Snooze",
+        "Daniel Caesar Japanese Denim",
+        "Frank Ocean Pink + White",
+        "H.E.R. Focus",
+        "Kelela LMK",
+        "Brent Faiyaz Clouded",
+      ];
+    }
+    if (normalizedText.includes("jazz")) {
+      return ["Bill Evans Waltz for Debby", "Chet Baker I Fall In Love Too Easily", "Miles Davis Blue in Green"];
+    }
+    if (normalizedText.includes("citypop")) {
+      return ["Mariya Takeuchi Plastic Love", "Anri Last Summer Whisper", "Taeko Ohnuki 4:00 AM"];
+    }
+    if (normalizedText.includes("shoegaze")) {
+      return ["Slowdive Sugar for the Pill", "my bloody valentine When You Sleep", "Ride Vapour Trail"];
+    }
+    return [];
+  }
+
+  private verifierDiagnostic(judgement: Record<string, unknown>): NonNullable<SearchVerification["diagnostics"]>["verifier"] {
+    return {
+      chosenId: compactText(judgement.chosen_id || "", 80),
+      confidence: Number(judgement.confidence || 0),
+      matchedEntities: asStringList(judgement.matched_entities, 8),
+      risk: compactText(judgement.risk || "", 160),
+    };
+  }
+
   private notFound(
     task: MusicTask,
     queries: string[],
@@ -457,8 +593,12 @@ Return only JSON:
       diagnostics: {
         searchedQueries: diagnostics.searchedQueries || queries,
         rejectedQueries: diagnostics.rejectedQueries || [],
+        generatedQueries: diagnostics.generatedQueries || [],
         candidateIds: diagnostics.candidateIds || [],
         attemptedSongIds: diagnostics.attemptedSongIds || [],
+        queryResults: diagnostics.queryResults || [],
+        verifier: diagnostics.verifier,
+        audioAttempts: diagnostics.audioAttempts || [],
       },
     };
   }

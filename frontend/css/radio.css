@@ -47,8 +47,8 @@ body {
   color: var(--text);
   overflow: hidden;
   height: 100vh;
-  transition: filter 900ms ease, background 900ms ease;
-  filter: hue-rotate(var(--bg-hue)) saturate(calc(1 + var(--bg-warmth)));
+  transition: background 900ms ease;
+  text-rendering: optimizeLegibility;
 }
 
 button, input, textarea {
@@ -71,12 +71,13 @@ button, input, textarea {
   position: fixed;
   inset: auto;
   border-radius: 999px;
-  filter: blur(60px);
+  filter: blur(36px);
   opacity: 0.6;
   pointer-events: none;
   z-index: 0;
   animation: breathe 12s ease-in-out infinite;
   will-change: transform, opacity;
+  contain: paint;
 }
 .ambient-a {
   width: 24vw;
@@ -165,10 +166,11 @@ button, input, textarea {
     linear-gradient(135deg, rgba(255, 244, 236, 0.06), rgba(255, 255, 255, 0));
   border: 1px solid var(--border);
   box-shadow: var(--shadow), 0 0 calc(24px * var(--breath-glow)) rgba(242, 157, 109, 0.12);
-  backdrop-filter: blur(18px);
-  -webkit-backdrop-filter: blur(18px);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
   transform: translateZ(0);
-  will-change: box-shadow, background, filter;
+  will-change: transform, opacity;
+  contain: paint;
 }
 .glass-panel::before {
   content: "";
@@ -326,8 +328,8 @@ button, input, textarea {
   line-height: 1.55;
   cursor: pointer;
   overflow-wrap: anywhere;
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
 }
 .choice-card::after {
   content: "";
@@ -436,8 +438,9 @@ button, input, textarea {
     radial-gradient(circle at 82% 18%, rgba(232, 184, 127, 0.1), transparent 24%),
     linear-gradient(180deg, #221519 0%, #120c0e 70%, #090708 100%);
   z-index: 0;
-  transition: background 900ms linear, filter 900ms ease;
-  filter: hue-rotate(var(--bg-hue)) saturate(calc(1 + var(--bg-warmth)));
+  transition: background 900ms linear;
+  transform: translateZ(0);
+  contain: paint;
 }
 .player-overlay {
   position: relative;
@@ -455,6 +458,7 @@ button, input, textarea {
   gap: 22px;
   position: relative;
   overflow: hidden;
+  contain: layout paint;
 }
 .player-card::after {
   content: "";
@@ -462,7 +466,7 @@ button, input, textarea {
   inset: auto -8% -18% -8%;
   height: 38%;
   background: radial-gradient(circle at center, rgba(242, 157, 109, 0.1), transparent 68%);
-  filter: blur(26px);
+  filter: blur(16px);
   pointer-events: none;
   animation: breathe 14s ease-in-out infinite;
   will-change: transform, opacity;
@@ -501,13 +505,14 @@ button, input, textarea {
   width: min(100%, 520px);
   height: 54px;
   position: relative;
+  contain: layout paint;
 }
 .spectrum::before {
   content: "";
   position: absolute;
   inset: 20% 8% 10% 8%;
   background: radial-gradient(circle at center, rgba(242, 157, 109, 0.16), transparent 68%);
-  filter: blur(18px);
+  filter: blur(10px);
   opacity: 0.7;
   pointer-events: none;
 }
@@ -523,12 +528,9 @@ button, input, textarea {
   transform-origin: bottom;
   transform: scaleY(var(--bar-scale, 0.2));
   opacity: var(--bar-opacity, 0.34);
-  box-shadow:
-    0 0 12px rgba(242, 157, 109, 0.16),
-    0 0 26px rgba(242, 157, 109, 0.08);
-  transition: transform 40ms linear, opacity 40ms linear, box-shadow 120ms linear, filter 120ms linear;
+  box-shadow: 0 0 12px rgba(242, 157, 109, 0.16);
+  transition: transform 160ms linear, opacity 160ms linear;
   will-change: transform, opacity;
-  filter: saturate(1.08);
 }
 .spectrum span:nth-child(odd) { background: linear-gradient(180deg, rgba(255, 246, 239, 0.12), rgba(232, 184, 127, 0.9)); }
 .spectrum span:nth-child(3n) { background: linear-gradient(180deg, rgba(255, 246, 239, 0.12), rgba(218, 121, 98, 0.92)); }
@@ -557,6 +559,7 @@ button, input, textarea {
   overflow: hidden;
   border: 1px solid rgba(255, 227, 208, 0.1);
   box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.24), 0 0 0 1px rgba(255, 255, 255, 0.02);
+  contain: layout paint;
 }
 .progress-track::before {
   content: "";
@@ -584,8 +587,8 @@ button, input, textarea {
   border-radius: inherit;
   background:
     linear-gradient(90deg, rgba(255, 244, 236, 0.14), rgba(242, 157, 109, 0.55) 20%, rgba(242, 157, 109, 0.96) 70%, rgba(255, 210, 170, 1) 100%);
-  box-shadow: 0 0 18px rgba(242, 157, 109, 0.34), 0 0 46px rgba(242, 157, 109, 0.18);
-  transition: width 45ms linear;
+  box-shadow: 0 0 14px rgba(242, 157, 109, 0.24);
+  transition: width 500ms linear;
   position: relative;
 }
 .progress-fill::before {
@@ -605,7 +608,7 @@ button, input, textarea {
   transform: translateY(-50%);
   border-radius: 50%;
   background: radial-gradient(circle, rgba(255, 255, 255, 1) 0%, rgba(255, 248, 242, 0.92) 22%, rgba(242, 157, 109, 1) 55%, rgba(242, 157, 109, 0) 75%);
-  box-shadow: 0 0 24px rgba(255, 212, 170, 1), 0 0 56px rgba(242, 157, 109, 0.5);
+  box-shadow: 0 0 18px rgba(255, 212, 170, 0.72);
 }
 .track-name {
   font-size: clamp(28px, 5vw, 54px);
@@ -734,7 +737,7 @@ button, input, textarea {
   background: rgba(242, 157, 109, 0.9);
   animation: float 7s ease-in-out infinite;
   pointer-events: none;
-  filter: blur(0.2px);
+  will-change: transform, opacity;
 }
 
 @media (max-width: 900px) {

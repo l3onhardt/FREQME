@@ -17,6 +17,10 @@ let mainVolumeFadeTimer = null;
 let breathTimer = null;
 let breathPhase = 0;
 let breathLevel = 0;
+let visualActivity = 'idle';
+let visualStressScore = 0;
+let lastBreathTickAt = 0;
+let lastAmbientTick = 0;
 let geoContextPromise = null;
 let latestGeoContext = { permission: 'unavailable' };
 let audioContext = null;
@@ -30,6 +34,13 @@ const DUCK_FADE_MS = 700;
 const RESTORE_FADE_MS = 1000;
 const VOLUME_RETARGET_FADE_MS = 300;
 const VOLUME_FADE_STEP_MS = 50;
+const ENABLE_AUDIO_ANALYSER = true;
+const BREATH_FRAME_MS = 120;
+const LOADING_BREATH_FRAME_MS = 180;
+const IDLE_BREATH_FRAME_MS = 260;
+const HIDDEN_BREATH_FRAME_MS = 3000;
+const AMBIENT_FRAME_MS = 1600;
+const PROGRESS_FRAME_MS = 1000;
 const LOCAL_DJ_GREETING = '晚上好，这里是今晚的私人电台。我先把第一首歌轻轻放进来，你不用急，跟着这一点光慢慢听。';
 
 const VOICE_CONFIG = {
@@ -70,14 +81,14 @@ audioTTS.volume = 0.9;
 function createParticles() {
   if (particlesCreated) return;
   const bg = document.getElementById('player-bg');
-  for (let i = 0; i < 16; i++) {
+  for (let i = 0; i < 10; i++) {
     const p = document.createElement('div');
     p.className = 'particle';
     p.style.left = Math.random() * 100 + '%';
     p.style.top = Math.random() * 100 + '%';
     p.style.animationDelay = Math.random() * 6 + 's';
-    p.style.animationDuration = (4 + Math.random() * 8) + 's';
-    p.style.opacity = (0.06 + Math.random() * 0.16);
+    p.style.animationDuration = (8 + Math.random() * 10) + 's';
+    p.style.opacity = (0.05 + Math.random() * 0.12);
     bg.appendChild(p);
   }
   particlesCreated = true;
@@ -85,6 +96,10 @@ function createParticles() {
 
 
 async function connectAudioAnalyser() {
+  if (!ENABLE_AUDIO_ANALYSER) {
+    analyserActive = false;
+    return false;
+  }
   const runtimeWindow = typeof window !== 'undefined' ? window : null;
   const AC = runtimeWindow?.AudioContext || runtimeWindow?.webkitAudioContext;
   if (!AC) return false;
@@ -92,7 +107,8 @@ async function connectAudioAnalyser() {
     if (!audioContext) {
       audioContext = new AC();
       analyserNode = audioContext.createAnalyser();
-      analyserNode.fftSize = 256;
+      analyserNode.fftSize = 128;
+      analyserNode.smoothingTimeConstant = 0.78;
       analyserData = new Uint8Array(analyserNode.frequencyBinCount);
     }
     if (audioContext.state === 'suspended') {
@@ -115,6 +131,7 @@ function setAmbientState(level, phase = 'night') {
   const clamped = Math.max(0, Math.min(1, level));
   const root = document.documentElement;
   if (!root?.style?.setProperty) return;
+  const visualLevel = Math.min(clamped, 0.72);
   const presets = {
     morning: { hue: 6, warmth: 0.08, halo: 'rgba(255, 196, 145, 0.12)', halo2: 'rgba(255, 230, 193, 0.06)' },
     afternoon: { hue: 14, warmth: 0.1, halo: 'rgba(242, 157, 109, 0.11)', halo2: 'rgba(232, 184, 127, 0.07)' },
@@ -123,16 +140,23 @@ function setAmbientState(level, phase = 'night') {
     late: { hue: 34, warmth: 0.24, halo: 'rgba(128, 89, 132, 0.12)', halo2: 'rgba(242, 157, 109, 0.06)' },
   };
   const preset = presets[phase] || presets.night;
-  root.style.setProperty('--ambient-alpha', String(0.08 + (clamped * 0.12)));
-  root.style.setProperty('--bg-hue', `${preset.hue + (clamped * 4)}deg`);
-  root.style.setProperty('--bg-warmth', String(preset.warmth + (clamped * 0.1)));
-  root.style.setProperty('--pulse-alpha', String(0.08 + (clamped * 0.12)));
-  root.style.setProperty('--breath-glow', String(0.12 + (clamped * 0.12)));
-  root.style.setProperty('--breath-scale', String(1 + (clamped * 0.008)));
+  root.style.setProperty('--ambient-alpha', String(0.08 + (visualLevel * 0.1)));
+  root.style.setProperty('--bg-hue', `${preset.hue + (visualLevel * 3)}deg`);
+  root.style.setProperty('--bg-warmth', String(preset.warmth + (visualLevel * 0.08)));
+  root.style.setProperty('--pulse-alpha', String(0.08 + (visualLevel * 0.1)));
+  root.style.setProperty('--breath-glow', String(0.1 + (visualLevel * 0.1)));
+  root.style.setProperty('--breath-scale', String(1 + (visualLevel * 0.006)));
   root.style.setProperty('--time-halo', preset.halo);
   root.style.setProperty('--time-halo-2', preset.halo2);
-  root.style.setProperty('--surface-tint', clamped > 0.5 ? 'rgba(255, 255, 255, 0.045)' : 'rgba(255, 255, 255, 0.03)');
-  root.style.setProperty('--progress-glow', String(0.2 + (clamped * 0.6)));
+  root.style.setProperty('--surface-tint', visualLevel > 0.5 ? 'rgba(255, 255, 255, 0.045)' : 'rgba(255, 255, 255, 0.03)');
+  root.style.setProperty('--progress-glow', String(0.16 + (visualLevel * 0.3)));
+}
+
+function setAmbientStateThrottled(level, phase = currentDayPhase()) {
+  const now = Date.now();
+  if (now - lastAmbientTick < AMBIENT_FRAME_MS) return;
+  lastAmbientTick = now;
+  setAmbientState(level, phase);
 }
 
 function updateSpectrum(energy = 0, speaking = false) {
@@ -151,11 +175,8 @@ function updateSpectrum(energy = 0, speaking = false) {
     const movement = speaking ? (Math.abs(beat) * 0.08 + flutter * 0.06 + kick * 0.05) : (Math.abs(beat) * 0.36 + flutter * 0.3 + kick * 0.16);
     const scale = Math.max(0.08, Math.min(1.9, 0.1 + (centerWeight * (speaking ? 0.34 : 0.62)) + energyLift + movement + (index % 4) * 0.018));
     const opacity = Math.max(0.12, Math.min(1, 0.14 + (centerWeight * 0.46) + e * (speaking ? 0.4 : 0.88) + movement * 0.38));
-    const glow = Math.max(0.12, Math.min(1, 0.1 + e * 0.9 + centerWeight * 0.28));
     bar.style.setProperty('--bar-scale', scale.toFixed(3));
     bar.style.setProperty('--bar-opacity', opacity.toFixed(3));
-    bar.style.boxShadow = `0 0 ${Math.round(10 + glow * 30)}px rgba(242, 157, 109, ${Math.min(0.6, 0.08 + glow * 0.28)})`;
-    bar.style.filter = `saturate(${1 + glow * 0.2}) brightness(${1 + glow * 0.08})`;
   });
 }
 
@@ -173,14 +194,32 @@ function currentDayPhase() {
   return 'late';
 }
 
+function currentVisualFrameMs() {
+  if (visualStressScore >= 5) return IDLE_BREATH_FRAME_MS;
+  if (visualStressScore >= 3) return LOADING_BREATH_FRAME_MS;
+  if (visualActivity === 'playing' || visualActivity === 'speaking') return BREATH_FRAME_MS;
+  if (visualActivity === 'loading') return LOADING_BREATH_FRAME_MS;
+  return IDLE_BREATH_FRAME_MS;
+}
+
 function startBreathLoop() {
   if (breathTimer) return;
-  const runtimeWindow = typeof window !== 'undefined' ? window : null;
-  if (!runtimeWindow?.requestAnimationFrame) {
-    setAmbientState(breathLevel || 0.18, currentDayPhase());
-    return;
-  }
   const tick = () => {
+    if (document.hidden) {
+      breathTimer = setTimeout(tick, HIDDEN_BREATH_FRAME_MS);
+      return;
+    }
+    const now = Date.now();
+    if (lastBreathTickAt) {
+      const drift = now - lastBreathTickAt;
+      const expected = currentVisualFrameMs();
+      if (drift > expected * 2.4) {
+        visualStressScore = Math.min(8, visualStressScore + 1);
+      } else {
+        visualStressScore = Math.max(0, visualStressScore - 0.25);
+      }
+    }
+    lastBreathTickAt = now;
     breathPhase += 1;
 
     if (analyserActive && analyserNode && analyserData) {
@@ -202,33 +241,27 @@ function startBreathLoop() {
       const rawEnergy = (rms * 2.6) + (peak * 0.5) + ((energyBands.low / len) * 0.8) + ((energyBands.mid / len) * 0.6) + ((energyBands.high / len) * 0.9);
       const energy = Math.min(1, rawEnergy * 0.95 + 0.12);
       breathLevel = breathLevel + ((energy - breathLevel) * 0.18);
-      setAmbientState(breathLevel, currentDayPhase());
+      setAmbientStateThrottled(breathLevel);
       updateSpectrum(Math.min(1, energy + (energyBands.low / len) * 0.4 + (energyBands.high / len) * 0.5), false);
     } else {
       const ambient = 0.18 + (Math.sin(breathPhase / 90) * 0.03);
       breathLevel = breathLevel + ((ambient - breathLevel) * 0.05);
-      setAmbientState(breathLevel, currentDayPhase());
+      setAmbientStateThrottled(breathLevel);
       updateSpectrum(breathLevel * 0.22, false);
     }
 
-    breathTimer = runtimeWindow.requestAnimationFrame(tick);
+    breathTimer = setTimeout(tick, currentVisualFrameMs());
   };
-  breathTimer = runtimeWindow.requestAnimationFrame(tick);
+  breathTimer = setTimeout(tick, 0);
 }
 
 function stopBreathLoop() {
   if (breathTimer) {
-    const runtimeWindow = typeof window !== 'undefined' ? window : null;
-    if (runtimeWindow?.cancelAnimationFrame) {
-      runtimeWindow.cancelAnimationFrame(breathTimer);
-    }
+    clearTimeout(breathTimer);
     breathTimer = null;
   }
   if (progressTimer) {
-    const runtimeWindow = typeof window !== 'undefined' ? window : null;
-    if (runtimeWindow?.cancelAnimationFrame) {
-      runtimeWindow.cancelAnimationFrame(progressTimer);
-    }
+    clearTimeout(progressTimer);
     progressTimer = null;
   }
 }
@@ -421,6 +454,7 @@ function updateBreathState(kind, active) {
     loading: 0.38,
   };
   if (active) {
+    visualActivity = kind || 'idle';
     setBreathLevel(map[kind] ?? 0.15);
   }
 }
@@ -439,13 +473,9 @@ function updateProgressUI() {
   if (progressFill) progressFill.style.width = `${percent}%`;
   if (progressFill?.style?.setProperty) {
     progressFill.style.setProperty('--progress-percent', `${percent}%`);
-    progressFill.style.setProperty('--progress-shimmer', `${0.25 + (percent / 100) * 0.55}`);
   }
   if (progressTrack) {
     progressTrack.setAttribute('aria-valuenow', String(Math.round(percent)));
-    if (progressTrack.style?.setProperty) {
-      progressTrack.style.setProperty('--progress-glow', `${0.2 + (percent / 100) * 0.75}`);
-    }
   }
   if (progressCurrent) progressCurrent.textContent = formatTime(current);
   if (progressTotal) progressTotal.textContent = formatTime(duration);
@@ -453,16 +483,15 @@ function updateProgressUI() {
 
 function startProgressLoop() {
   if (progressTimer) return;
-  const runtimeWindow = typeof window !== 'undefined' ? window : null;
-  if (!runtimeWindow?.requestAnimationFrame) {
-    updateProgressUI();
-    return;
-  }
   const tick = () => {
+    if (document.hidden) {
+      progressTimer = setTimeout(tick, PROGRESS_FRAME_MS * 2);
+      return;
+    }
     updateProgressUI();
-    progressTimer = runtimeWindow.requestAnimationFrame(tick);
+    progressTimer = setTimeout(tick, PROGRESS_FRAME_MS);
   };
-  progressTimer = runtimeWindow.requestAnimationFrame(tick);
+  progressTimer = setTimeout(tick, 0);
 }
 
 // ---- QR Login ----
