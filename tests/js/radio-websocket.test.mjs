@@ -74,9 +74,15 @@ function createElement(id = '') {
     },
     play() {
       this.paused = false;
+      this.ended = false;
       return Promise.resolve();
     },
     removeAttribute(attr) {
+      if (attr === 'src') {
+        this.src = '';
+        this.ended = true;
+        return;
+      }
       delete this[attr];
     },
     activeClasses: new Set(),
@@ -587,6 +593,47 @@ test('volume changes during DJ speech retarget the duck and restore smoothly', a
   assertAlmostEqual(audioMain.volume, 0.3125);
   advanceTimersBy(500);
   assertAlmostEqual(audioMain.volume, 0.5);
+});
+
+test('play button resumes both DJ speech and ducked music after pausing during TTS', async () => {
+  const { context, elements, advanceTimersBy } = loadRadio({
+    fetchImpl: async (url) => {
+      if (url === '/api/radio/tts/speechhash') {
+        return { ok: true, blob: async () => ({}) };
+      }
+      return { ok: true, json: async () => ({}) };
+    },
+  });
+  const audioMain = elements.get('audio-main');
+  const audioTTS = elements.get('audio-tts');
+  const playButton = elements.get('btn-play');
+
+  await context.handleMessage({
+    type: 'play_track',
+    track: { name: 'First', artist: 'Artist' },
+    url: '/api/radio/audio/1',
+  });
+  await context.handleMessage({
+    type: 'dj_message',
+    text: '这一段我轻声说完，歌会在下面垫着。',
+    tts_ready: true,
+    tts_hash: 'speechhash',
+  });
+  await flushAsyncWork();
+  advanceTimersBy(700);
+
+  assert.equal(audioMain.paused, false);
+  assert.equal(audioTTS.paused, false);
+  assertAlmostEqual(audioMain.volume, 0.2);
+
+  playButton.click();
+  assert.equal(audioMain.paused, true);
+  assert.equal(audioTTS.paused, true);
+
+  playButton.click();
+  assert.equal(audioMain.paused, false);
+  assert.equal(audioTTS.paused, false);
+  assert.equal(elements.get('btn-play').textContent, '⏸');
 });
 
 test('intro message updates DJ text after playback has started', async () => {

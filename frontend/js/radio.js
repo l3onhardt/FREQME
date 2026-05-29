@@ -507,6 +507,22 @@ function resetIntroGate() {
   updateSpectrum(0.08, false);
 }
 
+function resumePlayback() {
+  const ttsActive = Boolean(audioTTS.src && !audioTTS.ended);
+  if (ttsActive) {
+    audioMain.play().catch(() => {});
+    audioTTS.play().catch(() => {});
+    startBreathLoop();
+    updateBreathState('speaking', true);
+    updateSpectrum(0.25, true);
+    return;
+  }
+  audioMain.play().catch(() => {});
+  startBreathLoop();
+  updateBreathState('playing', true);
+  updateSpectrum(0.5, false);
+}
+
 function updateBreathState(kind, active) {
   const map = {
     idle: 0.15,
@@ -1189,17 +1205,7 @@ document.getElementById('btn-play').addEventListener('click', () => {
     setBreathLevel(0.15);
     updateSpectrum(0.1, false);
   } else {
-    if (audioTTS.src && !audioTTS.ended) {
-      audioTTS.play().catch(() => {});
-      startBreathLoop();
-      updateBreathState('speaking', true);
-      updateSpectrum(0.25, true);
-    } else {
-      audioMain.play().catch(() => {});
-      startBreathLoop();
-      updateBreathState('playing', true);
-      updateSpectrum(0.5, false);
-    }
+    resumePlayback();
     isPlaying = true;
     saveRadioState(true);
     document.getElementById('btn-play').textContent = '⏸';
