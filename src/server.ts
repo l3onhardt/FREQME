@@ -189,7 +189,7 @@ async function proxyAudio(url: string, rangeHeader: string | undefined, res: exp
     if (rangeHeader) headers.range = rangeHeader;
     const upstream = await fetch(url, { headers, redirect: "follow" });
     if (!upstream.ok || !upstream.body) {
-      store.logPlaybackEvent("playback_failed", { songId, reason: `upstream ${upstream.status}` });
+      audioResolver.markFailed(songId, null, `upstream ${upstream.status}`);
       res.status(502).json({ error: `upstream ${upstream.status}` });
       return;
     }

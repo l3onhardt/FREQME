@@ -200,7 +200,7 @@ export class MemoryStore {
       ? this.database.db
           .prepare(`
             SELECT 1 FROM playback_event
-            WHERE uid=? AND song_id=? AND event_type IN ('url_failed', 'playback_failed')
+            WHERE (uid=? OR uid IS NULL) AND song_id=? AND event_type IN ('url_failed', 'playback_failed')
             ORDER BY created_at DESC LIMIT ?
           `)
           .get(uid, songId, limit)
@@ -228,11 +228,11 @@ export class MemoryStore {
       .run(songId, url, source, contentType);
   }
 
-  getAudioResolution(songId: string): { songId: string; url: string; source: string; contentType: string } | null {
+  getAudioResolution(songId: string): { songId: string; url: string; source: string; contentType: string; updatedAt: string } | null {
     const row = this.database.db
-      .prepare("SELECT song_id, url, source, content_type FROM audio_resolution_cache WHERE song_id=?")
+      .prepare("SELECT song_id, url, source, content_type, updated_at FROM audio_resolution_cache WHERE song_id=?")
       .get(songId) as
-      | { song_id: string; url: string; source: string; content_type?: string }
+      | { song_id: string; url: string; source: string; content_type?: string; updated_at?: string }
       | undefined;
     return row
       ? {
@@ -240,8 +240,13 @@ export class MemoryStore {
           url: row.url,
           source: row.source,
           contentType: row.content_type || "",
+          updatedAt: row.updated_at || "",
         }
       : null;
+  }
+
+  deleteAudioResolution(songId: string): void {
+    this.database.db.prepare("DELETE FROM audio_resolution_cache WHERE song_id=?").run(songId);
   }
 
   cacheTts(hash: string, audioPath: string): void {

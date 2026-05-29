@@ -107,11 +107,12 @@ Return only JSON:
     if (playableActions.has(action) && !this.isExecutable(musicTask)) {
       return this.safeQuestion(rawText, "The agent returned a playable action without an executable music task.");
     }
+    const queuePolicy = this.strengthenQueuePolicy(this.normalizeQueuePolicy(this.field(data, "queue_policy", "queuePolicy"), action), action, musicTask);
     return {
       action,
       understoodIntent: compactText(this.field(data, "understood_intent", "understoodIntent") || "", 300),
       musicTask,
-      queuePolicy: this.normalizeQueuePolicy(this.field(data, "queue_policy", "queuePolicy"), action),
+      queuePolicy,
       uncertainty: this.normalizeUncertainty(data.uncertainty, action),
       djResponse: this.normalizeDjResponse(this.field(data, "dj_response", "djResponse")),
       memoryUpdate: this.normalizeMemoryUpdate(this.field(data, "memory_update", "memoryUpdate")),
@@ -175,6 +176,24 @@ Return only JSON:
       continueDirection: typeof continueDirection === "boolean" ? continueDirection : action !== "play_now",
       avoidRepetition: typeof avoidRepetition === "boolean" ? avoidRepetition : true,
     };
+  }
+
+  private strengthenQueuePolicy(
+    policy: DJDecision["queuePolicy"],
+    action: DJDecision["action"],
+    task: MusicTask,
+  ): DJDecision["queuePolicy"] {
+    if (
+      ["set_direction_and_play", "revise_mode_and_play", "continue_current_mode", "negative_feedback"].includes(action) &&
+      ["artist_direction", "artist_work_direction", "scene_genre_direction", "continuation", "negative_feedback"].includes(task.type)
+    ) {
+      return {
+        ...policy,
+        durationTracks: Math.max(policy.durationTracks, 4),
+        continueDirection: true,
+      };
+    }
+    return policy;
   }
 
   private normalizeUncertainty(value: unknown, action: DJDecision["action"]): DJDecision["uncertainty"] {

@@ -138,7 +138,9 @@ export class SearchVerifyAgent {
   }
 
   private async queryPlan(musicTask: MusicTask, rawUserText = "", contextPack?: MemoryPack): Promise<QueryPlan> {
-    const goals = this.cleanQueries(musicTask.searchGoals, rawUserText);
+    const goals = this.cleanQueries(musicTask.searchGoals, rawUserText).filter(
+      (query) => !this.violatesNegativeConstraints(query, musicTask),
+    );
     const requiresConcrete = this.requiresConcreteQueries(musicTask);
     const fastQueries = this.fastConcreteQueries(musicTask, goals);
     if (fastQueries.length) return { queries: fastQueries, rejectedQueries: [], generatedQueries: [] };
@@ -184,7 +186,9 @@ Return only JSON:
       })
       .then((text) => this.plannedQueryValues(extractJsonObject(text)))
       .catch(() => []);
-    const generated = this.cleanQueries(generatedRaw, rawUserText);
+    const generated = this.cleanQueries(generatedRaw, rawUserText).filter(
+      (query) => !this.violatesNegativeConstraints(query, musicTask),
+    );
 
     const merged = dedupe([...generated, ...goals]);
     if (!requiresConcrete) {
@@ -195,9 +199,13 @@ Return only JSON:
         generatedQueries: generated,
       };
     }
-    const concrete = merged.filter((query) => this.looksConcrete(query, musicTask));
+    const concrete = merged.filter(
+      (query) => this.looksConcrete(query, musicTask) && !this.violatesNegativeConstraints(query, musicTask),
+    );
     const fallback = concrete.length ? [] : this.fallbackQueries(musicTask, goals, rawUserText, contextPack);
-    const fallbackQueries = fallback.filter((query) => !concrete.includes(query));
+    const fallbackQueries = fallback.filter(
+      (query) => !concrete.includes(query) && !this.violatesNegativeConstraints(query, musicTask),
+    );
     return {
       queries: dedupe([...concrete, ...fallbackQueries]).slice(0, 6),
       rejectedQueries: dedupe([...generatedRaw, ...goals]).filter(
@@ -301,7 +309,7 @@ Return only JSON:
 
   private looksDescriptiveSearchGoal(query: string): boolean {
     const normalized = normalizeMatchText(query);
-    return /(matching|similar|basedon|taste|summary|profile|vibe|mood|tracks|songs|playlist|recommendations)/iu.test(normalized);
+    return /(matching|similar|basedon|taste|summary|profile|vibe|mood|music|tracks|songs|playlist|recommendations)/iu.test(normalized);
   }
 
   private looksStyleBucket(query: string, task: MusicTask): boolean {
@@ -368,6 +376,9 @@ Return only JSON:
   }
 
   private badCandidateReason(track: Track, task: MusicTask): string {
+    if (!this.candidateMatchesRequiredEntities(track, task)) return "required_entity_mismatch";
+    const negativeReason = this.negativeCandidateReason(track, task);
+    if (negativeReason) return negativeReason;
     return this.isBadCandidate(track, task) ? "filtered_candidate" : "";
   }
 
@@ -428,6 +439,7 @@ Return only JSON:
   }
 
   private rankedSongs(candidates: Track[], judgement: Record<string, unknown>, task: MusicTask): Track[] {
+    if (this.isExplicitVerifierRejection(judgement)) return [];
     const ranked: Track[] = [];
     const chosen = this.chosenSong(candidates, judgement);
     if (chosen) ranked.push(chosen);
@@ -518,12 +530,18 @@ Return only JSON:
   }
 
   private sceneFallbackQueries(task: MusicTask, rawUserText: string, contextPack?: MemoryPack): string[] {
-    const text = normalizeMatchText(
-      `${rawUserText} ${task.styleHint} ${task.primaryEntities.map((entity) => entity.name).join(" ")}`,
-    );
-    const styleSeeds = this.styleSeedQueries(text);
+    const positiveParts = [
+      task.styleHint,
+      task.workHint,
+      ...task.primaryEntities.map((entity) => entity.name),
+      ...task.searchGoals,
+    ];
+    if (!task.negativeConstraints.length) positiveParts.push(rawUserText);
+    const text = positiveParts.join(" ");
+    const styleSeeds = this.styleSeedQueries(text, task);
     return this.cleanQueries(styleSeeds, rawUserText)
       .filter((query) => this.looksConcrete(query, task))
+      .filter((query) => !this.violatesNegativeConstraints(query, task))
       .slice(0, 6);
   }
 
@@ -536,8 +554,11 @@ Return only JSON:
     return dedupe(values);
   }
 
-  private styleSeedQueries(normalizedText: string): string[] {
-    if (normalizedText.includes("rnb") || normalizedText.includes("r&b")) {
+  private styleSeedQueries(normalizedText: string, task: MusicTask): string[] {
+    const normalized = normalizeMatchText(normalizedText);
+    const blocked = this.normalizedNegativeText(task);
+    const blocksRnb = blocked.includes("rnb") || blocked.includes("rb");
+    if (!blocksRnb && this.hasRnbMarker(normalizedText)) {
       return [
         "SZA Snooze",
         "Daniel Caesar Japanese Denim",
@@ -547,16 +568,101 @@ Return only JSON:
         "Brent Faiyaz Clouded",
       ];
     }
-    if (normalizedText.includes("jazz")) {
+    if (normalized.includes("futurebass") || normalized.includes("melodicfuturebass")) {
+      return [
+        "Seven Lions Rush Over Me",
+        "ILLENIUM Good Things Fall Apart",
+        "San Holo Light",
+        "Flume Never Be Like You",
+        "Porter Robinson Shelter",
+        "Said The Sky All I Got",
+      ];
+    }
+    if (
+      normalized.includes("organichouse") ||
+      normalized.includes("chillout") ||
+      normalized.includes("ambient") ||
+      normalized.includes("舒缓") ||
+      normalized.includes("舒服") ||
+      normalized.includes("放松")
+    ) {
+      return [
+        "Ben Bohmer Beyond Beliefs",
+        "Nora En Pure Come With Me",
+        "Lane 8 Atlas",
+        "Bonobo Kerala",
+        "Tycho Awake",
+        "Kiasmos Looped",
+      ];
+    }
+    if (normalized.includes("jazz")) {
       return ["Bill Evans Waltz for Debby", "Chet Baker I Fall In Love Too Easily", "Miles Davis Blue in Green"];
     }
-    if (normalizedText.includes("citypop")) {
+    if (normalized.includes("citypop")) {
       return ["Mariya Takeuchi Plastic Love", "Anri Last Summer Whisper", "Taeko Ohnuki 4:00 AM"];
     }
-    if (normalizedText.includes("shoegaze")) {
+    if (normalized.includes("shoegaze")) {
       return ["Slowdive Sugar for the Pill", "my bloody valentine When You Sleep", "Ride Vapour Trail"];
     }
     return [];
+  }
+
+  private hasRnbMarker(text: string): boolean {
+    return /\br\s*&?\s*b\b|\brnb\b/iu.test(text);
+  }
+
+  private isExplicitVerifierRejection(judgement: Record<string, unknown>): boolean {
+    if (!("chosen_id" in judgement) && !("chosenId" in judgement) && !("confidence" in judgement)) return false;
+    const chosenId = compactText(judgement.chosen_id || judgement.chosenId || "", 80);
+    const confidence = Number(judgement.confidence || 0);
+    return !chosenId && (!Number.isFinite(confidence) || confidence < minConfidence);
+  }
+
+  private violatesNegativeConstraints(query: string, task: MusicTask): boolean {
+    const normalized = normalizeMatchText(query);
+    if (!normalized) return false;
+    if (
+      this.hasRnbMarker(query) &&
+      (task.negativeConstraints || []).some((constraint) => ["rb", "rnb"].includes(normalizeMatchText(constraint)))
+    ) {
+      return true;
+    }
+    return this.negativeConstraintTokens(task).some((token) => normalized.includes(token));
+  }
+
+  private negativeCandidateReason(track: Track, task: MusicTask): string {
+    const metadata = normalizeMatchText(
+      `${track.name} ${track.artist} ${track.album || ""} ${track.source || ""} ${(track.aliases || []).join(" ")}`,
+    );
+    const token = this.negativeConstraintTokens(task).find((item) => metadata.includes(item));
+    return token ? `negative_constraint:${token}` : "";
+  }
+
+  private negativeConstraintTokens(task: MusicTask): string[] {
+    const tokens: string[] = [];
+    for (const constraint of task.negativeConstraints || []) {
+      const normalized = normalizeMatchText(constraint);
+      if (!normalized) continue;
+      if (normalized === "rb" || normalized === "rnb") {
+        tokens.push(
+          "rnb",
+          "sza",
+          "danielcaesar",
+          "frankocean",
+          "kelela",
+          "brentfaiyaz",
+          "summerwalker",
+          "jheneaiko",
+        );
+        continue;
+      }
+      tokens.push(normalized);
+    }
+    return dedupe(tokens);
+  }
+
+  private normalizedNegativeText(task: MusicTask): string {
+    return this.negativeConstraintTokens(task).join(" ");
   }
 
   private verifierDiagnostic(judgement: Record<string, unknown>): NonNullable<SearchVerification["diagnostics"]>["verifier"] {

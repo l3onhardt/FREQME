@@ -20,6 +20,31 @@ test("memory stores session feedback without turning one skip into permanent dis
   assert.equal(store.wasTrackRecentlyFailed("song-b", "42"), true);
 });
 
+test("failed audio proxy removes stale cached song url", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "freqme-test-"));
+  const db = new AppDatabase(path.join(dir, "test.db"));
+  const store = new MemoryStore(db);
+
+  store.saveAudioResolution("song-b", "https://example.test/stale.mp3", "song_url", "audio/mpeg");
+  assert.equal(store.getAudioResolution("song-b")?.url, "https://example.test/stale.mp3");
+
+  store.deleteAudioResolution("song-b");
+  store.logPlaybackEvent("playback_failed", { uid: "42", songId: "song-b", reason: "upstream 403" });
+
+  assert.equal(store.getAudioResolution("song-b"), null);
+  assert.equal(store.wasTrackRecentlyFailed("song-b", "42"), true);
+});
+
+test("audio resolution exposes cache age for expiry decisions", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "freqme-test-"));
+  const db = new AppDatabase(path.join(dir, "test.db"));
+  const store = new MemoryStore(db);
+
+  store.saveAudioResolution("song-c", "https://example.test/fresh.mp3", "song_url", "audio/mpeg");
+
+  assert.match(store.getAudioResolution("song-c")?.updatedAt || "", /^\d{4}-\d{2}-\d{2}/);
+});
+
 test("auth accounts keep separate cookies for account switching", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "freqme-test-"));
   const db = new AppDatabase(path.join(dir, "test.db"));

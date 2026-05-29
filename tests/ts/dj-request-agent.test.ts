@@ -92,6 +92,8 @@ test("genre requests like R&B are accepted as executable LLM decisions", async (
   assert.equal(decision.musicTask.type, "scene_genre_direction");
   assert.equal(decision.musicTask.styleHint, "R&B");
   assert.deepEqual(decision.musicTask.searchGoals, ["SZA Snooze", "Daniel Caesar Best Part"]);
+  assert.equal(decision.queuePolicy.continueDirection, true);
+  assert.equal(decision.queuePolicy.durationTracks, 4);
   assert.equal(decision.uncertainty.shouldAskUser, false);
 });
 

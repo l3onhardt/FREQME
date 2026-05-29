@@ -13,6 +13,8 @@ export interface AudioResolution {
   proxyUrl: string;
 }
 
+const audioCacheTtlMs = 20 * 60 * 1000;
+
 function result(args: Partial<AudioResolution> & { ok: boolean; songId: string }): AudioResolution {
   const ok = args.ok;
   const songId = args.songId;
@@ -37,7 +39,7 @@ export class AudioResolver {
     if (!track.id) return result({ ok: false, songId: "", reason: "missing_song_id" });
 
     const cached = forceRefresh ? null : this.store.getAudioResolution(track.id);
-    if (cached?.url && this.isPlayableUrl(cached.url)) {
+    if (cached?.url && this.isPlayableUrl(cached.url) && this.isFreshCache(cached.updatedAt)) {
       return result({
         ok: true,
         songId: track.id,
@@ -87,6 +89,12 @@ export class AudioResolver {
     return first;
   }
 
+  markFailed(songId: string, uid: string | null = null, reason = "playback_failed"): void {
+    if (!songId) return;
+    this.store.deleteAudioResolution(songId);
+    this.store.logPlaybackEvent("playback_failed", { uid, songId, reason });
+  }
+
   private async trySongUrl(songId: string, source: string): Promise<AudioResolution> {
     try {
       const url = await this.netease.songUrl(songId);
@@ -102,6 +110,13 @@ export class AudioResolver {
     return Boolean(url) && !url.includes("music.163.com/song/media/outer/url");
   }
 
+  private isFreshCache(updatedAt: string): boolean {
+    if (!updatedAt) return false;
+    const timestamp = Date.parse(`${updatedAt.replace(" ", "T")}Z`);
+    if (!Number.isFinite(timestamp)) return false;
+    return Date.now() - timestamp < audioCacheTtlMs;
+  }
+
   private isSameRecording(left: Track, right: Track): boolean {
     const leftName = normalizeMatchText(left.name);
     const rightName = normalizeMatchText(right.name);
@@ -111,4 +126,3 @@ export class AudioResolver {
     return !leftArtist || leftArtist === rightArtist;
   }
 }
-

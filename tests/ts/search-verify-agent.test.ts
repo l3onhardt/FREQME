@@ -543,6 +543,115 @@ test("descriptive R&B search goals are not treated as concrete NetEase queries",
   assert.ok(netease.queries.every((query) => !query.includes("taste summary")));
 });
 
+test("negative feedback blocks rejected style seeds and does not replay the avoided direction", async () => {
+  class NegativeLlm {
+    async chat(prompt: string): Promise<string> {
+      if (prompt.includes("Rewrite this DJ music task")) {
+        return JSON.stringify({
+          search_queries: ["R&B tracks", "SZA Snooze", "Organic House"],
+          picks: [
+            { artist: "SZA", title: "Snooze", query: "SZA Snooze" },
+            { artist: "", title: "", query: "Organic House" },
+          ],
+        });
+      }
+      return JSON.stringify({
+        chosen_id: "ambient",
+        confidence: 0.9,
+        matched_entities: ["舒缓放松"],
+        version_note: "avoids the rejected R&B direction",
+        risk: "",
+      });
+    }
+  }
+  const task: MusicTask = {
+    type: "scene_genre_direction",
+    primaryEntities: [
+      { role: "scene", name: "舒缓放松" },
+      { role: "genre", name: "Ambient" },
+      { role: "genre", name: "Chillout" },
+      { role: "genre", name: "Organic House" },
+    ],
+    workHint: "偏向氛围感、温暖、有机音色、适合放松聆听",
+    styleHint: "舒缓、平静、舒适",
+    negativeConstraints: ["R&B", "强节奏", "人声突出", "高能量"],
+    searchGoals: ["舒缓放松的电子音乐", "有机氛围电子", "Chillout", "Organic House"],
+    mustNotSearchLiteralUserSentence: true,
+  };
+  const netease = {
+    queries: [] as string[],
+    async search(query: string): Promise<Track[]> {
+      this.queries.push(query);
+      return [
+        { id: "ambient", name: "Come With Me", artist: "Nora En Pure", source: query },
+        { id: "sza", name: "Snooze", artist: "SZA", source: query },
+      ];
+    },
+  };
+  const audioResolver = {
+    async resolveWithCandidates(track: Track): Promise<any> {
+      return { ok: true, songId: track.id, proxyUrl: `/api/radio/audio/${track.id}` };
+    },
+  };
+  const agent = new SearchVerifyAgent(new NegativeLlm() as any, netease as any, audioResolver as any);
+
+  const result = await agent.verify(task, "42", "不想听rnb了，放点舒服的", personalContext);
+
+  assert.equal(result.status, "verified");
+  assert.equal(result.selectedSong?.id, "ambient");
+  assert.ok(netease.queries.includes("Nora En Pure Come With Me"));
+  assert.ok(netease.queries.every((query) => !/\bR&B\b|\brnb\b|SZA|Daniel Caesar|Frank Ocean/i.test(query)));
+});
+
+test("future bass fallback uses concrete artist-title songs instead of generic bass search", async () => {
+  class GenericFutureBassLlm {
+    async chat(prompt: string): Promise<string> {
+      if (prompt.includes("Rewrite this DJ music task")) {
+        return JSON.stringify({
+          search_queries: ["future bass", "cinematic bass music"],
+          picks: [{ artist: "", title: "", query: "cinematic bass music" }],
+        });
+      }
+      return JSON.stringify({
+        chosen_id: "seven",
+        confidence: 0.91,
+        matched_entities: ["Future Bass"],
+        version_note: "concrete future bass recording",
+        risk: "",
+      });
+    }
+  }
+  const task: MusicTask = {
+    type: "scene_genre_direction",
+    primaryEntities: [{ role: "genre", name: "Future Bass" }],
+    workHint: "",
+    styleHint: "Emotional, melodic, high-energy future bass with cinematic elements",
+    negativeConstraints: [],
+    searchGoals: ["future bass", "melodic future bass", "cinematic bass music"],
+    mustNotSearchLiteralUserSentence: true,
+  };
+  const netease = {
+    queries: [] as string[],
+    async search(query: string): Promise<Track[]> {
+      this.queries.push(query);
+      return [{ id: "seven", name: "Rush Over Me", artist: "Seven Lions", source: query }];
+    },
+  };
+  const audioResolver = {
+    async resolveWithCandidates(track: Track): Promise<any> {
+      return { ok: true, songId: track.id, proxyUrl: `/api/radio/audio/${track.id}` };
+    },
+  };
+  const agent = new SearchVerifyAgent(new GenericFutureBassLlm() as any, netease as any, audioResolver as any);
+
+  const result = await agent.verify(task, "42", "放点future bass", personalContext);
+
+  assert.equal(result.status, "verified");
+  assert.equal(result.selectedSong?.id, "seven");
+  assert.ok(netease.queries.includes("Seven Lions Rush Over Me"));
+  assert.ok(netease.queries.every((query) => query !== "future bass" && query !== "cinematic bass music"));
+});
+
 test("scene fallback does not search profile prose or play candidates when verifier does not choose", async () => {
   class EmptyJudgeLlm {
     async chat(prompt: string): Promise<string> {
