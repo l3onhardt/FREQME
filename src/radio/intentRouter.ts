@@ -7,8 +7,17 @@ const NEGATED_STYLE_PATTERNS: Array<[RegExp, string]> = [
   [/(不要|别|別|不想|拒绝|避开)[^，。；;]*(dubstep|回响贝斯)/iu, "dubstep"],
   [/(不要|别|別|不想|拒绝|避开|没有)\s*(人声|vocal|唱的|演唱)/iu, "人声"],
   [/(不要|别|別|不想|拒绝|避开)\s*(中文|华语|中文歌)/iu, "中文歌"],
-  [/(太电|太电子|太吵|太炸|炸场|高能)/iu, "高能量"],
+  [/(不要|别|別|不想|拒绝|避开)\s*(高能量|高能)|太电|太电子|太吵|太炸|炸场/iu, "高能量"],
 ];
+
+const NEGATIVE_SEED_STRIP_PATTERNS: Record<string, RegExp> = {
+  emo: /\bemo\b/giu,
+  EDM: /\bedm\b|电子舞曲|电音/giu,
+  dubstep: /\bdubstep\b|回响贝斯/giu,
+  人声: /人声|vocal|唱的|演唱/giu,
+  中文歌: /中文歌|中文|华语/giu,
+  高能量: /高能量|高能|太电|太电子|太吵|太炸|炸场/giu,
+};
 
 export class IntentRouter {
   classify(rawText: string): ListeningIntentDecision {
@@ -68,9 +77,17 @@ export class IntentRouter {
     if (/专注|写代码|工作流|工作/iu.test(text)) seeds.push("专注工作");
     if (/安静|轻|舒缓/iu.test(text)) seeds.push("安静");
     if (/推动力|有劲|推进/iu.test(text)) seeds.push("轻微推动力");
+    if (/高能量|高能/iu.test(text) && !negativeConstraints.includes("高能量")) seeds.push("高能量");
     if (/\bemo\b|忧郁|情绪/iu.test(text) && !negativeConstraints.includes("emo")) seeds.push("emo");
     if (/\br\s*&?\s*b\b|\brnb\b/iu.test(text)) seeds.push("R&B");
-    if (!seeds.length && text) seeds.push(compactText(text.replace(/不要|别太|别|不是这种/giu, ""), 80));
+    if (!seeds.length && text) {
+      let fallback = text.replace(/不要|别太|别|不是这种/giu, "");
+      for (const constraint of negativeConstraints) {
+        fallback = fallback.replace(NEGATIVE_SEED_STRIP_PATTERNS[constraint] ?? /$./giu, "");
+      }
+      const seed = compactText(fallback, 80);
+      if (seed) seeds.push(seed);
+    }
     return seeds.filter(Boolean);
   }
 }

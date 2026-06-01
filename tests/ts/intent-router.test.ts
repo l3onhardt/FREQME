@@ -45,3 +45,30 @@ test("specific track requests remain specific requests", () => {
   assert.equal(intent.shouldReplan, true);
   assert.equal(intent.query, "Nils Frahm Says");
 });
+
+test("negated-only terms do not become fallback positive seeds", () => {
+  const router = new IntentRouter();
+  const cases = [
+    { text: "不要 emo", constraint: "emo", leaked: /emo/i },
+    { text: "不要 edm", constraint: "EDM", leaked: /edm/i },
+    { text: "不要 dubstep", constraint: "dubstep", leaked: /dubstep/i },
+    { text: "不要中文", constraint: "中文歌", leaked: /中文/ },
+    { text: "不要高能量", constraint: "高能量", leaked: /高能量/ },
+  ];
+
+  for (const item of cases) {
+    const intent = router.classify(item.text);
+
+    assert.ok(intent.negativeConstraints.includes(item.constraint), item.text);
+    assert.equal(intent.positiveSeeds.some((seed) => item.leaked.test(seed)), false, item.text);
+  }
+});
+
+test("bare high energy request is not a negative constraint", () => {
+  const router = new IntentRouter();
+  const intent = router.classify("来点高能");
+
+  assert.equal(intent.type, "music_direction_request");
+  assert.equal(intent.negativeConstraints.includes("高能量"), false);
+  assert.ok(intent.positiveSeeds.some((seed) => /高能/.test(seed)));
+});
