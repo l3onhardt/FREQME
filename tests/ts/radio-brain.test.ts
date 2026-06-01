@@ -645,6 +645,26 @@ test("stale warmer already in progress cannot add tracks after a newer correctio
   assert.deepEqual(staleSideEffects, []);
 });
 
+test("radio brain preserves narration segue text added by the warmer", async () => {
+  const queue = new PlaybackQueue();
+  const radio = brain({
+    bridgePicker: async () => null,
+    warmer: {
+      warm: async (warmArgs) => {
+        warmArgs.queue.addReady(track("bridge"), "bridge-url", reason({ text: "bridge" }), {
+          segueText: "短暂做一首器乐过渡，下一首拉回 R&B。",
+        });
+        return 1;
+      },
+    },
+  });
+
+  await radio.startSession(args(queue));
+  await flushBackground();
+
+  assert.equal(queue.readyItems()[0]?.segueText, "短暂做一首器乐过渡，下一首拉回 R&B。");
+});
+
 test("evicted keyed startup work cannot add tracks after same-session correction", async () => {
   const queueA = new PlaybackQueue();
   const startupWarmStarted = deferred<void>();

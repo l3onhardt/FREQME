@@ -5,6 +5,7 @@ import { BoundaryGuard } from "../../src/radio/boundaryGuard.js";
 import { PlaybackQueue } from "../../src/radio/playbackQueue.js";
 import { QueueWarmer } from "../../src/radio/queueWarmer.js";
 import type { DecisionTraceStore } from "../../src/radio/decisionTraceStore.js";
+import type { HostNarrationLayer } from "../../src/radio/hostNarrationLayer.js";
 import type { RadioEpisode, StationContract } from "../../src/radio/radioBrainTypes.js";
 import type { MusicTask, SearchVerification } from "../../src/types.js";
 
@@ -467,6 +468,162 @@ test("queue warmer clears return state when an on-contract candidate is queued",
   assert.equal(added, 1);
   assert.equal(contract.bridgeCount, 0);
   assert.equal(contract.mustReturnToContract, false);
+});
+
+test("queue warmer attaches narration text to bridge items", async () => {
+  const queue = new PlaybackQueue(2);
+  const verifier = new FakeVerifier();
+  const traceStore = new FakeTraceStore();
+  const guard = { evaluate: () => ({ status: "accept_as_bridge" as const, reason: "bridge", contractId: "c1" }) };
+  const narrator: Pick<HostNarrationLayer, "forQueueItem"> = {
+    forQueueItem: async () => ({
+      shouldSpeak: true,
+      event: "bridge_entered" as const,
+      text: "短暂做一首器乐过渡，下一首拉回 R&B。",
+    }),
+  };
+  const warmer = new QueueWarmer(verifier as any, traceStore as unknown as DecisionTraceStore, guard, narrator);
+
+  await warmer.warm({
+    ...warmArgs(queue, singlePrimaryEpisode),
+    stationContract: stationContract(),
+  });
+
+  assert.equal(queue.readyItems()[0]?.segueText, "短暂做一首器乐过渡，下一首拉回 R&B。");
+  assert.deepEqual((traceStore.traces[0] as any)?.narration, {
+    event: "bridge_entered",
+    text: "短暂做一首器乐过渡，下一首拉回 R&B。",
+    spoken: false,
+  });
+});
+
+test("queue warmer records narration latency separately from verification latency", async () => {
+  const originalNow = Date.now;
+  let now = 1000;
+  Date.now = () => now;
+  try {
+    const queue = new PlaybackQueue(2);
+    const verifier = new FakeVerifier();
+    const traceStore = new FakeTraceStore();
+    const guard = { evaluate: () => ({ status: "accept_as_bridge" as const, reason: "bridge", contractId: "c1" }) };
+    const narrator: Pick<HostNarrationLayer, "forQueueItem"> = {
+      forQueueItem: async () => {
+        now += 50;
+        return { shouldSpeak: true, event: "bridge_entered", text: "bridge narration" };
+      },
+    };
+    const warmer = new QueueWarmer(verifier as any, traceStore as unknown as DecisionTraceStore, guard, narrator);
+
+    await warmer.warm({
+      ...warmArgs(queue, singlePrimaryEpisode),
+      stationContract: stationContract(),
+    });
+
+    const trace = traceStore.traces[0] as any;
+    assert.equal(trace.latencyMs.verification, 0);
+    assert.equal(trace.latencyMs.narration, 50);
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
+test("queue warmer still queues the track when narration fails", async () => {
+  const queue = new PlaybackQueue(2);
+  const verifier = new FakeVerifier();
+  const traceStore = new FakeTraceStore();
+  const guard = { evaluate: () => ({ status: "accept_as_bridge" as const, reason: "bridge", contractId: "c1" }) };
+  const narrator: Pick<HostNarrationLayer, "forQueueItem"> = {
+    forQueueItem: async () => {
+      throw new Error("narration unavailable");
+    },
+  };
+  const warmer = new QueueWarmer(verifier as any, traceStore as unknown as DecisionTraceStore, guard, narrator);
+
+  const added = await warmer.warm({
+    ...warmArgs(queue, singlePrimaryEpisode),
+    stationContract: stationContract(),
+  });
+
+  assert.equal(added, 1);
+  assert.equal(queue.readyItems()[0]?.track.name, "Says");
+  assert.equal(queue.readyItems()[0]?.segueText, "");
+  assert.equal((traceStore.traces[0] as any)?.narration, undefined);
+});
+
+test("queue warmer still queues the track when narration throws synchronously", async () => {
+  const queue = new PlaybackQueue(2);
+  const verifier = new FakeVerifier();
+  const traceStore = new FakeTraceStore();
+  const guard = { evaluate: () => ({ status: "accept_as_bridge" as const, reason: "bridge", contractId: "c1" }) };
+  const narrator: Pick<HostNarrationLayer, "forQueueItem"> = {
+    forQueueItem: () => {
+      throw new Error("narration unavailable");
+    },
+  };
+  const warmer = new QueueWarmer(verifier as any, traceStore as unknown as DecisionTraceStore, guard, narrator);
+
+  const added = await warmer.warm({
+    ...warmArgs(queue, singlePrimaryEpisode),
+    stationContract: stationContract(),
+  });
+
+  assert.equal(added, 1);
+  assert.equal(queue.readyItems()[0]?.track.name, "Says");
+  assert.equal(queue.readyItems()[0]?.segueText, "");
+  assert.equal((traceStore.traces[0] as any)?.narration, undefined);
+});
+
+test("queue warmer does not save a trace or queue after becoming stale during narration", async () => {
+  const queue = new PlaybackQueue(2);
+  const verifier = new FakeVerifier();
+  const traceStore = new FakeTraceStore();
+  let current = true;
+  const guard = { evaluate: () => ({ status: "accept_as_bridge" as const, reason: "bridge", contractId: "c1" }) };
+  const narrator: Pick<HostNarrationLayer, "forQueueItem"> = {
+    forQueueItem: async () => {
+      current = false;
+      return { shouldSpeak: true, event: "bridge_entered" as const, text: "stale narration" };
+    },
+  };
+  const warmer = new QueueWarmer(verifier as any, traceStore as unknown as DecisionTraceStore, guard, narrator);
+
+  const added = await warmer.warm({
+    ...warmArgs(queue, singlePrimaryEpisode),
+    stationContract: stationContract(),
+    isCurrent: () => current,
+  });
+
+  assert.equal(added, 0);
+  assert.equal(queue.readyDepth(), 0);
+  assert.equal(traceStore.traces.length, 0);
+});
+
+test("queue warmer does not save a trace or queue when target fills during narration", async () => {
+  const queue = new PlaybackQueue(2);
+  const verifier = new FakeVerifier();
+  const traceStore = new FakeTraceStore();
+  const guard = { evaluate: () => ({ status: "accept_as_bridge" as const, reason: "bridge", contractId: "c1" }) };
+  const narrator: Pick<HostNarrationLayer, "forQueueItem"> = {
+    forQueueItem: async () => {
+      queue.addReady(
+        { id: "other", name: "Other Track", artist: "Other Artist" },
+        "/api/radio/audio/other",
+        { type: "manual", text: "filled by another producer" },
+      );
+      return { shouldSpeak: true, event: "bridge_entered", text: "bridge narration" };
+    },
+  };
+  const warmer = new QueueWarmer(verifier as any, traceStore as unknown as DecisionTraceStore, guard, narrator);
+
+  const added = await warmer.warm({
+    ...warmArgs(queue, singlePrimaryEpisode),
+    stationContract: stationContract(),
+  });
+
+  assert.equal(added, 0);
+  assert.equal(queue.readyDepth(), 1);
+  assert.equal(queue.readyItems()[0]?.track.name, "Other Track");
+  assert.equal(traceStore.traces.length, 0);
 });
 
 test("queue warmer does not save a trace or queue a track after becoming stale", async () => {

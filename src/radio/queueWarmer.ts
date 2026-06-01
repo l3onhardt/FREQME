@@ -2,9 +2,11 @@ import type { MemoryPack, MusicTask, StationEnvironment } from "../types.js";
 import { dedupe, normalizeMatchText } from "../utils/text.js";
 import type { BoundaryGuard } from "./boundaryGuard.js";
 import type { DecisionTraceStore } from "./decisionTraceStore.js";
+import type { HostNarrationLayer, QueueNarrationResult } from "./hostNarrationLayer.js";
 import type { PlaybackQueue } from "./playbackQueue.js";
 import type {
   DecisionTrace,
+  HostNarration,
   ListeningIntentType,
   ProfileQuality,
   RadioEpisode,
@@ -35,6 +37,7 @@ export class QueueWarmer {
     private readonly verifier: SearchVerifyAgent,
     private readonly traceStore: DecisionTraceStore,
     private readonly boundaryGuard?: Pick<BoundaryGuard, "evaluate">,
+    private readonly narrator?: Pick<HostNarrationLayer, "forQueueItem">,
   ) {}
 
   async warm(args: QueueWarmArgs): Promise<number> {
@@ -115,6 +118,12 @@ export class QueueWarmer {
 
       const traceId = `${args.episode.id}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       const hostText = item.reason || args.episode.brief;
+      const verificationLatencyMs = Date.now() - startedAt;
+      const narrationStartedAt = Date.now();
+      const narration = await this.queueNarration(args, boundaryDecision, verification.selectedSong, hostText);
+      const narrationLatencyMs = Date.now() - narrationStartedAt;
+      if (!this.isCurrent(args)) return false;
+      if (args.queue.readyDepth() >= args.targetReady) return false;
       const trace: DecisionTrace = {
         id: traceId,
         uid: args.uid,
@@ -128,9 +137,10 @@ export class QueueWarmer {
         rejectedCandidates,
         verificationAttempts,
         fallbackLevel,
-        latencyMs: { verification: Date.now() - startedAt },
+        latencyMs: { verification: verificationLatencyMs, narration: narrationLatencyMs },
         hostText,
         boundaryDecision,
+        narration,
         createdAt: new Date().toISOString(),
       };
       this.traceStore.save(trace);
@@ -142,6 +152,8 @@ export class QueueWarmer {
         episodeId: args.episode.id,
         traceId,
         fallbackLevel,
+      }, {
+        segueText: narration?.text || "",
       });
       this.applyBoundaryDecision(args, boundaryDecision);
       return true;
@@ -151,6 +163,33 @@ export class QueueWarmer {
 
   private isCurrent(args: QueueWarmArgs): boolean {
     return args.isCurrent ? args.isCurrent() : true;
+  }
+
+  private async queueNarration(
+    args: QueueWarmArgs,
+    boundaryDecision: DecisionTrace["boundaryDecision"],
+    track: DecisionTrace["selectedTrack"],
+    reason: string,
+  ): Promise<HostNarration | undefined> {
+    if (!this.narrator) return undefined;
+    let result: QueueNarrationResult | null = null;
+    try {
+      result = await this.narrator.forQueueItem({
+        stationContract: args.stationContract,
+        boundaryDecision,
+        track,
+        reason,
+        recentNarrationCount: 0,
+      });
+    } catch {
+      return undefined;
+    }
+    if (!result?.shouldSpeak || !result.text) return undefined;
+    return {
+      event: result.event || "bridge_entered",
+      text: result.text,
+      spoken: false,
+    };
   }
 
   private applyBoundaryDecision(args: QueueWarmArgs, decision: DecisionTrace["boundaryDecision"]): void {
