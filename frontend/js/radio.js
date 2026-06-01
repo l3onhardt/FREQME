@@ -12,6 +12,8 @@ let introPending = false;
 let introPlaying = false;
 let pendingTrackAfterIntro = null;
 let introFallbackTimer = null;
+let activeSegueId = '';
+let pendingSegueTimer = null;
 let userVolume = 0.8;
 let isDucked = false;
 let mainVolumeFadeTimer = null;
@@ -633,7 +635,32 @@ function showTextIntro(text) {
   }
 }
 
+function clearSegueFallbackTimer() {
+  if (pendingSegueTimer) {
+    clearTimeout(pendingSegueTimer);
+    pendingSegueTimer = null;
+  }
+}
+
+function resetSegueGate() {
+  activeSegueId = '';
+  clearSegueFallbackTimer();
+}
+
+function mainAudioMatchesUrl(url) {
+  if (!url || !audioMain.src) return false;
+  return audioMain.src === url || audioMain.src.endsWith(url);
+}
+
+function playSegueTrack(track, url) {
+  clearSegueFallbackTimer();
+  if (track && url && !mainAudioMatchesUrl(url)) {
+    playTrack(track, url);
+  }
+}
+
 function resetIntroGate() {
+  resetSegueGate();
   pendingTrackAfterIntro = null;
   introPending = false;
   introPlaying = false;
@@ -1206,6 +1233,7 @@ async function getTTSBlob(hash) {
 async function handleMessage(msg) {
   switch (msg.type) {
     case 'session_start': {
+      resetSegueGate();
       const sl = document.getElementById('scene-label');
       const sceneMap = { '深夜': 'FREQME 深夜', '清晨': 'FREQME 清晨', '午后': 'FREQME 午后' };
       sl.textContent = sceneMap[msg.scene] || 'FREQME';
@@ -1234,26 +1262,28 @@ async function handleMessage(msg) {
     }
 
     case 'play_track': {
+      resetSegueGate();
       audioTTS._hasIntro = false;
       playTrack(msg.track, msg.url);
       break;
     }
 
     case 'segue': {
-      const playNextTrack = () => {
-        if (msg.next_track) {
-          playTrack(msg.next_track, msg.url);
-        }
-      };
+      if (msg.tts_ready && msg.segue_id && activeSegueId && msg.segue_id !== activeSegueId) {
+        break;
+      }
+      if (msg.segue_id) activeSegueId = msg.segue_id;
+      const playNextTrack = () => playSegueTrack(msg.next_track, msg.url);
 
       if (msg.tts_ready && msg.tts_hash) {
-        if (msg.next_track) {
-          playTrack(msg.next_track, msg.url);
-        }
+        playNextTrack();
         playTTS(msg.tts_hash, msg.text);
       } else if (msg.text) {
         document.getElementById('dj-text').textContent = msg.text;
-        setTimeout(playNextTrack, 3500);
+        clearSegueFallbackTimer();
+        pendingSegueTimer = setTimeout(() => {
+          if (!msg.segue_id || activeSegueId === msg.segue_id) playNextTrack();
+        }, 3500);
       } else {
         playNextTrack();
       }

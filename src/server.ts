@@ -35,6 +35,7 @@ import { QueueWarmer } from "./radio/queueWarmer.js";
 import { ReflectionLoop } from "./radio/reflectionLoop.js";
 import { StationContractManager } from "./radio/stationContract.js";
 import { BoundaryGuard } from "./radio/boundaryGuard.js";
+import { HostNarrationLayer } from "./radio/hostNarrationLayer.js";
 import {
   CONTINUATION_BRAIN_READY_TIMEOUT_MS,
   USER_REQUEST_BRAIN_READY_TIMEOUT_MS,
@@ -81,7 +82,8 @@ const episodePlanner = new EpisodePlanner(llm);
 const reflectionLoop = new ReflectionLoop();
 const stationContractManager = new StationContractManager();
 const boundaryGuard = new BoundaryGuard();
-const queueWarmer = new QueueWarmer(searchVerifyAgent, traceStore, boundaryGuard);
+const hostNarrationLayer = new HostNarrationLayer();
+const queueWarmer = new QueueWarmer(searchVerifyAgent, traceStore, boundaryGuard, hostNarrationLayer);
 const radioBrain = new RadioBrain({
   intentRouter,
   contractManager: stationContractManager,
@@ -455,6 +457,7 @@ async function handleRadioSocket(socket: WebSocketType): Promise<void> {
   let introSendCancelled = false;
   let nextRequestToken = 0;
   let activeRequestToken: number | null = null;
+  let nextSegueId = 0;
 
   const send = (payload: Record<string, unknown>): void => {
     if (socket.readyState === 1) socket.send(JSON.stringify(payload));
@@ -472,6 +475,24 @@ async function handleRadioSocket(socket: WebSocketType): Promise<void> {
       const hash = await synthesize(text);
       if (hash) {
         send({ type: "dj_message", text, tts_ready: true, tts_hash: hash });
+      }
+    })().catch(() => undefined);
+  };
+
+  const sendLateSegueTts = (segueId: string, text: string, track: Track, url: string): void => {
+    if (!text) return;
+    void (async () => {
+      const hash = await synthesize(text);
+      if (hash) {
+        send({
+          type: "segue",
+          segue_id: segueId,
+          text,
+          tts_ready: true,
+          tts_hash: hash,
+          next_track: trackInfo(track),
+          url,
+        });
       }
     })().catch(() => undefined);
   };
@@ -775,14 +796,17 @@ async function handleRadioSocket(socket: WebSocketType): Promise<void> {
       return;
     }
     if (item.segueText) {
+      const segueId = `segue-${sessionId ?? "anon"}-${Date.now()}-${++nextSegueId}`;
       send({
         type: "segue",
+        segue_id: segueId,
         text: item.segueText,
         tts_ready: Boolean(item.ttsHash),
         tts_hash: item.ttsHash || "",
         next_track: trackInfo(item.track),
         url: item.url,
       });
+      if (!item.ttsHash) sendLateSegueTts(segueId, item.segueText, item.track, item.url);
       rememberCurrentTrack(item.track);
     } else {
       sendTrack(item.track, item.url);

@@ -26,6 +26,7 @@ function createElement(id = '') {
     disabled: false,
     ended: true,
     paused: true,
+    playCount: 0,
     src: '',
     style,
     textContent: '',
@@ -73,6 +74,7 @@ function createElement(id = '') {
       this.paused = true;
     },
     play() {
+      this.playCount += 1;
       this.paused = false;
       this.ended = false;
       return Promise.resolve();
@@ -415,6 +417,137 @@ test('text-only segue stays visible briefly before starting next track', async (
 
   assert.equal(audioMain.src, '/api/radio/audio/2');
   assert.equal(elements.get('track-name').textContent, 'Next');
+});
+
+test('late segue TTS starts pending track under DJ speech', async () => {
+  const { context, elements, timers } = loadRadio({
+    fetchImpl: async (url) => {
+      if (url === '/api/radio/tts/bridgehash') {
+        return { ok: true, blob: async () => ({}) };
+      }
+      return { ok: true, json: async () => ({}) };
+    },
+  });
+  const audioMain = elements.get('audio-main');
+  const audioTTS = elements.get('audio-tts');
+
+  await context.handleMessage({
+    type: 'segue',
+    segue_id: 'segue-1',
+    text: 'Bridge narration.',
+    tts_ready: false,
+    tts_hash: '',
+    next_track: { name: 'Next', artist: 'Artist' },
+    url: '/api/radio/audio/2',
+  });
+
+  assert.equal(elements.get('dj-text').textContent, 'Bridge narration.');
+  assert.equal(audioMain.src, '');
+  assert.equal(timers.length, 1);
+
+  await context.handleMessage({
+    type: 'segue',
+    segue_id: 'segue-1',
+    text: 'Bridge narration.',
+    tts_ready: true,
+    tts_hash: 'bridgehash',
+    next_track: { name: 'Next', artist: 'Artist' },
+    url: '/api/radio/audio/2',
+  });
+  await flushAsyncWork();
+
+  assert.equal(audioMain.src, '/api/radio/audio/2');
+  assert.equal(elements.get('track-name').textContent, 'Next');
+  assert.equal(audioTTS.src, 'blob:tts');
+});
+
+test('late segue TTS does not restart a track already started by text fallback', async () => {
+  const { context, elements, timers } = loadRadio({
+    fetchImpl: async (url) => {
+      if (url === '/api/radio/tts/bridgehash') {
+        return { ok: true, blob: async () => ({}) };
+      }
+      return { ok: true, json: async () => ({}) };
+    },
+  });
+  const audioMain = elements.get('audio-main');
+  const audioTTS = elements.get('audio-tts');
+
+  await context.handleMessage({
+    type: 'segue',
+    segue_id: 'segue-1',
+    text: 'Bridge narration.',
+    tts_ready: false,
+    tts_hash: '',
+    next_track: { name: 'Next', artist: 'Artist' },
+    url: '/api/radio/audio/2',
+  });
+  timers[0]();
+  await flushAsyncWork();
+
+  assert.equal(audioMain.src, '/api/radio/audio/2');
+  assert.equal(audioMain.playCount, 1);
+
+  await context.handleMessage({
+    type: 'segue',
+    segue_id: 'segue-1',
+    text: 'Bridge narration.',
+    tts_ready: true,
+    tts_hash: 'bridgehash',
+    next_track: { name: 'Next', artist: 'Artist' },
+    url: '/api/radio/audio/2',
+  });
+  await flushAsyncWork();
+
+  assert.equal(audioMain.src, '/api/radio/audio/2');
+  assert.equal(audioMain.playCount, 1);
+  assert.equal(audioTTS.src, 'blob:tts');
+});
+
+test('stale late segue TTS is ignored after a newer segue starts', async () => {
+  const { context, elements } = loadRadio({
+    fetchImpl: async (url) => {
+      if (url === '/api/radio/tts/stalehash') {
+        return { ok: true, blob: async () => ({}) };
+      }
+      return { ok: true, json: async () => ({}) };
+    },
+  });
+  const audioMain = elements.get('audio-main');
+  const audioTTS = elements.get('audio-tts');
+
+  await context.handleMessage({
+    type: 'segue',
+    segue_id: 'segue-old',
+    text: 'Old narration.',
+    tts_ready: false,
+    tts_hash: '',
+    next_track: { name: 'Old', artist: 'Artist' },
+    url: '/api/radio/audio/old',
+  });
+  await context.handleMessage({
+    type: 'segue',
+    segue_id: 'segue-new',
+    text: 'New narration.',
+    tts_ready: false,
+    tts_hash: '',
+    next_track: { name: 'New', artist: 'Artist' },
+    url: '/api/radio/audio/new',
+  });
+  await context.handleMessage({
+    type: 'segue',
+    segue_id: 'segue-old',
+    text: 'Old narration.',
+    tts_ready: true,
+    tts_hash: 'stalehash',
+    next_track: { name: 'Old', artist: 'Artist' },
+    url: '/api/radio/audio/old',
+  });
+  await flushAsyncWork();
+
+  assert.equal(audioMain.src, '');
+  assert.equal(audioTTS.src, '');
+  assert.equal(elements.get('dj-text').textContent, 'New narration.');
 });
 
 test('session start shows an immediate local DJ greeting while preparing audio', async () => {
