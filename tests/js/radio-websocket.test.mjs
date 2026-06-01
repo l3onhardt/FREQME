@@ -848,3 +848,43 @@ test('request status tells listener whether the requested direction is queued', 
 
   assert.equal(elements.get('dj-text').textContent, '没找到特别准的，我先往这个情绪靠。');
 });
+
+test('planning request status speaks visually without changing current playback', async () => {
+  const { context, elements, spectrumBars } = loadRadio({ spectrumBarCount: 8 });
+  const audioMain = elements.get('audio-main');
+  audioMain.src = '/api/radio/audio/1';
+  audioMain.paused = false;
+  const beforeSrc = audioMain.src;
+  const beforePaused = audioMain.paused;
+
+  await context.handleMessage({
+    type: 'request_status',
+    status: 'planning',
+    text: '我听到了，正在把这个方向接进来。',
+  });
+
+  assert.equal(elements.get('dj-text').textContent, '我听到了，正在把这个方向接进来。');
+  assert.equal(audioMain.src, beforeSrc);
+  assert.equal(audioMain.paused, beforePaused);
+  assert.ok(spectrumBars.some((bar) => Number(bar.style.getPropertyValue('--bar-scale')) > 0));
+});
+
+test('explained request status updates DJ text without changing current playback', async () => {
+  const { context, elements, spectrumBars } = loadRadio({ spectrumBarCount: 8 });
+  const audioMain = elements.get('audio-main');
+  audioMain.src = '/api/radio/audio/1';
+  audioMain.paused = false;
+  const beforeSrc = audioMain.src;
+  const beforePaused = audioMain.paused;
+
+  await context.handleMessage({
+    type: 'request_status',
+    status: 'explained',
+    text: '因为它和上一首的低频与留白接得很顺。',
+  });
+
+  assert.equal(elements.get('dj-text').textContent, '因为它和上一首的低频与留白接得很顺。');
+  assert.equal(audioMain.src, beforeSrc);
+  assert.equal(audioMain.paused, beforePaused);
+  assert.ok(spectrumBars.some((bar) => Number(bar.style.getPropertyValue('--bar-scale')) > 0));
+});

@@ -1291,6 +1291,15 @@ async function handleMessage(msg) {
     case 'request_status': {
       if (msg.text) {
         document.getElementById('dj-text').textContent = msg.text;
+        if (msg.status === 'planning') {
+          startBreathLoop();
+          updateBreathState('loading', true);
+          updateSpectrum(0.24, false);
+        } else if (msg.status === 'explained') {
+          startBreathLoop();
+          updateBreathState('speaking', true);
+          updateSpectrum(0.25, true);
+        }
       }
       break;
     }

@@ -26,6 +26,13 @@ import { detectScene, localTimeBlock, normalizeGeo, trackInfo } from "./radio/co
 import type { StationEnvironment, TasteProfile, Track, UserSettings, WeatherSnapshot } from "./types.js";
 import { compactText } from "./utils/text.js";
 import { WeatherService } from "./services/weatherService.js";
+import { RadioBrain, type BridgePick, type RadioBrainArgs } from "./radio/radioBrain.js";
+import { IntentRouter } from "./radio/intentRouter.js";
+import { DecisionTraceStore } from "./radio/decisionTraceStore.js";
+import { HostResponder } from "./radio/hostResponder.js";
+import { EpisodePlanner } from "./radio/episodePlanner.js";
+import { QueueWarmer } from "./radio/queueWarmer.js";
+import { ReflectionLoop } from "./radio/reflectionLoop.js";
 
 const require = createRequire(import.meta.url);
 
@@ -52,6 +59,21 @@ const stationDirector = new AIStationDirector(llm, djRequestAgent, searchVerifyA
 const scheduler = new StreamScheduler(netease, store, audioResolver);
 const djEngine = new DJEngine(llm);
 const weatherService = new WeatherService();
+const intentRouter = new IntentRouter();
+const traceStore = new DecisionTraceStore(store);
+const hostResponder = new HostResponder();
+const episodePlanner = new EpisodePlanner(llm);
+const reflectionLoop = new ReflectionLoop();
+const queueWarmer = new QueueWarmer(searchVerifyAgent, traceStore);
+const radioBrain = new RadioBrain({
+  intentRouter,
+  planner: episodePlanner,
+  warmer: queueWarmer,
+  responder: hostResponder,
+  traceStore,
+  reflectionLoop,
+  bridgePicker: pickBridgeTrack,
+});
 
 const projectRoot = path.resolve(".");
 const frontendDir = path.join(projectRoot, "frontend");
@@ -325,6 +347,31 @@ function stationEnvironment(scene: string, settings: Partial<UserSettings>, weat
   };
 }
 
+async function pickBridgeTrack(uid: string | null, profile: TasteProfile | null): Promise<BridgePick | null> {
+  const tryCandidate = async (track: Track, reason: string): Promise<BridgePick | null> => {
+    if (!track.id) return null;
+    try {
+      const prepared = await scheduler.prepareTrack(track, uid);
+      if (!prepared) return null;
+      return { track: prepared.track, url: prepared.url, reason };
+    } catch {
+      return null;
+    }
+  };
+
+  for (const track of store.getRecentPlayableTracks(uid, 20)) {
+    const bridge = await tryCandidate(track, "先接上一首确认可播的歌，让电台马上有声音。");
+    if (bridge) return bridge;
+  }
+
+  for (const track of profile?.anchorTracks || []) {
+    const bridge = await tryCandidate(track, "先从你的熟悉锚点开场，再慢慢往今天的频率展开。");
+    if (bridge) return bridge;
+  }
+
+  return null;
+}
+
 async function proxyAudio(url: string, rangeHeader: string | undefined, res: http.ServerResponse, songId: string): Promise<void> {
   try {
     const headers: Record<string, string> = {};
@@ -396,6 +443,63 @@ async function handleRadioSocket(socket: WebSocketType): Promise<void> {
         send({ type: "dj_message", text, tts_ready: true, tts_hash: hash });
       }
     })().catch(() => undefined);
+  };
+
+  const brainArgs = (requestText: string): RadioBrainArgs => {
+    const readyQueue = queue.readyItems().map((item) => item.track);
+    const recentTracks = playedTracks.slice(-8);
+    const playbackContext = {
+      currentTrack,
+      recentTracks,
+      playedTracks: recentTracks,
+      readyQueue,
+      scene,
+      environment,
+    };
+    const contextPack = djMemory.buildContextPack({
+      uid,
+      sessionId,
+      requestText,
+      profile,
+      userSettings: settings,
+      playbackContext,
+      recentTurns,
+    });
+    return {
+      queue,
+      uid,
+      sessionId,
+      profile,
+      settings,
+      environment,
+      currentTrack,
+      playedTracks,
+      recentTurns,
+      contextPack,
+    };
+  };
+
+  const saveSessionWorkingMemory = (args: RadioBrainArgs): void => {
+    if (uid && sessionId) {
+      store.saveDjSessionMemory(uid, sessionId, args.contextPack.sessionWorkingMemory);
+    }
+  };
+
+  const waitForReadyItem = async (timeoutMs = 9000): Promise<ReturnType<typeof queue.readyItems>[number] | null> => {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const ready = queue.readyItems()[0];
+      if (ready) return ready;
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    return queue.readyItems()[0] || null;
+  };
+
+  const kickBrainContinuation = (): void => {
+    prewarmTask = radioBrain
+      .handleUserText({ ...brainArgs("继续保持这个感觉"), text: "继续保持这个感觉" })
+      .then(() => undefined)
+      .catch(() => undefined);
   };
 
   const rememberCurrentTrack = (track: Track): void => {
@@ -519,6 +623,51 @@ async function handleRadioSocket(socket: WebSocketType): Promise<void> {
     return false;
   };
 
+  const runStationDirectorRequestFallback = async (requestText: string): Promise<void> => {
+    const result = await stationDirector.handleUserRequest({
+      requestText,
+      state: stationState,
+      uid,
+      sessionId,
+      profile,
+      userSettings: settings,
+      environment,
+      currentTrack,
+      playedTracks,
+      readyQueue: queue.readyItems().map((item) => item.track),
+      recentTurns,
+    });
+    recentTurns.push({ user: requestText, result: result.status, at: new Date().toISOString() });
+    if (result.status === "queued" && result.track && result.url) {
+      queue.clearReady();
+      queue.addReady(
+        result.track,
+        result.url,
+        result.track.selectionReason || { type: "ai_station_director", text: result.plan?.stationBrief || "AI 已经重排电台方向。" },
+      );
+      if (result.djText) {
+        synthesizeAndSendDjMessage(result.djText);
+      }
+      const ready = queue.readyItems()[0];
+      if (ready) {
+        send({
+          type: "request_status",
+          status: "ready",
+          text: ready.selectionReason.text || `下一首准备好了：${ready.track.name}`,
+          next_track: trackInfo(ready.track),
+        });
+        void sendPreparedNext("played").catch(() => undefined);
+      }
+      prewarmTask = fillQueue(1, false).catch(() => undefined);
+      return;
+    }
+    if (result.status === "ask") {
+      send({ type: "request_status", status: "needs_clarification", text: result.djText });
+      return;
+    }
+    send({ type: "request_status", status: "not_found", text: result.djText || "我没拿到足够稳的可播放版本，先不乱放。" });
+  };
+
   const sendPreparedNext = async (previousEvent = "played"): Promise<void> => {
     if (prewarmTask) await Promise.race([prewarmTask, new Promise((resolve) => setTimeout(resolve, 1500))]).catch(() => null);
     if (!queue.readyItems().length) await fillQueue(1, false);
@@ -540,7 +689,7 @@ async function handleRadioSocket(socket: WebSocketType): Promise<void> {
     } else {
       sendTrack(item.track, item.url);
     }
-    prewarmTask = fillQueue(1).catch(() => undefined);
+    kickBrainContinuation();
   };
 
   socket.on("message", (raw) => {
@@ -593,7 +742,10 @@ async function handleRadioSocket(socket: WebSocketType): Promise<void> {
         });
         const defaultHash = await defaultTtsTask;
         send({ type: "intro", text: defaultIntro, tts_ready: Boolean(defaultHash), tts_hash: defaultHash });
-        await fillQueue(1);
+        await radioBrain.startSession(brainArgs("startup")).catch(() => undefined);
+        if (!queue.readyItems().length) {
+          await fillQueue(1, false);
+        }
         const item = queue.promoteNext();
         if (item) sendTrack(item.track, item.url);
         void (async () => {
@@ -602,7 +754,7 @@ async function handleRadioSocket(socket: WebSocketType): Promise<void> {
           const hash = await synthesize(intro);
           send({ type: "intro", text: intro, tts_ready: Boolean(hash), tts_hash: hash });
         })();
-        prewarmTask = fillQueue(1).catch(() => undefined);
+        kickBrainContinuation();
       }
 
       if (type === "track_ended") {
@@ -627,48 +779,34 @@ async function handleRadioSocket(socket: WebSocketType): Promise<void> {
         if (!requestText) return;
         introSendCancelled = true;
         store.logPlaybackEvent("song_request", { uid, songId: currentSongId, reason: requestText });
-        const result = await stationDirector.handleUserRequest({
-          requestText,
-          state: stationState,
-          uid,
-          sessionId,
-          profile,
-          userSettings: settings,
-          environment,
-          currentTrack,
-          playedTracks,
-          readyQueue: queue.readyItems().map((item) => item.track),
-          recentTurns,
-        });
-        recentTurns.push({ user: requestText, result: result.status, at: new Date().toISOString() });
-        if (result.status === "queued" && result.track && result.url) {
-          queue.clearReady();
-          queue.addReady(
-            result.track,
-            result.url,
-            result.track.selectionReason || { type: "ai_station_director", text: result.plan?.stationBrief || "AI 已经重排电台方向。" },
-          );
-          if (result.djText) {
-            synthesizeAndSendDjMessage(result.djText);
-          }
-          const ready = queue.readyItems()[0];
-          if (ready) {
-            send({
-              type: "request_status",
-              status: "ready",
-              text: ready.selectionReason.text || `下一首准备好了：${ready.track.name}`,
-              next_track: trackInfo(ready.track),
-            });
-            void sendPreparedNext("played").catch(() => undefined);
-          }
-          prewarmTask = fillQueue(1, false).catch(() => undefined);
+        const args = brainArgs(requestText);
+        const result = await radioBrain.handleUserText({ ...args, text: requestText }).catch(() => null);
+        if (!result) {
+          await runStationDirectorRequestFallback(requestText);
           return;
         }
-        if (result.status === "ask") {
-          send({ type: "request_status", status: "needs_clarification", text: result.djText });
+        saveSessionWorkingMemory(args);
+        if (result.status === "explained") {
+          send({ type: "request_status", status: "explained", text: result.hostText });
+          synthesizeAndSendDjMessage(result.hostText);
+          recentTurns.push({ user: requestText, result: result.status, at: new Date().toISOString() });
           return;
         }
-        send({ type: "request_status", status: "not_found", text: result.djText || "我没拿到足够稳的可播放版本，先不乱放。" });
+        send({ type: "request_status", status: "planning", text: result.hostText });
+        synthesizeAndSendDjMessage(result.hostText);
+        const ready = await waitForReadyItem(9000);
+        if (ready) {
+          recentTurns.push({ user: requestText, result: "ready", at: new Date().toISOString() });
+          send({
+            type: "request_status",
+            status: "ready",
+            text: ready.selectionReason.text || result.hostText,
+            next_track: trackInfo(ready.track),
+          });
+          await sendPreparedNext("played");
+          return;
+        }
+        await runStationDirectorRequestFallback(requestText);
       }
     })().catch((error) => {
       send({ type: "error", message: error instanceof Error ? error.message : "电台出错了。" });
