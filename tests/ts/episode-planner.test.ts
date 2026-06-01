@@ -73,6 +73,14 @@ class ManyItemsFakeLlm {
   }
 }
 
+class StaticJsonFakeLlm {
+  constructor(private readonly data: Record<string, unknown>) {}
+
+  async chat(): Promise<string> {
+    return JSON.stringify(this.data);
+  }
+}
+
 const intent: ListeningIntentDecision = {
   type: "correction",
   rawText: "不是这种，太电了；我要没有人声的安静专注背景",
@@ -90,7 +98,7 @@ const environment: StationEnvironment = { scene: "夜晚", localTimeBlock: "nigh
 const profile = null as TasteProfile | null;
 const profileQuality: ProfileQuality = { level: "low_confidence", score: 0.2, reasons: ["missing_genres"] };
 
-test("episode planner creates a 3 to 5 track episode shape with backups", async () => {
+test("episode planner creates an episode shape with backups", async () => {
   const llm = new FakeLlm();
   const planner = new EpisodePlanner(llm as any);
 
@@ -109,7 +117,7 @@ test("episode planner creates a 3 to 5 track episode shape with backups", async 
   });
 
   assert.equal(episode.modeLabel, "focus instrumental");
-  assert.equal(episode.durationTracks >= 3 && episode.durationTracks <= 5, true);
+  assert.equal(episode.durationTracks, episode.items.length);
   assert.equal(episode.negativeConstraints.includes("EDM"), true);
   assert.equal(episode.items[0]?.primaryQuery, "Nils Frahm Says");
   assert.deepEqual(episode.items[0]?.backupQueries.slice(0, 2), [
@@ -138,4 +146,74 @@ test("episode planner caps duration and item count at five tracks", async () => 
 
   assert.equal(episode.durationTracks, 5);
   assert.equal(episode.items.length, 5);
+});
+
+test("episode planner handles nonnumeric duration with two valid items", async () => {
+  const planner = new EpisodePlanner(
+    new StaticJsonFakeLlm({
+      brief: "Broken duration.",
+      mode_label: "finite flow",
+      arc: "Keep the usable songs.",
+      duration_tracks: "four",
+      items: [
+        { primary_query: "Nils Frahm Says", backup_queries: ["Nils Frahm Some"], reason: "fits" },
+        { primary_query: "Ryuichi Sakamoto Energy Flow", backup_queries: ["Ryuichi Sakamoto Merry Christmas"], reason: "fits" },
+      ],
+    }) as any,
+  );
+
+  const episode = await planner.plan({
+    uid: "42",
+    sessionId: 7,
+    intent,
+    profile,
+    profileQuality,
+    environment,
+    currentTrack: null,
+    playedTracks: [],
+    readyTracks: [],
+    recentTurns: [],
+    createdFrom: "correction",
+  });
+
+  assert.equal(Number.isFinite(episode.durationTracks), true);
+  assert.equal(episode.durationTracks, 2);
+  assert.deepEqual(
+    episode.items.map((item) => item.primaryQuery),
+    ["Nils Frahm Says", "Ryuichi Sakamoto Energy Flow"],
+  );
+});
+
+test("episode planner does not let invalid items inflate duration", async () => {
+  const planner = new EpisodePlanner(
+    new StaticJsonFakeLlm({
+      brief: "Some invalid items.",
+      mode_label: "filtered flow",
+      arc: "Only usable songs count.",
+      duration_tracks: 4,
+      items: [
+        { primary_query: "Nils Frahm Says", backup_queries: ["Nils Frahm Some"], reason: "fits" },
+        { primary_query: "   ", backup_queries: ["Blank"], reason: "missing query" },
+        { backup_queries: ["No primary"], reason: "missing query" },
+        { primary_query: "Ryuichi Sakamoto Energy Flow", backup_queries: ["Ryuichi Sakamoto Merry Christmas"], reason: "fits" },
+      ],
+    }) as any,
+  );
+
+  const episode = await planner.plan({
+    uid: "42",
+    sessionId: 7,
+    intent,
+    profile,
+    profileQuality,
+    environment,
+    currentTrack: null,
+    playedTracks: [],
+    readyTracks: [],
+    recentTurns: [],
+    createdFrom: "correction",
+  });
+
+  assert.equal(episode.items.length, 2);
+  assert.equal(episode.durationTracks, 2);
 });

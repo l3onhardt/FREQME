@@ -32,7 +32,7 @@ export class EpisodePlanner {
     });
     const data = extractJsonObject(response);
     const items = this.items(this.field(data, "items", "items"));
-    const duration = Math.max(3, Math.min(5, Number(this.field(data, "duration_tracks", "durationTracks") || items.length || 3)));
+    const duration = this.durationTracks(this.field(data, "duration_tracks", "durationTracks"), items.length);
     return {
       id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       brief: compactText(this.field(data, "brief", "brief") || args.intent.ackText, 500),
@@ -86,6 +86,13 @@ Return only JSON with brief, mode_label, arc, duration_tracks, positive_constrai
         avoidBecause: asStringList(this.field(item, "avoid_because", "avoidBecause"), 8),
       }))
       .filter((item) => item.primaryQuery);
+  }
+
+  private durationTracks(value: unknown, itemCount: number): number {
+    const parsed = Number(value);
+    const requested = Number.isFinite(parsed) ? Math.trunc(parsed) : itemCount || 3;
+    const capped = Math.max(3, Math.min(5, requested));
+    return itemCount > 0 ? Math.min(capped, itemCount) : capped;
   }
 
   private field(source: Record<string, unknown>, snake: string, camel: string): unknown {
