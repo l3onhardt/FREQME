@@ -261,6 +261,7 @@ export class RadioBrain {
       environment: args.environment,
       targetReady: 2,
       contextPack: args.contextPack,
+      stationContract: args.stationContract,
       isCurrent: () => this.isCurrent(args),
     });
   }

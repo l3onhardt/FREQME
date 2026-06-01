@@ -1,5 +1,6 @@
 import type { MemoryPack, MusicTask, StationEnvironment } from "../types.js";
 import { dedupe, normalizeMatchText } from "../utils/text.js";
+import type { BoundaryGuard } from "./boundaryGuard.js";
 import type { DecisionTraceStore } from "./decisionTraceStore.js";
 import type { PlaybackQueue } from "./playbackQueue.js";
 import type {
@@ -8,6 +9,7 @@ import type {
   ProfileQuality,
   RadioEpisode,
   RadioEpisodeItem,
+  StationContract,
 } from "./radioBrainTypes.js";
 import type { SearchVerifyAgent } from "./searchVerifyAgent.js";
 
@@ -21,6 +23,7 @@ export interface QueueWarmArgs {
   environment: StationEnvironment;
   targetReady: number;
   contextPack: MemoryPack;
+  stationContract?: StationContract;
   isCurrent?: () => boolean;
 }
 
@@ -31,6 +34,7 @@ export class QueueWarmer {
   constructor(
     private readonly verifier: SearchVerifyAgent,
     private readonly traceStore: DecisionTraceStore,
+    private readonly boundaryGuard?: Pick<BoundaryGuard, "evaluate">,
   ) {}
 
   async warm(args: QueueWarmArgs): Promise<number> {
@@ -97,6 +101,18 @@ export class QueueWarmer {
       if (!this.isCurrent(args)) return false;
 
       const fallbackLevel: DecisionTrace["fallbackLevel"] = index === 0 ? "episode_primary" : "episode_backup";
+      const boundaryDecision = this.boundaryGuard?.evaluate({
+        contract: args.stationContract,
+        query,
+        candidate: verification.selectedSong,
+        fallbackLevel,
+        itemStyle: item.style,
+      }) || { status: "accept" as const, reason: "No boundary guard configured." };
+      if (boundaryDecision.status.startsWith("reject_")) {
+        rejectedCandidates.push(`${query}: ${boundaryDecision.reason}`);
+        continue;
+      }
+
       const traceId = `${args.episode.id}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       const hostText = item.reason || args.episode.brief;
       const trace: DecisionTrace = {
@@ -114,6 +130,7 @@ export class QueueWarmer {
         fallbackLevel,
         latencyMs: { verification: Date.now() - startedAt },
         hostText,
+        boundaryDecision,
         createdAt: new Date().toISOString(),
       };
       this.traceStore.save(trace);
@@ -126,6 +143,7 @@ export class QueueWarmer {
         traceId,
         fallbackLevel,
       });
+      this.applyBoundaryDecision(args, boundaryDecision);
       return true;
     }
     return false;
@@ -133,6 +151,19 @@ export class QueueWarmer {
 
   private isCurrent(args: QueueWarmArgs): boolean {
     return args.isCurrent ? args.isCurrent() : true;
+  }
+
+  private applyBoundaryDecision(args: QueueWarmArgs, decision: DecisionTrace["boundaryDecision"]): void {
+    if (!args.stationContract) return;
+    if (decision?.status === "accept_as_bridge") {
+      args.stationContract.bridgeCount += 1;
+      args.stationContract.mustReturnToContract = args.stationContract.bridgeCount >= args.stationContract.driftBudget;
+      return;
+    }
+    if (decision?.status === "accept") {
+      args.stationContract.bridgeCount = 0;
+      args.stationContract.mustReturnToContract = false;
+    }
   }
 
   private taskForQuery(episode: RadioEpisode, item: RadioEpisodeItem, query: string): MusicTask {

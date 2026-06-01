@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { BoundaryGuard } from "../../src/radio/boundaryGuard.js";
 import { PlaybackQueue } from "../../src/radio/playbackQueue.js";
 import { QueueWarmer } from "../../src/radio/queueWarmer.js";
 import type { DecisionTraceStore } from "../../src/radio/decisionTraceStore.js";
-import type { RadioEpisode } from "../../src/radio/radioBrainTypes.js";
+import type { RadioEpisode, StationContract } from "../../src/radio/radioBrainTypes.js";
 import type { MusicTask, SearchVerification } from "../../src/types.js";
 
 const episode: RadioEpisode = {
@@ -67,6 +68,36 @@ const singlePrimaryEpisode: RadioEpisode = {
       fitToProfile: "钢琴锚点",
       fitToContext: "工作",
       avoidBecause: ["EDM"],
+    },
+  ],
+};
+
+const twoBridgeEpisode: RadioEpisode = {
+  ...episode,
+  id: "episode-two-bridges",
+  negativeConstraints: [],
+  items: [
+    {
+      primaryQuery: "Nils Frahm Says",
+      backupQueries: [],
+      reason: "first piano bridge",
+      style: "piano",
+      energy: "low",
+      vocality: "instrumental",
+      fitToProfile: "testing",
+      fitToContext: "testing",
+      avoidBecause: [],
+    },
+    {
+      primaryQuery: "Nils Frahm Says",
+      backupQueries: [],
+      reason: "second piano bridge",
+      style: "piano",
+      energy: "low",
+      vocality: "instrumental",
+      fitToProfile: "testing",
+      fitToContext: "testing",
+      avoidBecause: [],
     },
   ],
 };
@@ -256,6 +287,26 @@ const warmArgs = (queue: PlaybackQueue, episodeArg: RadioEpisode) => ({
   },
 });
 
+function stationContract(overrides: Partial<StationContract> = {}): StationContract {
+  return {
+    id: "c1",
+    mainDirection: "late-night R&B",
+    rawUserText: "放点深夜听的rnb",
+    allowedAdjacent: [],
+    softBridge: ["piano", "electronic"],
+    disallowed: ["classical"],
+    positiveSeeds: ["R&B"],
+    negativeConstraints: [],
+    driftBudget: 1,
+    bridgeCount: 0,
+    mustReturnToContract: false,
+    hostStyle: "standard",
+    createdAt: "2026-06-02T00:00:00.000Z",
+    updatedAt: "2026-06-02T00:00:00.000Z",
+    ...overrides,
+  };
+}
+
 test("queue warmer verifies backups and writes a trace", async () => {
   const queue = new PlaybackQueue(2);
   const verifier = new FakeVerifier();
@@ -333,6 +384,89 @@ test("queue warmer skips whole episode items that violate negative constraints",
     ["Max Richter On the Nature of Daylight"],
   );
   assert.equal(traceStore.traces.length, 1);
+});
+
+test("queue warmer skips candidates rejected by boundary guard", async () => {
+  const queue = new PlaybackQueue(2);
+  const verifier = new FakeVerifier();
+  const traceStore = new FakeTraceStore();
+  const guard = { evaluate: () => ({ status: "reject_off_contract" as const, reason: "outside contract", contractId: "c1" }) };
+  const warmer = new QueueWarmer(verifier as any, traceStore as unknown as DecisionTraceStore, guard);
+
+  const added = await warmer.warm({
+    ...warmArgs(queue, singlePrimaryEpisode),
+    stationContract: {
+      id: "c1",
+      mainDirection: "late-night R&B",
+      rawUserText: "放点深夜听的rnb",
+      allowedAdjacent: [],
+      softBridge: [],
+      disallowed: ["classical"],
+      positiveSeeds: ["R&B"],
+      negativeConstraints: [],
+      driftBudget: 1,
+      bridgeCount: 0,
+      mustReturnToContract: false,
+      hostStyle: "standard",
+      createdAt: "2026-06-02T00:00:00.000Z",
+      updatedAt: "2026-06-02T00:00:00.000Z",
+    },
+  });
+
+  assert.equal(added, 0);
+  assert.equal(queue.readyDepth(), 0);
+});
+
+test("queue warmer stores accepted boundary decisions in traces", async () => {
+  const queue = new PlaybackQueue(2);
+  const verifier = new FakeVerifier();
+  const traceStore = new FakeTraceStore();
+  const boundaryDecision = { status: "accept_as_bridge" as const, reason: "bridge inside budget", contractId: "c1" };
+  const guard = { evaluate: () => boundaryDecision };
+  const warmer = new QueueWarmer(verifier as any, traceStore as unknown as DecisionTraceStore, guard);
+
+  const added = await warmer.warm(warmArgs(queue, singlePrimaryEpisode));
+
+  assert.equal(added, 1);
+  assert.equal((traceStore.traces[0] as any)?.boundaryDecision, boundaryDecision);
+});
+
+test("queue warmer consumes bridge budget when bridge candidates are queued", async () => {
+  const queue = new PlaybackQueue(3);
+  const verifier = new FakeVerifier();
+  const traceStore = new FakeTraceStore();
+  const contract = stationContract();
+  const warmer = new QueueWarmer(verifier as any, traceStore as unknown as DecisionTraceStore, new BoundaryGuard());
+
+  const added = await warmer.warm({
+    ...warmArgs(queue, twoBridgeEpisode),
+    targetReady: 2,
+    stationContract: contract,
+  });
+
+  assert.equal(added, 1);
+  assert.equal(queue.readyDepth(), 1);
+  assert.equal(contract.bridgeCount, 1);
+  assert.equal(contract.mustReturnToContract, true);
+  assert.equal((traceStore.traces[0] as any)?.boundaryDecision.status, "accept_as_bridge");
+});
+
+test("queue warmer clears return state when an on-contract candidate is queued", async () => {
+  const queue = new PlaybackQueue(2);
+  const verifier = new FakeVerifier();
+  const traceStore = new FakeTraceStore();
+  const contract = stationContract({ bridgeCount: 1, mustReturnToContract: true });
+  const guard = { evaluate: () => ({ status: "accept" as const, reason: "back on contract", contractId: "c1" }) };
+  const warmer = new QueueWarmer(verifier as any, traceStore as unknown as DecisionTraceStore, guard);
+
+  const added = await warmer.warm({
+    ...warmArgs(queue, singlePrimaryEpisode),
+    stationContract: contract,
+  });
+
+  assert.equal(added, 1);
+  assert.equal(contract.bridgeCount, 0);
+  assert.equal(contract.mustReturnToContract, false);
 });
 
 test("queue warmer does not save a trace or queue a track after becoming stale", async () => {

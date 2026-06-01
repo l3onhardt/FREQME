@@ -787,6 +787,22 @@ test("background planner failures are reported with session context", async () =
 test("planner and warmer receive startup user and correction orchestration args", async () => {
   const queue = new PlaybackQueue();
   const pack = memoryPack();
+  pack.sessionWorkingMemory.stationContract = {
+    id: "contract-1",
+    mainDirection: "late-night R&B",
+    rawUserText: "late night r&b",
+    allowedAdjacent: ["alt-R&B"],
+    softBridge: ["ambient electronic"],
+    disallowed: ["classical chamber music"],
+    positiveSeeds: ["R&B"],
+    negativeConstraints: [],
+    driftBudget: 1,
+    bridgeCount: 0,
+    mustReturnToContract: false,
+    hostStyle: "standard",
+    createdAt: "2026-06-02T00:00:00.000Z",
+    updatedAt: "2026-06-02T00:00:00.000Z",
+  };
   const environment = env();
   const currentTrack = track("current-track");
   const playedTracks = [track("played-one")];
@@ -813,6 +829,7 @@ test("planner and warmer receive startup user and correction orchestration args"
     sameContextPack: boolean;
     sameEnvironment: boolean;
     profileQualityLevel: string;
+    stationContractId: string | null;
   }> = [];
   const intents = [
     intent({ type: "music_direction_request", rawText: "more focus", shouldReplan: true, shouldClearQueue: false }),
@@ -851,6 +868,7 @@ test("planner and warmer receive startup user and correction orchestration args"
           sameContextPack: warmArgs.contextPack === pack,
           sameEnvironment: warmArgs.environment === environment,
           profileQualityLevel: warmArgs.profileQuality.level,
+          stationContractId: warmArgs.stationContract?.id || null,
         });
         return 0;
       },
@@ -892,6 +910,7 @@ test("planner and warmer receive startup user and correction orchestration args"
       sameContextPack: true,
       sameEnvironment: true,
       profileQualityLevel: "low_confidence",
+      stationContractId: "contract-1",
     },
     {
       createdFrom: "user_request",
@@ -902,6 +921,7 @@ test("planner and warmer receive startup user and correction orchestration args"
       sameContextPack: true,
       sameEnvironment: true,
       profileQualityLevel: "low_confidence",
+      stationContractId: "contract-1",
     },
     {
       createdFrom: "correction",
@@ -912,6 +932,7 @@ test("planner and warmer receive startup user and correction orchestration args"
       sameContextPack: true,
       sameEnvironment: true,
       profileQualityLevel: "low_confidence",
+      stationContractId: "contract-1",
     },
   ]);
 });

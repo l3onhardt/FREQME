@@ -33,6 +33,8 @@ import { HostResponder } from "./radio/hostResponder.js";
 import { EpisodePlanner } from "./radio/episodePlanner.js";
 import { QueueWarmer } from "./radio/queueWarmer.js";
 import { ReflectionLoop } from "./radio/reflectionLoop.js";
+import { StationContractManager } from "./radio/stationContract.js";
+import { BoundaryGuard } from "./radio/boundaryGuard.js";
 import {
   CONTINUATION_BRAIN_READY_TIMEOUT_MS,
   USER_REQUEST_BRAIN_READY_TIMEOUT_MS,
@@ -77,9 +79,12 @@ const traceStore = new DecisionTraceStore(store);
 const hostResponder = new HostResponder();
 const episodePlanner = new EpisodePlanner(llm);
 const reflectionLoop = new ReflectionLoop();
-const queueWarmer = new QueueWarmer(searchVerifyAgent, traceStore);
+const stationContractManager = new StationContractManager();
+const boundaryGuard = new BoundaryGuard();
+const queueWarmer = new QueueWarmer(searchVerifyAgent, traceStore, boundaryGuard);
 const radioBrain = new RadioBrain({
   intentRouter,
+  contractManager: stationContractManager,
   planner: episodePlanner,
   warmer: queueWarmer,
   responder: hostResponder,

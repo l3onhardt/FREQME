@@ -42,6 +42,20 @@ export interface StationContract {
   updatedAt: string;
 }
 
+export type BoundaryDecisionStatus =
+  | "accept"
+  | "accept_as_adjacent"
+  | "accept_as_bridge"
+  | "reject_off_contract"
+  | "reject_entity_mismatch"
+  | "reject_low_confidence";
+
+export interface BoundaryDecision {
+  status: BoundaryDecisionStatus;
+  reason: string;
+  contractId?: string;
+}
+
 export interface ProfileQuality {
   level: "low_confidence" | "usable" | "strong";
   score: number;
@@ -94,5 +108,6 @@ export interface DecisionTrace {
   fallbackLevel: "episode_primary" | "episode_backup" | "last_episode" | "profile_anchor" | "recent_verified" | "scheduler";
   latencyMs: Record<string, number>;
   hostText: string;
+  boundaryDecision?: BoundaryDecision;
   createdAt: string;
 }
