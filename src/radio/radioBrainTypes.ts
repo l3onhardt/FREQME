@@ -58,6 +58,9 @@ export interface RadioEpisodeItem {
   fitToProfile: string;
   fitToContext: string;
   avoidBecause: string[];
+  contractFit?: string;
+  returnPlan?: string;
+  narrationCue?: string;
   musicTask?: MusicTask;
 }
 

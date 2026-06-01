@@ -7,7 +7,7 @@ import { PlaybackQueue, type QueueItem } from "./playbackQueue.js";
 import { assessProfileQuality } from "./profileQuality.js";
 import type { QueueWarmer } from "./queueWarmer.js";
 import type { ReflectionLoop, ReflectionMemory } from "./reflectionLoop.js";
-import type { ListeningIntentDecision, RadioEpisode } from "./radioBrainTypes.js";
+import type { ListeningIntentDecision, RadioEpisode, StationContract } from "./radioBrainTypes.js";
 
 export type RadioBrainResultStatus = "bridge_ready" | "explained" | "acknowledged" | "queued" | "not_found";
 
@@ -46,6 +46,7 @@ export interface RadioBrainDeps {
   responder: Pick<HostResponder, "acknowledge" | "explainCurrentTrack">;
   traceStore: Pick<DecisionTraceStore, "latestForSession" | "latestForTrack">;
   reflectionLoop: Pick<ReflectionLoop, "record">;
+  contractManager?: { update(existing: StationContract | null | undefined, intent: ListeningIntentDecision): StationContract };
   bridgePicker?: (uid: string | null, profile: TasteProfile | null) => Promise<BridgePick | null>;
   onBackgroundPlanFailure?: (failure: {
     uid: string | null;
@@ -64,11 +65,13 @@ type PlanAndWarmArgs = RadioBrainArgs & {
   generation: number;
   state: RadioBrainSessionState;
   stateLocator: RadioBrainStateLocator;
+  stationContract?: StationContract;
 };
 
 interface RadioBrainSessionState {
   generation: number;
   reflectionMemory?: ReflectionMemory;
+  stationContract?: StationContract;
 }
 
 type RadioBrainStateLocator =
@@ -160,6 +163,7 @@ export class RadioBrain {
       generation: state.generation,
       state,
       stateLocator: this.stateLocatorFor(args),
+      stationContract: state.stationContract,
     });
 
     return { status: "bridge_ready", hostText: "" };
@@ -187,6 +191,11 @@ export class RadioBrain {
       this.clearConflictingReady(args.queue, intent);
     }
 
+    if (this.deps.contractManager && intent.shouldReplan) {
+      state.stationContract = this.deps.contractManager.update(state.stationContract, intent);
+      args.contextPack.sessionWorkingMemory.stationContract = state.stationContract;
+    }
+
     this.recordReflection(args, intent);
     const hostText = this.deps.responder.acknowledge(intent);
 
@@ -199,6 +208,7 @@ export class RadioBrain {
         generation: state.generation,
         state,
         stateLocator: this.stateLocatorFor(args),
+        stationContract: state.stationContract,
       });
     }
 
@@ -235,6 +245,7 @@ export class RadioBrain {
       readyTracks: args.queue.readyItems().map((item) => item.track),
       recentTurns: args.recentTurns,
       createdFrom: args.createdFrom,
+      stationContract: args.stationContract,
     });
     if (!this.isCurrent(args)) return;
 

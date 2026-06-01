@@ -1,7 +1,7 @@
 import type { LLMRouter } from "../services/llmRouter.js";
 import type { StationEnvironment, TasteProfile, Track } from "../types.js";
 import { asStringList, compactText, dedupe, extractJsonObject } from "../utils/text.js";
-import type { ListeningIntentDecision, ProfileQuality, RadioEpisode, RadioEpisodeItem } from "./radioBrainTypes.js";
+import type { ListeningIntentDecision, ProfileQuality, RadioEpisode, RadioEpisodeItem, StationContract } from "./radioBrainTypes.js";
 import { EPISODE_PLANNER_TIMEOUT_MS } from "./radioBrainTimings.js";
 
 export interface EpisodePlanArgs {
@@ -16,6 +16,7 @@ export interface EpisodePlanArgs {
   readyTracks: Track[];
   recentTurns: Array<Record<string, unknown>>;
   createdFrom: RadioEpisode["createdFrom"];
+  stationContract?: StationContract;
 }
 
 export class EpisodePlanner {
@@ -80,10 +81,13 @@ ${JSON.stringify(args.profile, null, 2)}
 Environment:
 ${JSON.stringify(args.environment, null, 2)}
 
+Station contract:
+${JSON.stringify(args.stationContract || null, null, 2)}
+
 Playback:
 ${JSON.stringify({ currentTrack: args.currentTrack, playedTracks: args.playedTracks.slice(-8), readyTracks: args.readyTracks }, null, 2)}
 
-Return only JSON with brief, mode_label, arc, duration_tracks, positive_constraints, negative_constraints, items, fallback_policy, host_notes. Each item must include primary_query and backup_queries.`;
+Return only JSON with brief, mode_label, arc, duration_tracks, positive_constraints, negative_constraints, items, fallback_policy, host_notes. Each item must include primary_query and backup_queries, and should include contract_fit, return_plan, and narration_cue when a station contract is active.`;
   }
 
   private items(value: unknown): RadioEpisodeItem[] {
@@ -100,6 +104,9 @@ Return only JSON with brief, mode_label, arc, duration_tracks, positive_constrai
         fitToProfile: compactText(this.field(item, "fit_to_profile", "fitToProfile") || "", 220),
         fitToContext: compactText(this.field(item, "fit_to_context", "fitToContext") || "", 220),
         avoidBecause: asStringList(this.field(item, "avoid_because", "avoidBecause"), 8),
+        contractFit: compactText(this.field(item, "contract_fit", "contractFit") || "", 160) || undefined,
+        returnPlan: compactText(this.field(item, "return_plan", "returnPlan") || "", 220) || undefined,
+        narrationCue: compactText(this.field(item, "narration_cue", "narrationCue") || "", 220) || undefined,
       }))
       .filter((item) => item.primaryQuery);
   }

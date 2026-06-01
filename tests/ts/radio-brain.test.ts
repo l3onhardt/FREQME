@@ -381,6 +381,42 @@ test("planner receives createdFrom correction for correction and startup for sta
   assert.ok(createdFrom.includes("correction"));
 });
 
+test("continuation planning preserves the active station contract", async () => {
+  const queue = new PlaybackQueue();
+  const activeContract = {
+    id: "contract-1",
+    mainDirection: "late-night R&B",
+    rawUserText: "放点深夜听的rnb",
+    allowedAdjacent: ["alt-R&B"],
+    softBridge: ["ambient electronic"],
+    disallowed: ["classical chamber music"],
+    positiveSeeds: ["R&B"],
+    negativeConstraints: [],
+    driftBudget: 1,
+    bridgeCount: 0,
+    mustReturnToContract: false,
+    hostStyle: "standard" as const,
+    createdAt: "2026-06-02T00:00:00.000Z",
+    updatedAt: "2026-06-02T00:00:00.000Z",
+  };
+  let receivedContract: unknown = null;
+  const radio = brain({
+    intentRouter: { classify: (text) => intent({ type: "continuation", rawText: text, shouldReplan: true, shouldClearQueue: false }) },
+    contractManager: { update: () => activeContract } as any,
+    planner: {
+      plan: async (planArgs: any) => {
+        receivedContract = planArgs.stationContract;
+        return episode("autoplay");
+      },
+    },
+  } as any);
+
+  await radio.handleUserText({ ...args(queue), text: "继续保持这个感觉" });
+  await flushBackground();
+
+  assert.equal((receivedContract as any)?.mainDirection, "late-night R&B");
+});
+
 test("stale startup plan does not warm after a newer correction plan starts", async () => {
   const queue = new PlaybackQueue();
   const startupPlanning = deferred<RadioEpisode>();
