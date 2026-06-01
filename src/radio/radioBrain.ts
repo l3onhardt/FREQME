@@ -145,6 +145,7 @@ export class RadioBrain {
 
   async startSession(args: RadioBrainArgs): Promise<RadioBrainResult> {
     const state = this.stateFor(args);
+    this.stationContract(args.contextPack, state);
     if (args.queue.readyDepth() === 0 && this.deps.bridgePicker) {
       const bridge = await this.deps.bridgePicker(args.uid, args.profile);
       if (bridge) {
@@ -171,6 +172,7 @@ export class RadioBrain {
 
   async handleUserText(args: UserTextArgs): Promise<RadioBrainResult> {
     const state = this.stateFor(args);
+    this.stationContract(args.contextPack, state);
     const intent = this.deps.intentRouter.classify(args.text);
 
     if (intent.shouldExplain) {
@@ -328,6 +330,14 @@ export class RadioBrain {
     const memory = contextPack.sessionWorkingMemory.reflectionMemory;
     if (memory && typeof memory === "object" && !Array.isArray(memory)) return memory as ReflectionMemory;
     return {};
+  }
+
+  private stationContract(contextPack: MemoryPack, state: RadioBrainSessionState): StationContract | undefined {
+    if (state.stationContract) return state.stationContract;
+    const contract = contextPack.sessionWorkingMemory.stationContract;
+    if (!contract || typeof contract !== "object" || Array.isArray(contract)) return undefined;
+    state.stationContract = contract as StationContract;
+    return state.stationContract;
   }
 
   private stateFor(args: Pick<RadioBrainArgs, "uid" | "sessionId" | "queue">): RadioBrainSessionState {

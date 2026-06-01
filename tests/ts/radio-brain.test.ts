@@ -417,6 +417,100 @@ test("continuation planning preserves the active station contract", async () => 
   assert.equal((receivedContract as any)?.mainDirection, "late-night R&B");
 });
 
+test("startup planning rehydrates station contract from session memory", async () => {
+  const queue = new PlaybackQueue();
+  const activeContract = {
+    id: "contract-1",
+    mainDirection: "late-night R&B",
+    rawUserText: "放点深夜听的rnb",
+    allowedAdjacent: ["alt-R&B"],
+    softBridge: ["ambient electronic"],
+    disallowed: ["classical chamber music"],
+    positiveSeeds: ["R&B"],
+    negativeConstraints: [],
+    driftBudget: 1,
+    bridgeCount: 0,
+    mustReturnToContract: false,
+    hostStyle: "standard" as const,
+    createdAt: "2026-06-02T00:00:00.000Z",
+    updatedAt: "2026-06-02T00:00:00.000Z",
+  };
+  const pack = memoryPack();
+  pack.sessionWorkingMemory.stationContract = activeContract;
+  let receivedContract: unknown = null;
+  const radio = brain({
+    bridgePicker: async () => null,
+    planner: {
+      plan: async (planArgs: any) => {
+        receivedContract = planArgs.stationContract;
+        return episode(planArgs.createdFrom);
+      },
+    },
+  });
+
+  await radio.startSession({ ...args(queue), contextPack: pack });
+  await flushBackground();
+
+  assert.equal((receivedContract as any)?.mainDirection, "late-night R&B");
+});
+
+test("startup planning uses the latest station contract after a delayed bridge", async () => {
+  const queue = new PlaybackQueue();
+  const bridge = deferred<null>();
+  const updatedContract = {
+    id: "contract-updated",
+    mainDirection: "late-night R&B",
+    rawUserText: "late night r&b",
+    allowedAdjacent: ["alt-R&B"],
+    softBridge: ["ambient electronic"],
+    disallowed: ["classical chamber music"],
+    positiveSeeds: ["R&B"],
+    negativeConstraints: [],
+    driftBudget: 1,
+    bridgeCount: 0,
+    mustReturnToContract: false,
+    hostStyle: "standard" as const,
+    createdAt: "2026-06-02T00:00:00.000Z",
+    updatedAt: "2026-06-02T00:00:00.000Z",
+  };
+  let startupContract: unknown = null;
+  let userRequestContract: unknown = null;
+  const radio = brain({
+    bridgePicker: () => bridge.promise,
+    intentRouter: {
+      classify: (text) =>
+        intent({
+          type: "music_direction_request",
+          rawText: text,
+          positiveSeeds: ["R&B"],
+          shouldReplan: true,
+          shouldClearQueue: true,
+        }),
+    },
+    contractManager: { update: () => updatedContract } as any,
+    planner: {
+      plan: async (planArgs: any) => {
+        if (planArgs.createdFrom === "startup") startupContract = planArgs.stationContract;
+        if (planArgs.createdFrom === "user_request") userRequestContract = planArgs.stationContract;
+        return episode(planArgs.createdFrom);
+      },
+    },
+  } as any);
+
+  const starting = radio.startSession(args(queue));
+  await flushBackground();
+  await radio.handleUserText({ ...args(queue), text: "late night r&b" });
+  await flushBackground();
+
+  assert.equal((userRequestContract as any)?.id, "contract-updated");
+
+  bridge.resolve(null);
+  await starting;
+  await flushBackground();
+
+  assert.equal((startupContract as any)?.id, "contract-updated");
+});
+
 test("stale startup plan does not warm after a newer correction plan starts", async () => {
   const queue = new PlaybackQueue();
   const startupPlanning = deferred<RadioEpisode>();
