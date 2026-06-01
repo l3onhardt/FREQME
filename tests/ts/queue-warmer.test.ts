@@ -53,6 +53,53 @@ const episodeWithTwoItems: RadioEpisode = {
   ],
 };
 
+const singlePrimaryEpisode: RadioEpisode = {
+  ...episode,
+  id: "episode-primary",
+  items: [
+    {
+      primaryQuery: "Nils Frahm Says",
+      backupQueries: [],
+      reason: "单曲可直接命中。",
+      style: "instrumental",
+      energy: "low-medium",
+      vocality: "instrumental",
+      fitToProfile: "钢琴锚点",
+      fitToContext: "工作",
+      avoidBecause: ["EDM"],
+    },
+  ],
+};
+
+const episodeWithThrowingItem: RadioEpisode = {
+  ...episode,
+  id: "episode-throws",
+  items: [
+    {
+      primaryQuery: "throw query",
+      backupQueries: [],
+      reason: "这个候选会失败。",
+      style: "instrumental",
+      energy: "low",
+      vocality: "instrumental",
+      fitToProfile: "测试",
+      fitToContext: "测试",
+      avoidBecause: [],
+    },
+    {
+      primaryQuery: "Max Richter On the Nature of Daylight",
+      backupQueries: [],
+      reason: "后续候选仍然可以补上。",
+      style: "modern classical",
+      energy: "low",
+      vocality: "instrumental",
+      fitToProfile: "古典氛围",
+      fitToContext: "专注",
+      avoidBecause: ["EDM"],
+    },
+  ],
+};
+
 class FakeVerifier {
   tasks: MusicTask[] = [];
 
@@ -88,6 +135,52 @@ class FakeVerifier {
       recoveryOptions: [],
       diagnostics: { searchedQueries: [query] },
     };
+  }
+}
+
+class RawTextSensitiveVerifier extends FakeVerifier {
+  rawUserTexts: string[] = [];
+
+  override async verify(
+    task: MusicTask,
+    _uid: string | null = null,
+    rawUserText = "",
+  ): Promise<SearchVerification> {
+    this.rawUserTexts.push(rawUserText);
+    const query = task.searchGoals[0] || "";
+    if (rawUserText === query) {
+      return {
+        status: "not_found",
+        verification: {},
+        fallbackCandidates: [],
+        recoveryOptions: [],
+        diagnostics: { rejectedQueries: [query] },
+      };
+    }
+    return super.verify(task);
+  }
+}
+
+class SlowVerifier extends FakeVerifier {
+  private releaseVerify: (() => void) | null = null;
+  readonly firstVerificationStarted = new Promise<void>((resolve) => {
+    this.releaseVerify = resolve;
+  });
+
+  override async verify(task: MusicTask): Promise<SearchVerification> {
+    await new Promise<void>((resolve) => setTimeout(resolve, 20));
+    this.releaseVerify?.();
+    return super.verify(task);
+  }
+}
+
+class ThrowingVerifier extends FakeVerifier {
+  override async verify(task: MusicTask): Promise<SearchVerification> {
+    this.tasks.push(task);
+    if (task.searchGoals[0] === "throw query") {
+      throw new Error("verifier failed");
+    }
+    return super.verify(task);
   }
 }
 
@@ -133,6 +226,52 @@ test("queue warmer verifies backups and writes a trace", async () => {
   assert.equal(traceStore.traces.length, 1);
   assert.equal(verifier.tasks[0]?.searchGoals[0], "bad query");
   assert.equal(verifier.tasks[1]?.searchGoals[0], "Nils Frahm Says");
+});
+
+test("queue warmer does not pass the planned query as raw user text", async () => {
+  const queue = new PlaybackQueue(2);
+  const verifier = new RawTextSensitiveVerifier();
+  const traceStore = new FakeTraceStore();
+  const warmer = new QueueWarmer(verifier as any, traceStore as unknown as DecisionTraceStore);
+
+  const added = await warmer.warm(warmArgs(queue, singlePrimaryEpisode));
+
+  assert.equal(added, 1);
+  assert.equal(queue.readyItems()[0]?.track.name, "Says");
+  assert.equal(verifier.rawUserTexts[0], "");
+  assert.equal(verifier.tasks[0]?.searchGoals[0], "Nils Frahm Says");
+});
+
+test("concurrent warm calls for the same episode do not duplicate a single item", async () => {
+  const queue = new PlaybackQueue(2);
+  const verifier = new SlowVerifier();
+  const traceStore = new FakeTraceStore();
+  const warmer = new QueueWarmer(verifier as any, traceStore as unknown as DecisionTraceStore);
+  const args = warmArgs(queue, singlePrimaryEpisode);
+
+  const firstWarm = warmer.warm(args);
+  await verifier.firstVerificationStarted;
+  const secondWarm = warmer.warm(args);
+  const added = await Promise.all([firstWarm, secondWarm]);
+
+  assert.deepEqual(added, [1, 0]);
+  assert.equal(queue.readyItems().length, 1);
+  assert.equal(queue.readyItems()[0]?.track.name, "Says");
+  assert.equal(traceStore.traces.length, 1);
+});
+
+test("queue warmer treats verifier exceptions as failed attempts and continues", async () => {
+  const queue = new PlaybackQueue(2);
+  const verifier = new ThrowingVerifier();
+  const traceStore = new FakeTraceStore();
+  const warmer = new QueueWarmer(verifier as any, traceStore as unknown as DecisionTraceStore);
+
+  const added = await warmer.warm(warmArgs(queue, episodeWithThrowingItem));
+
+  assert.equal(added, 1);
+  assert.equal(queue.readyItems()[0]?.track.name, "On the Nature of Daylight");
+  assert.equal(verifier.tasks[0]?.searchGoals[0], "throw query");
+  assert.equal(verifier.tasks[1]?.searchGoals[0], "Max Richter On the Nature of Daylight");
 });
 
 test("queue warmer does not exceed targetReady when queue already has ready items", async () => {
