@@ -53,6 +53,7 @@ type PlanAndWarmArgs = RadioBrainArgs & {
   intent: ListeningIntentDecision;
   createdFrom: RadioEpisode["createdFrom"];
   intentType: ListeningIntentDecision["type"] | "autoplay";
+  generation: number;
 };
 
 const REFLECTION_EVENT_TYPES = new Set<ListeningIntentDecision["type"]>([
@@ -62,11 +63,14 @@ const REFLECTION_EVENT_TYPES = new Set<ListeningIntentDecision["type"]>([
 ]);
 
 export class RadioBrain {
+  private generation = 0;
+  private reflectionMemoryState: ReflectionMemory = {};
+
   constructor(private readonly deps: RadioBrainDeps) {}
 
   async startSession(args: RadioBrainArgs): Promise<RadioBrainResult> {
     if (args.queue.readyDepth() === 0 && this.deps.bridgePicker) {
-      const bridge = await this.deps.bridgePicker(args.uid, args.profile).catch(() => null);
+      const bridge = await this.deps.bridgePicker(args.uid, args.profile);
       if (bridge) {
         args.queue.addReady(bridge.track, bridge.url, {
           type: "startup_bridge",
@@ -80,6 +84,7 @@ export class RadioBrain {
       intent: this.startupIntent(),
       createdFrom: "startup",
       intentType: "autoplay",
+      generation: this.generation,
     });
 
     return { status: "bridge_ready", hostText: "" };
@@ -96,8 +101,12 @@ export class RadioBrain {
       };
     }
 
+    if (intent.shouldClearQueue || intent.shouldReplan) {
+      this.generation += 1;
+    }
+
     if (intent.shouldClearQueue) {
-      this.clearConflictingReady(args.queue, intent.negativeConstraints);
+      this.clearConflictingReady(args.queue, intent);
     }
 
     this.recordReflection(args, intent);
@@ -109,6 +118,7 @@ export class RadioBrain {
         intent,
         createdFrom: intent.type === "correction" ? "correction" : "user_request",
         intentType: intent.type,
+        generation: this.generation,
       });
     }
 
@@ -121,6 +131,7 @@ export class RadioBrain {
 
   private async planAndWarm(args: PlanAndWarmArgs): Promise<void> {
     if (!this.deps.planner || !this.deps.warmer) return;
+    if (args.generation !== this.generation) return;
 
     const profileQuality = assessProfileQuality(args.profile);
     const episode = await this.deps.planner.plan({
@@ -136,6 +147,7 @@ export class RadioBrain {
       recentTurns: args.recentTurns,
       createdFrom: args.createdFrom,
     });
+    if (args.generation !== this.generation) return;
 
     await this.deps.warmer.warm({
       queue: args.queue,
@@ -150,9 +162,14 @@ export class RadioBrain {
     });
   }
 
-  private clearConflictingReady(queue: PlaybackQueue, negativeConstraints: string[]): void {
-    const normalizedConstraints = negativeConstraints.map((constraint) => constraint.trim().toLocaleLowerCase()).filter(Boolean);
-    if (!normalizedConstraints.length) return;
+  private clearConflictingReady(queue: PlaybackQueue, intent: ListeningIntentDecision): void {
+    const normalizedConstraints = intent.negativeConstraints.map((constraint) => constraint.trim().toLocaleLowerCase()).filter(Boolean);
+    if (!normalizedConstraints.length) {
+      if (intent.type === "correction" || intent.type === "negative_feedback") {
+        queue.clearReady();
+      }
+      return;
+    }
 
     queue.removeReadyWhere((item) => this.conflictsWithConstraints(item, normalizedConstraints));
   }
@@ -164,7 +181,18 @@ export class RadioBrain {
       .join(" ")
       .toLocaleLowerCase();
 
-    return normalizedConstraints.some((constraint) => searchable.includes(constraint));
+    return normalizedConstraints.some((constraint) => this.matchesConstraint(searchable, constraint));
+  }
+
+  private matchesConstraint(searchable: string, constraint: string): boolean {
+    if (/^[a-z0-9]+$/i.test(constraint)) {
+      return new RegExp(`(?<![a-z0-9])${this.escapeRegExp(constraint)}(?![a-z0-9])`, "i").test(searchable);
+    }
+    return searchable.includes(constraint);
+  }
+
+  private escapeRegExp(value: string): string {
+    return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   }
 
   private recordReflection(args: RadioBrainArgs, intent: ListeningIntentDecision): void {
@@ -178,10 +206,12 @@ export class RadioBrain {
       rawText: intent.rawText,
       constraints: intent.negativeConstraints,
     });
+    this.reflectionMemoryState = updated;
     args.contextPack.sessionWorkingMemory.reflectionMemory = updated;
   }
 
   private reflectionMemory(contextPack: MemoryPack): ReflectionMemory {
+    if (Object.keys(this.reflectionMemoryState).length) return this.reflectionMemoryState;
     const memory = contextPack.sessionWorkingMemory.reflectionMemory;
     if (memory && typeof memory === "object" && !Array.isArray(memory)) return memory as ReflectionMemory;
     return {};
