@@ -63,5 +63,20 @@ export class PlaybackQueue {
       }
     }
   }
-}
 
+  removeReadyWhere(predicate: (item: QueueItem) => boolean): number {
+    let removed = 0;
+    for (let index = this.items.length - 1; index >= 0; index -= 1) {
+      const item = this.items[index];
+      if (item?.status === "ready" && predicate(item)) {
+        this.items.splice(index, 1);
+        removed += 1;
+      }
+    }
+    return removed;
+  }
+
+  readyDepth(): number {
+    return this.readyItems().length;
+  }
+}

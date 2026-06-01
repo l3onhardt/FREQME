@@ -49,6 +49,9 @@ export interface SelectionReason {
   text: string;
   understoodIntent?: string;
   verificationNote?: string;
+  episodeId?: string;
+  traceId?: string;
+  fallbackLevel?: string;
 }
 
 export type MusicTaskType =
