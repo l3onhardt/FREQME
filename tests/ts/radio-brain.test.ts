@@ -16,6 +16,12 @@ function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void; reje
   return { promise, resolve, reject };
 }
 
+async function flushBackground(): Promise<void> {
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
+}
+
 function track(id: string, name = id): Track {
   return { id, name, artist: "Artist" };
 }
@@ -299,7 +305,7 @@ test("planner receives createdFrom correction for correction and startup for sta
 
   await radio.startSession(args());
   await radio.handleUserText({ ...args(), text: "不是这个" });
-  await new Promise((resolve) => setImmediate(resolve));
+  await flushBackground();
 
   assert.ok(createdFrom.includes("startup"));
   assert.ok(createdFrom.includes("correction"));
@@ -341,12 +347,95 @@ test("stale startup plan does not warm after a newer correction plan starts", as
   await radio.handleUserText({ ...args(queue), text: "不要 edm" });
 
   startupPlanning.resolve(episode("startup"));
-  await new Promise((resolve) => setImmediate(resolve));
+  await flushBackground();
   assert.deepEqual(warmCreatedFrom, []);
 
   correctionPlanning.resolve(episode("correction"));
-  await new Promise((resolve) => setImmediate(resolve));
+  await flushBackground();
   assert.deepEqual(warmCreatedFrom, ["correction"]);
+});
+
+test("a correction in one session does not invalidate another session background plan", async () => {
+  const queueA = new PlaybackQueue();
+  const queueB = new PlaybackQueue();
+  const sessionBPlanning = deferred<RadioEpisode>();
+  const warmSessionIds: Array<number | null> = [];
+  const radio = brain({
+    bridgePicker: async () => null,
+    intentRouter: {
+      classify: (text) =>
+        intent({
+          type: "correction",
+          rawText: text,
+          negativeConstraints: ["edm"],
+          shouldReplan: true,
+          shouldClearQueue: true,
+        }),
+    },
+    planner: {
+      plan: async (planArgs) => {
+        if (planArgs.sessionId === 202 && planArgs.createdFrom === "startup") return sessionBPlanning.promise;
+        return episode(planArgs.createdFrom);
+      },
+    },
+    warmer: {
+      warm: async (warmArgs) => {
+        warmSessionIds.push(warmArgs.sessionId);
+        return 0;
+      },
+    },
+  });
+
+  await radio.startSession({ ...args(queueB), uid: "user-b", sessionId: 202 });
+  await radio.handleUserText({ ...args(queueA), uid: "user-a", sessionId: 101, text: "不要 edm" });
+
+  sessionBPlanning.resolve(episode("startup"));
+  await flushBackground();
+
+  assert.ok(warmSessionIds.includes(202));
+});
+
+test("stale warmer already in progress cannot add tracks after a newer correction", async () => {
+  const queue = new PlaybackQueue();
+  const startupWarmStarted = deferred<void>();
+  const startupWarmResume = deferred<void>();
+  const radio = brain({
+    bridgePicker: async () => null,
+    intentRouter: {
+      classify: (text) =>
+        intent({
+          type: "correction",
+          rawText: text,
+          negativeConstraints: ["edm"],
+          shouldReplan: true,
+          shouldClearQueue: true,
+        }),
+    },
+    planner: {
+      plan: async (planArgs) => episode(planArgs.createdFrom),
+    },
+    warmer: {
+      warm: async (warmArgs) => {
+        if (warmArgs.episode.createdFrom === "startup") {
+          startupWarmStarted.resolve();
+          await startupWarmResume.promise;
+          warmArgs.queue.addReady(track("stale-startup"), "stale-url", reason({ text: "stale startup" }));
+          return 1;
+        }
+        warmArgs.queue.addReady(track("fresh-correction"), "fresh-url", reason({ text: "fresh correction" }));
+        return 1;
+      },
+    },
+  });
+
+  await radio.startSession(args(queue));
+  await startupWarmStarted.promise;
+  await radio.handleUserText({ ...args(queue), text: "不要 edm" });
+
+  startupWarmResume.resolve();
+  await flushBackground();
+
+  assert.deepEqual(queue.readyItems().map((item) => item.track.id), ["fresh-correction"]);
 });
 
 test("broad direction request returns acknowledgement before background planner resolves", async () => {
@@ -369,9 +458,33 @@ test("broad direction request returns acknowledgement before background planner 
 test("planner and warmer receive startup user and correction orchestration args", async () => {
   const queue = new PlaybackQueue();
   const pack = memoryPack();
+  const environment = env();
+  const currentTrack = track("current-track");
+  const playedTracks = [track("played-one")];
+  const recentTurns = [{ role: "listener", text: "previous" }];
   queue.addReady(track("ready-track"), "url", reason({ text: "already ready" }));
-  const planCalls: Array<{ createdFrom: string; readyTrackIds: string[]; profileQualityLevel: string }> = [];
-  const warmCalls: Array<{ createdFrom: string; intentType: string; targetReady: number; sameContextPack: boolean; profileQualityLevel: string }> = [];
+  const planCalls: Array<{
+    createdFrom: string;
+    uid: string | null;
+    sessionId: number | null;
+    intentType: string;
+    readyTrackIds: string[];
+    sameEnvironment: boolean;
+    currentTrackId: string | null;
+    playedTrackIds: string[];
+    sameRecentTurns: boolean;
+    profileQualityLevel: string;
+  }> = [];
+  const warmCalls: Array<{
+    createdFrom: string;
+    uid: string | null;
+    sessionId: number | null;
+    intentType: string;
+    targetReady: number;
+    sameContextPack: boolean;
+    sameEnvironment: boolean;
+    profileQualityLevel: string;
+  }> = [];
   const intents = [
     intent({ type: "music_direction_request", rawText: "more focus", shouldReplan: true, shouldClearQueue: false }),
     intent({ type: "correction", rawText: "not edm", negativeConstraints: ["edm"], shouldReplan: true, shouldClearQueue: true }),
@@ -385,7 +498,14 @@ test("planner and warmer receive startup user and correction orchestration args"
       plan: async (planArgs) => {
         planCalls.push({
           createdFrom: planArgs.createdFrom,
+          uid: planArgs.uid,
+          sessionId: planArgs.sessionId,
+          intentType: planArgs.intent.type,
           readyTrackIds: planArgs.readyTracks.map((readyTrack) => readyTrack.id),
+          sameEnvironment: planArgs.environment === environment,
+          currentTrackId: planArgs.currentTrack?.id || null,
+          playedTrackIds: planArgs.playedTracks.map((playedTrack) => playedTrack.id),
+          sameRecentTurns: planArgs.recentTurns === recentTurns,
           profileQualityLevel: planArgs.profileQuality.level,
         });
         return episode(planArgs.createdFrom);
@@ -395,9 +515,12 @@ test("planner and warmer receive startup user and correction orchestration args"
       warm: async (warmArgs) => {
         warmCalls.push({
           createdFrom: warmArgs.episode.createdFrom,
+          uid: warmArgs.uid,
+          sessionId: warmArgs.sessionId,
           intentType: warmArgs.intentType,
           targetReady: warmArgs.targetReady,
           sameContextPack: warmArgs.contextPack === pack,
+          sameEnvironment: warmArgs.environment === environment,
           profileQualityLevel: warmArgs.profileQuality.level,
         });
         return 0;
@@ -405,34 +528,60 @@ test("planner and warmer receive startup user and correction orchestration args"
     },
   });
 
-  await radio.startSession({ ...args(queue), contextPack: pack });
-  await radio.handleUserText({ ...args(queue), contextPack: pack, text: "more focus" });
-  await radio.handleUserText({ ...args(queue), contextPack: pack, text: "not edm" });
-  await new Promise((resolve) => setImmediate(resolve));
+  const sharedArgs = {
+    ...args(queue),
+    uid: "arg-user",
+    sessionId: 456,
+    contextPack: pack,
+    environment,
+    currentTrack,
+    playedTracks,
+    recentTurns,
+  };
+  await radio.startSession(sharedArgs);
+  await radio.handleUserText({ ...sharedArgs, text: "more focus" });
+  await radio.handleUserText({ ...sharedArgs, text: "not edm" });
+  await flushBackground();
 
   assert.deepEqual(planCalls.map((call) => call.createdFrom), ["startup", "user_request", "correction"]);
   assert.deepEqual(planCalls.map((call) => call.profileQualityLevel), ["low_confidence", "low_confidence", "low_confidence"]);
+  assert.deepEqual(planCalls.map((call) => call.uid), ["arg-user", "arg-user", "arg-user"]);
+  assert.deepEqual(planCalls.map((call) => call.sessionId), [456, 456, 456]);
+  assert.deepEqual(planCalls.map((call) => call.intentType), ["continuation", "music_direction_request", "correction"]);
+  assert.deepEqual(planCalls.map((call) => call.sameEnvironment), [true, true, true]);
+  assert.deepEqual(planCalls.map((call) => call.currentTrackId), ["current-track", "current-track", "current-track"]);
+  assert.deepEqual(planCalls.map((call) => call.playedTrackIds), [["played-one"], ["played-one"], ["played-one"]]);
+  assert.deepEqual(planCalls.map((call) => call.sameRecentTurns), [true, true, true]);
   assert.deepEqual(planCalls[0]?.readyTrackIds, ["ready-track"]);
   assert.deepEqual(warmCalls, [
     {
       createdFrom: "startup",
+      uid: "arg-user",
+      sessionId: 456,
       intentType: "autoplay",
       targetReady: 2,
       sameContextPack: true,
+      sameEnvironment: true,
       profileQualityLevel: "low_confidence",
     },
     {
       createdFrom: "user_request",
+      uid: "arg-user",
+      sessionId: 456,
       intentType: "music_direction_request",
       targetReady: 2,
       sameContextPack: true,
+      sameEnvironment: true,
       profileQualityLevel: "low_confidence",
     },
     {
       createdFrom: "correction",
+      uid: "arg-user",
+      sessionId: 456,
       intentType: "correction",
       targetReady: 2,
       sameContextPack: true,
+      sameEnvironment: true,
       profileQualityLevel: "low_confidence",
     },
   ]);
@@ -485,4 +634,34 @@ test("reflection memory persists across calls with fresh context packs", async (
   await radio.handleUserText({ ...args(), contextPack: memoryPack(), text: "以后少放冷的" });
 
   assert.deepEqual(seenExistingConstraints, [["old"], ["old", "avoid-bright"]]);
+});
+
+test("reflection memory is isolated between user sessions on one radio brain", async () => {
+  const seenExistingConstraints: string[][] = [];
+  const radio = brain({
+    intentRouter: {
+      classify: (text) =>
+        intent({
+          type: "preference_update",
+          rawText: text,
+          negativeConstraints: [text],
+          shouldReplan: false,
+          shouldClearQueue: false,
+        }),
+    },
+    reflectionLoop: {
+      record: (recordArgs) => {
+        seenExistingConstraints.push(recordArgs.existing.currentConstraints || []);
+        return {
+          ...recordArgs.existing,
+          currentConstraints: [...(recordArgs.existing.currentConstraints || []), ...(recordArgs.constraints || [])],
+        };
+      },
+    },
+  });
+
+  await radio.handleUserText({ ...args(), uid: "user-a", sessionId: 1, contextPack: memoryPack(), text: "avoid-a" });
+  await radio.handleUserText({ ...args(), uid: "user-b", sessionId: 2, contextPack: memoryPack(), text: "avoid-b" });
+
+  assert.deepEqual(seenExistingConstraints, [["old"], ["old"]]);
 });

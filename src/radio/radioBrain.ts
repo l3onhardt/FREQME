@@ -1,9 +1,9 @@
-import type { MemoryPack, StationEnvironment, TasteProfile, Track, UserSettings } from "../types.js";
+import type { MemoryPack, SelectionReason, StationEnvironment, TasteProfile, Track, UserSettings } from "../types.js";
 import type { DecisionTraceStore } from "./decisionTraceStore.js";
 import type { EpisodePlanner } from "./episodePlanner.js";
 import type { HostResponder } from "./hostResponder.js";
 import type { IntentRouter } from "./intentRouter.js";
-import type { PlaybackQueue, QueueItem } from "./playbackQueue.js";
+import { PlaybackQueue, type QueueItem } from "./playbackQueue.js";
 import { assessProfileQuality } from "./profileQuality.js";
 import type { QueueWarmer } from "./queueWarmer.js";
 import type { ReflectionLoop, ReflectionMemory } from "./reflectionLoop.js";
@@ -54,7 +54,13 @@ type PlanAndWarmArgs = RadioBrainArgs & {
   createdFrom: RadioEpisode["createdFrom"];
   intentType: ListeningIntentDecision["type"] | "autoplay";
   generation: number;
+  state: RadioBrainSessionState;
 };
+
+interface RadioBrainSessionState {
+  generation: number;
+  reflectionMemory?: ReflectionMemory;
+}
 
 const REFLECTION_EVENT_TYPES = new Set<ListeningIntentDecision["type"]>([
   "correction",
@@ -62,13 +68,65 @@ const REFLECTION_EVENT_TYPES = new Set<ListeningIntentDecision["type"]>([
   "preference_update",
 ]);
 
+class GenerationGuardedQueue extends PlaybackQueue {
+  constructor(
+    private readonly realQueue: PlaybackQueue,
+    private readonly isCurrent: () => boolean,
+  ) {
+    super();
+  }
+
+  override readyItems(): QueueItem[] {
+    return this.realQueue.readyItems();
+  }
+
+  override current(): QueueItem | undefined {
+    return this.realQueue.current();
+  }
+
+  override prewarmNeeded(): number {
+    return this.realQueue.prewarmNeeded();
+  }
+
+  override addReady(track: Track, url: string, selectionReason: SelectionReason, options: { segueText?: string; ttsHash?: string } = {}): void {
+    if (this.isCurrent()) {
+      this.realQueue.addReady(track, url, selectionReason, options);
+    }
+  }
+
+  override promoteNext(previousEvent = "played"): QueueItem | null {
+    return this.isCurrent() ? this.realQueue.promoteNext(previousEvent) : null;
+  }
+
+  override markCurrent(status: "played" | "skipped"): void {
+    if (this.isCurrent()) {
+      this.realQueue.markCurrent(status);
+    }
+  }
+
+  override clearReady(): void {
+    if (this.isCurrent()) {
+      this.realQueue.clearReady();
+    }
+  }
+
+  override removeReadyWhere(predicate: (item: QueueItem) => boolean): number {
+    return this.isCurrent() ? this.realQueue.removeReadyWhere(predicate) : 0;
+  }
+
+  override readyDepth(): number {
+    return this.realQueue.readyDepth();
+  }
+}
+
 export class RadioBrain {
-  private generation = 0;
-  private reflectionMemoryState: ReflectionMemory = {};
+  private readonly keyedStates = new Map<string, RadioBrainSessionState>();
+  private readonly queueStates = new WeakMap<PlaybackQueue, RadioBrainSessionState>();
 
   constructor(private readonly deps: RadioBrainDeps) {}
 
   async startSession(args: RadioBrainArgs): Promise<RadioBrainResult> {
+    const state = this.stateFor(args);
     if (args.queue.readyDepth() === 0 && this.deps.bridgePicker) {
       const bridge = await this.deps.bridgePicker(args.uid, args.profile);
       if (bridge) {
@@ -84,13 +142,15 @@ export class RadioBrain {
       intent: this.startupIntent(),
       createdFrom: "startup",
       intentType: "autoplay",
-      generation: this.generation,
+      generation: state.generation,
+      state,
     });
 
     return { status: "bridge_ready", hostText: "" };
   }
 
   async handleUserText(args: UserTextArgs): Promise<RadioBrainResult> {
+    const state = this.stateFor(args);
     const intent = this.deps.intentRouter.classify(args.text);
 
     if (intent.shouldExplain) {
@@ -102,7 +162,7 @@ export class RadioBrain {
     }
 
     if (intent.shouldClearQueue || intent.shouldReplan) {
-      this.generation += 1;
+      state.generation += 1;
     }
 
     if (intent.shouldClearQueue) {
@@ -118,7 +178,8 @@ export class RadioBrain {
         intent,
         createdFrom: intent.type === "correction" ? "correction" : "user_request",
         intentType: intent.type,
-        generation: this.generation,
+        generation: state.generation,
+        state,
       });
     }
 
@@ -131,7 +192,7 @@ export class RadioBrain {
 
   private async planAndWarm(args: PlanAndWarmArgs): Promise<void> {
     if (!this.deps.planner || !this.deps.warmer) return;
-    if (args.generation !== this.generation) return;
+    if (!this.isCurrent(args)) return;
 
     const profileQuality = assessProfileQuality(args.profile);
     const episode = await this.deps.planner.plan({
@@ -147,10 +208,10 @@ export class RadioBrain {
       recentTurns: args.recentTurns,
       createdFrom: args.createdFrom,
     });
-    if (args.generation !== this.generation) return;
+    if (!this.isCurrent(args)) return;
 
     await this.deps.warmer.warm({
-      queue: args.queue,
+      queue: new GenerationGuardedQueue(args.queue, () => this.isCurrent(args)),
       episode,
       uid: args.uid,
       sessionId: args.sessionId,
@@ -160,6 +221,10 @@ export class RadioBrain {
       targetReady: 2,
       contextPack: args.contextPack,
     });
+  }
+
+  private isCurrent(args: Pick<PlanAndWarmArgs, "generation" | "state">): boolean {
+    return args.generation === args.state.generation;
   }
 
   private clearConflictingReady(queue: PlaybackQueue, intent: ListeningIntentDecision): void {
@@ -198,7 +263,8 @@ export class RadioBrain {
   private recordReflection(args: RadioBrainArgs, intent: ListeningIntentDecision): void {
     if (!REFLECTION_EVENT_TYPES.has(intent.type)) return;
 
-    const existing = this.reflectionMemory(args.contextPack);
+    const state = this.stateFor(args);
+    const existing = this.reflectionMemory(args.contextPack, state);
     const updated = this.deps.reflectionLoop.record({
       existing,
       event: intent.type as "correction" | "negative_feedback" | "preference_update",
@@ -206,15 +272,37 @@ export class RadioBrain {
       rawText: intent.rawText,
       constraints: intent.negativeConstraints,
     });
-    this.reflectionMemoryState = updated;
+    state.reflectionMemory = updated;
     args.contextPack.sessionWorkingMemory.reflectionMemory = updated;
   }
 
-  private reflectionMemory(contextPack: MemoryPack): ReflectionMemory {
-    if (Object.keys(this.reflectionMemoryState).length) return this.reflectionMemoryState;
+  private reflectionMemory(contextPack: MemoryPack, state: RadioBrainSessionState): ReflectionMemory {
+    if (state.reflectionMemory) return state.reflectionMemory;
     const memory = contextPack.sessionWorkingMemory.reflectionMemory;
     if (memory && typeof memory === "object" && !Array.isArray(memory)) return memory as ReflectionMemory;
     return {};
+  }
+
+  private stateFor(args: Pick<RadioBrainArgs, "uid" | "sessionId" | "queue">): RadioBrainSessionState {
+    const key = this.stableSessionKey(args);
+    if (key) {
+      const existing = this.keyedStates.get(key);
+      if (existing) return existing;
+      const state: RadioBrainSessionState = { generation: 0 };
+      this.keyedStates.set(key, state);
+      return state;
+    }
+
+    const existing = this.queueStates.get(args.queue);
+    if (existing) return existing;
+    const state: RadioBrainSessionState = { generation: 0 };
+    this.queueStates.set(args.queue, state);
+    return state;
+  }
+
+  private stableSessionKey(args: Pick<RadioBrainArgs, "uid" | "sessionId">): string | null {
+    if (args.uid && args.sessionId !== null) return `${args.uid}/${args.sessionId}`;
+    return null;
   }
 
   private startupIntent(): ListeningIntentDecision {
