@@ -44,9 +44,17 @@ export interface RadioBrainDeps {
   planner?: Pick<EpisodePlanner, "plan">;
   warmer?: Pick<QueueWarmer, "warm">;
   responder: Pick<HostResponder, "acknowledge" | "explainCurrentTrack">;
-  traceStore: Pick<DecisionTraceStore, "latestForSession">;
+  traceStore: Pick<DecisionTraceStore, "latestForSession" | "latestForTrack">;
   reflectionLoop: Pick<ReflectionLoop, "record">;
   bridgePicker?: (uid: string | null, profile: TasteProfile | null) => Promise<BridgePick | null>;
+  onBackgroundPlanFailure?: (failure: {
+    uid: string | null;
+    sessionId: number | null;
+    createdFrom: RadioEpisode["createdFrom"];
+    intentType: ListeningIntentDecision["type"] | "autoplay";
+    message: string;
+    error: unknown;
+  }) => void;
 }
 
 type PlanAndWarmArgs = RadioBrainArgs & {
@@ -162,7 +170,9 @@ export class RadioBrain {
     const intent = this.deps.intentRouter.classify(args.text);
 
     if (intent.shouldExplain) {
-      const trace = this.deps.traceStore.latestForSession(args.uid, args.sessionId);
+      const trace =
+        this.deps.traceStore.latestForTrack(args.uid, args.sessionId, args.currentTrack?.id || "") ||
+        this.deps.traceStore.latestForSession(args.uid, args.sessionId);
       return {
         status: "explained",
         hostText: this.deps.responder.explainCurrentTrack(intent, trace),
@@ -196,7 +206,16 @@ export class RadioBrain {
   }
 
   private startBackgroundPlan(args: PlanAndWarmArgs): void {
-    void this.planAndWarm(args).catch(() => undefined);
+    void this.planAndWarm(args).catch((error) => {
+      this.deps.onBackgroundPlanFailure?.({
+        uid: args.uid,
+        sessionId: args.sessionId,
+        createdFrom: args.createdFrom,
+        intentType: args.intentType,
+        message: error instanceof Error ? error.message : String(error),
+        error,
+      });
+    });
   }
 
   private async planAndWarm(args: PlanAndWarmArgs): Promise<void> {
@@ -241,6 +260,10 @@ export class RadioBrain {
   }
 
   private clearConflictingReady(queue: PlaybackQueue, intent: ListeningIntentDecision): void {
+    if (intent.type === "music_direction_request") {
+      queue.clearReady();
+      return;
+    }
     const normalizedConstraints = intent.negativeConstraints.map((constraint) => constraint.trim().toLocaleLowerCase()).filter(Boolean);
     if (!normalizedConstraints.length) {
       if (intent.type === "correction" || intent.type === "negative_feedback") {

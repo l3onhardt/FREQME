@@ -68,6 +68,47 @@ export class SearchVerifyAgent {
       });
     }
 
+    const local = this.locallyVerifiedSong(candidates, musicTask);
+    if (local && this.canUseLocalVerificationWithoutJudge(musicTask)) {
+      const resolved = await this.audioResolver.resolveWithCandidates(local, uid);
+      if (resolved.ok) {
+        const selectedSong = { ...local, id: resolved.songId || local.id };
+        return {
+          status: "verified",
+          selectedSong,
+          url: resolved.proxyUrl,
+          verification: {
+            confidence: 0.72,
+            matchedEntities: [],
+            versionNote: "Candidate metadata locally matches the concrete query.",
+            risk: "",
+          },
+          fallbackCandidates: [],
+          recoveryOptions: [],
+          usedQuery: local.source || queries[0] || "",
+          diagnostics: {
+            searchedQueries: queries,
+            rejectedQueries: plan.rejectedQueries,
+            generatedQueries: plan.generatedQueries,
+            candidateIds: candidates.map((candidate) => candidate.id).filter(Boolean),
+            attemptedSongIds: [local.id],
+            queryResults,
+            audioAttempts: [
+              {
+                songId: local.id,
+                name: local.name,
+                artist: local.artist,
+                sourceQuery: local.source,
+                ok: resolved.ok,
+                reason: resolved.reason,
+                resolvedSongId: resolved.songId,
+              },
+            ],
+          },
+        };
+      }
+    }
+
     const judgement: Record<string, unknown> = await this.judge(musicTask, candidates).catch(() => ({}));
     const rankedSongs = this.rankedSongs(candidates, judgement, musicTask, contextPack, plan);
     if (!rankedSongs.length) {
@@ -139,9 +180,12 @@ export class SearchVerifyAgent {
   }
 
   private async queryPlan(musicTask: MusicTask, rawUserText = "", contextPack?: MemoryPack): Promise<QueryPlan> {
-    const goals = this.cleanQueries(musicTask.searchGoals, rawUserText).filter(
-      (query) => !this.violatesNegativeConstraints(query, musicTask),
-    );
+    const cleanedGoals = this.cleanQueries(musicTask.searchGoals, rawUserText);
+    const rejectedByNegative = cleanedGoals.filter((query) => this.violatesNegativeConstraints(query, musicTask));
+    const goals = cleanedGoals.filter((query) => !this.violatesNegativeConstraints(query, musicTask));
+    if (cleanedGoals.length && rejectedByNegative.length === cleanedGoals.length) {
+      return { queries: [], rejectedQueries: rejectedByNegative, generatedQueries: [] };
+    }
     const requiresConcrete = this.requiresConcreteQueries(musicTask);
     const fastQueries = this.fastConcreteQueries(musicTask, goals);
     if (fastQueries.length) return { queries: fastQueries, rejectedQueries: [], generatedQueries: [] };
@@ -431,6 +475,10 @@ Return only JSON:
         return tokens.filter((token) => metadata.includes(token)).length >= Math.min(2, tokens.length);
       }) || null
     );
+  }
+
+  private canUseLocalVerificationWithoutJudge(task: MusicTask): boolean {
+    return task.type === "specific_track";
   }
 
   private candidateMatchesRequiredEntities(candidate: Track, task: MusicTask): boolean {
@@ -780,6 +828,28 @@ Return only JSON:
           "summerwalker",
           "jheneaiko",
         );
+        continue;
+      }
+      if (normalized === "edm" || normalized === "electronicdancemusic") {
+        tokens.push(
+          "edm",
+          "electronicdancemusic",
+          "dubstep",
+          "brostep",
+          "deephouse",
+          "house",
+          "futurebass",
+          "drumandbass",
+          "liquiddrumandbass",
+          "dnb",
+          "trap",
+          "techno",
+          "trance",
+        );
+        continue;
+      }
+      if (normalized === "dubstep") {
+        tokens.push("dubstep", "brostep");
         continue;
       }
       tokens.push(normalized);

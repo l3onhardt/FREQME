@@ -34,6 +34,11 @@ import { EpisodePlanner } from "./radio/episodePlanner.js";
 import { QueueWarmer } from "./radio/queueWarmer.js";
 import { ReflectionLoop } from "./radio/reflectionLoop.js";
 import {
+  CONTINUATION_BRAIN_READY_TIMEOUT_MS,
+  USER_REQUEST_BRAIN_READY_TIMEOUT_MS,
+  USER_REQUEST_STILL_PLANNING_AFTER_MS,
+} from "./radio/radioBrainTimings.js";
+import {
   findNewBrainReadyItem,
   isCurrentRequestToken,
   prepareFreshBrainReadyOrReplaceWithFallback,
@@ -81,6 +86,17 @@ const radioBrain = new RadioBrain({
   traceStore,
   reflectionLoop,
   bridgePicker: pickBridgeTrack,
+  onBackgroundPlanFailure: (failure) => {
+    store.logPlaybackEvent("radio_brain_plan_failed", {
+      uid: failure.uid,
+      reason: failure.message,
+      payload: {
+        sessionId: failure.sessionId,
+        createdFrom: failure.createdFrom,
+        intentType: failure.intentType,
+      },
+    });
+  },
 });
 
 const projectRoot = path.resolve(".");
@@ -497,14 +513,26 @@ async function handleRadioSocket(socket: WebSocketType): Promise<void> {
 
   const waitForNewBrainReadyItem = async (
     beforeRequest: ReadyItemSnapshot,
-    timeoutMs = 9000,
+    timeoutMs = USER_REQUEST_BRAIN_READY_TIMEOUT_MS,
     requestToken?: number,
+    options: { stillPlanningAfterMs?: number; onStillPlanning?: () => void } = {},
   ): Promise<ReturnType<typeof queue.readyItems>[number] | null> => {
+    const startedAt = Date.now();
     const deadline = Date.now() + timeoutMs;
+    let stillPlanningSent = false;
     while (Date.now() < deadline) {
       if (requestToken != null && !isCurrentRequestToken(activeRequestToken, requestToken)) return null;
       const ready = findNewBrainReadyItem(queue, beforeRequest);
       if (ready) return ready;
+      if (
+        !stillPlanningSent &&
+        options.onStillPlanning &&
+        options.stillPlanningAfterMs != null &&
+        Date.now() - startedAt >= options.stillPlanningAfterMs
+      ) {
+        stillPlanningSent = true;
+        options.onStillPlanning();
+      }
       await new Promise((resolve) => setTimeout(resolve, 250));
     }
     if (requestToken != null && !isCurrentRequestToken(activeRequestToken, requestToken)) return null;
@@ -732,7 +760,7 @@ async function handleRadioSocket(socket: WebSocketType): Promise<void> {
     }
     if (!queue.readyItems().length && allowContinuation && activeRequestToken == null) {
       const beforeContinuation = kickBrainContinuation();
-      const ready = await waitForNewBrainReadyItem(beforeContinuation, 2000);
+      const ready = await waitForNewBrainReadyItem(beforeContinuation, CONTINUATION_BRAIN_READY_TIMEOUT_MS);
       if (ready) prepareFreshBrainReadyForPromotion(queue, beforeContinuation);
     }
     if (!queue.readyItems().length) await fillQueue(1, false);
@@ -867,7 +895,12 @@ async function handleRadioSocket(socket: WebSocketType): Promise<void> {
           }
           send({ type: "request_status", status: "planning", text: result.hostText });
           synthesizeAndSendDjMessage(result.hostText);
-          const ready = await waitForNewBrainReadyItem(readyBeforeRequest, 9000, requestToken);
+          const ready = await waitForNewBrainReadyItem(readyBeforeRequest, USER_REQUEST_BRAIN_READY_TIMEOUT_MS, requestToken, {
+            stillPlanningAfterMs: USER_REQUEST_STILL_PLANNING_AFTER_MS,
+            onStillPlanning: () => {
+              send({ type: "request_status", status: "planning", text: "我还在筛可播版本，先让当前这首撑住，不会急着乱切。" });
+            },
+          });
           if (!isCurrentRequestToken(activeRequestToken, requestToken)) return;
           if (ready) {
             recentTurns.push({ user: requestText, result: "ready", at: new Date().toISOString() });

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { EpisodePlanner } from "../../src/radio/episodePlanner.js";
+import { EPISODE_PLANNER_TIMEOUT_MS } from "../../src/radio/radioBrainTimings.js";
 import type { ListeningIntentDecision, ProfileQuality } from "../../src/radio/radioBrainTypes.js";
 import type { StationEnvironment, TasteProfile } from "../../src/types.js";
 
@@ -81,6 +82,12 @@ class StaticJsonFakeLlm {
   }
 }
 
+class ThrowingFakeLlm {
+  async chat(): Promise<string> {
+    throw new Error("planner provider aborted");
+  }
+}
+
 const intent: ListeningIntentDecision = {
   type: "correction",
   rawText: "不是这种，太电了；我要没有人声的安静专注背景",
@@ -125,6 +132,7 @@ test("episode planner creates an episode shape with backups", async () => {
     "Olafur Arnalds Near Light",
   ]);
   assert.match(llm.calls[0]?.prompt || "", /low_confidence/);
+  assert.equal(llm.calls[0]?.options["timeoutMs"], EPISODE_PLANNER_TIMEOUT_MS);
 });
 
 test("episode planner caps duration and item count at five tracks", async () => {
@@ -216,4 +224,68 @@ test("episode planner does not let invalid items inflate duration", async () => 
 
   assert.equal(episode.items.length, 2);
   assert.equal(episode.durationTracks, 2);
+});
+
+test("episode planner recovers empty LLM item lists with concrete intent-aware songs", async () => {
+  const planner = new EpisodePlanner(
+    new StaticJsonFakeLlm({
+      brief: "The LLM understood the request but forgot concrete items.",
+      mode_label: "focus instrumental",
+      duration_tracks: 4,
+      negative_constraints: ["EDM", "dubstep", "emo"],
+      items: [],
+    }) as any,
+  );
+
+  const episode = await planner.plan({
+    uid: "42",
+    sessionId: 7,
+    intent,
+    profile,
+    profileQuality,
+    environment,
+    currentTrack: null,
+    playedTracks: [],
+    readyTracks: [],
+    recentTurns: [],
+    createdFrom: "correction",
+  });
+
+  assert.equal(episode.items.length, 4);
+  assert.deepEqual(
+    episode.items.map((item) => item.primaryQuery),
+    [
+      "Nils Frahm Says",
+      "Ryuichi Sakamoto Energy Flow",
+      "Max Richter On The Nature Of Daylight",
+      "Olafur Arnalds Near Light",
+    ],
+  );
+  assert.ok(episode.negativeConstraints.includes("EDM"));
+});
+
+test("episode planner recovers provider failure with a concrete fallback episode", async () => {
+  const planner = new EpisodePlanner(new ThrowingFakeLlm() as any);
+
+  const episode = await planner.plan({
+    uid: "42",
+    sessionId: 7,
+    intent,
+    profile,
+    profileQuality,
+    environment,
+    currentTrack: null,
+    playedTracks: [],
+    readyTracks: [],
+    recentTurns: [],
+    createdFrom: "correction",
+  });
+
+  assert.equal(episode.modeLabel, "安静专注工作流");
+  assert.equal(episode.items.length, 3);
+  assert.deepEqual(
+    episode.items.map((item) => item.primaryQuery),
+    ["Nils Frahm Says", "Ryuichi Sakamoto Energy Flow", "Max Richter On The Nature Of Daylight"],
+  );
+  assert.match(episode.fallbackPolicy, /planner unavailable/);
 });

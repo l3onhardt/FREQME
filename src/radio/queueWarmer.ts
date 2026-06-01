@@ -1,4 +1,5 @@
 import type { MemoryPack, MusicTask, StationEnvironment } from "../types.js";
+import { dedupe, normalizeMatchText } from "../utils/text.js";
 import type { DecisionTraceStore } from "./decisionTraceStore.js";
 import type { PlaybackQueue } from "./playbackQueue.js";
 import type {
@@ -75,6 +76,7 @@ export class QueueWarmer {
 
   private async tryItem(args: QueueWarmArgs, item: RadioEpisodeItem): Promise<boolean> {
     if (!this.isCurrent(args)) return false;
+    if (this.itemViolatesNegativeConstraints(args.episode, item)) return false;
     const queries = [item.primaryQuery, ...item.backupQueries].filter(Boolean);
     const rejectedCandidates: string[] = [];
     const verificationAttempts: string[] = [];
@@ -143,5 +145,51 @@ export class QueueWarmer {
       searchGoals: [query],
       mustNotSearchLiteralUserSentence: true,
     };
+  }
+
+  private itemViolatesNegativeConstraints(episode: RadioEpisode, item: RadioEpisodeItem): boolean {
+    const searchable = normalizeMatchText(
+      [
+        item.primaryQuery,
+        item.reason,
+        item.style,
+        item.energy,
+        item.vocality,
+      ].join(" "),
+    );
+    if (!searchable) return false;
+    return this.negativeConstraintTokens(episode.negativeConstraints).some((token) => searchable.includes(token));
+  }
+
+  private negativeConstraintTokens(constraints: string[]): string[] {
+    const tokens: string[] = [];
+    for (const constraint of constraints) {
+      const normalized = normalizeMatchText(constraint);
+      if (!normalized) continue;
+      if (normalized === "edm" || normalized === "electronicdancemusic") {
+        tokens.push(
+          "edm",
+          "electronicdancemusic",
+          "dubstep",
+          "brostep",
+          "deephouse",
+          "house",
+          "futurebass",
+          "drumandbass",
+          "liquiddrumandbass",
+          "dnb",
+          "trap",
+          "techno",
+          "trance",
+        );
+        continue;
+      }
+      if (normalized === "dubstep") {
+        tokens.push("dubstep", "brostep");
+        continue;
+      }
+      tokens.push(normalized);
+    }
+    return dedupe(tokens);
   }
 }

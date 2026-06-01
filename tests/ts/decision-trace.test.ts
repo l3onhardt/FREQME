@@ -65,6 +65,31 @@ test("latest trace uses insertion order when timestamps match", () => {
   assert.equal(latest?.selectedTrack.name, "Near Light");
 });
 
+test("latest trace for track ignores newer prewarmed tracks", () => {
+  const traceStore = traces();
+
+  traceStore.save(trace({ id: "current-track", selectedTrack: { id: "current", name: "Una Mattina", artist: "Ludovico Einaudi" } }));
+  traceStore.save(trace({
+    id: "future-track",
+    selectedTrack: { id: "future", name: "Object", artist: "The Cure" },
+  }));
+
+  const latest = traceStore.latestForTrack("42", 7, "current");
+
+  assert.equal(latest?.id, "current-track");
+  assert.equal(latest?.selectedTrack.name, "Una Mattina");
+});
+
+test("latest trace for track respects anonymous and sessionless scopes", () => {
+  const traceStore = traces();
+
+  traceStore.save(trace({ id: "identified", uid: "42", sessionId: 7, selectedTrack: { id: "same", name: "Identified", artist: "A" } }));
+  traceStore.save(trace({ id: "anonymous", uid: null, sessionId: null, selectedTrack: { id: "same", name: "Anonymous", artist: "B" } }));
+
+  assert.equal(traceStore.latestForTrack("42", 7, "same")?.id, "identified");
+  assert.equal(traceStore.latestForTrack(null, null, "same")?.id, "anonymous");
+});
+
 test("anonymous traces do not mix with identified user traces", () => {
   const traceStore = traces();
 

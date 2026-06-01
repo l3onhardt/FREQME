@@ -11,4 +11,8 @@ export class DecisionTraceStore {
   latestForSession(uid: string | null, sessionId: number | null): DecisionTrace | null {
     return this.store.getLatestDecisionTrace(uid, sessionId);
   }
+
+  latestForTrack(uid: string | null, sessionId: number | null, songId: string): DecisionTrace | null {
+    return this.store.getLatestDecisionTraceForTrack(uid, sessionId, songId);
+  }
 }

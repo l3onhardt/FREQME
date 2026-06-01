@@ -100,6 +100,36 @@ const episodeWithThrowingItem: RadioEpisode = {
   ],
 };
 
+const episodeWithBlockedItem: RadioEpisode = {
+  ...episode,
+  id: "episode-blocked",
+  negativeConstraints: ["EDM", "dubstep"],
+  items: [
+    {
+      primaryQuery: "Una Mattina Deep House Remix Alexandre Pachabezian",
+      backupQueries: ["Nils Frahm Says"],
+      reason: "deep house piano pulse",
+      style: "deep house",
+      energy: "medium",
+      vocality: "instrumental",
+      fitToProfile: "testing",
+      fitToContext: "testing",
+      avoidBecause: [],
+    },
+    {
+      primaryQuery: "Max Richter On the Nature of Daylight",
+      backupQueries: [],
+      reason: "quiet strings remain inside constraints.",
+      style: "modern classical",
+      energy: "low",
+      vocality: "instrumental",
+      fitToProfile: "古典氛围",
+      fitToContext: "专注",
+      avoidBecause: ["EDM"],
+    },
+  ],
+};
+
 class FakeVerifier {
   tasks: MusicTask[] = [];
 
@@ -286,6 +316,23 @@ test("queue warmer treats verifier exceptions as failed attempts and continues",
   assert.equal(queue.readyItems()[0]?.track.name, "On the Nature of Daylight");
   assert.equal(verifier.tasks[0]?.searchGoals[0], "throw query");
   assert.equal(verifier.tasks[1]?.searchGoals[0], "Max Richter On the Nature of Daylight");
+});
+
+test("queue warmer skips whole episode items that violate negative constraints", async () => {
+  const queue = new PlaybackQueue(2);
+  const verifier = new FakeVerifier();
+  const traceStore = new FakeTraceStore();
+  const warmer = new QueueWarmer(verifier as any, traceStore as unknown as DecisionTraceStore);
+
+  const added = await warmer.warm(warmArgs(queue, episodeWithBlockedItem));
+
+  assert.equal(added, 1);
+  assert.equal(queue.readyItems()[0]?.track.name, "On the Nature of Daylight");
+  assert.deepEqual(
+    verifier.tasks.map((task) => task.searchGoals[0]),
+    ["Max Richter On the Nature of Daylight"],
+  );
+  assert.equal(traceStore.traces.length, 1);
 });
 
 test("queue warmer does not save a trace or queue a track after becoming stale", async () => {

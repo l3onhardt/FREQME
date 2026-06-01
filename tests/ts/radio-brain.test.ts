@@ -98,7 +98,7 @@ function brain(overrides: Partial<ConstructorParameters<typeof RadioBrain>[0]> =
       acknowledge: (decision) => `ack:${decision.type}`,
       explainCurrentTrack: () => "because it fits",
     },
-    traceStore: { latestForSession: () => null },
+    traceStore: { latestForSession: () => null, latestForTrack: () => null },
     reflectionLoop: { record: (args) => args.existing },
     ...overrides,
   });
@@ -180,6 +180,7 @@ test("explanation request returns text and does not clear queue", async () => {
   const radio = brain({
     intentRouter: { classify: (text) => intent({ type: "explanation_question", rawText: text, shouldExplain: true, shouldReplan: false, shouldClearQueue: false }) },
     traceStore: {
+      latestForTrack: () => null,
       latestForSession: () => {
         loadedTrace = true;
         return trace;
@@ -196,6 +197,48 @@ test("explanation request returns text and does not clear queue", async () => {
   assert.deepEqual(result, { status: "explained", hostText: "explained:trace" });
   assert.equal(loadedTrace, true);
   assert.equal(queue.readyDepth(), 1);
+});
+
+test("explanation request prefers the trace for the current track over prewarmed future tracks", async () => {
+  const queue = new PlaybackQueue();
+  const currentTrace: DecisionTrace = {
+    id: "current-trace",
+    uid: "u1",
+    sessionId: 12,
+    episodeId: "episode-current",
+    intentType: "music_direction_request",
+    profileQuality: { level: "usable", score: 0.5, reasons: [] },
+    environment: env(),
+    selectedTrack: track("playing"),
+    reason: "current track reason",
+    rejectedCandidates: [],
+    verificationAttempts: [],
+    fallbackLevel: "episode_primary",
+    latencyMs: {},
+    hostText: "current host",
+    createdAt: new Date().toISOString(),
+  };
+  const futureTrace: DecisionTrace = {
+    ...currentTrace,
+    id: "future-trace",
+    selectedTrack: track("future"),
+    reason: "future track reason",
+  };
+  const radio = brain({
+    intentRouter: { classify: (text) => intent({ type: "explanation_question", rawText: text, shouldExplain: true, shouldReplan: false, shouldClearQueue: false }) },
+    traceStore: {
+      latestForSession: () => futureTrace,
+      latestForTrack: () => currentTrace,
+    } as any,
+    responder: {
+      acknowledge: () => "unused",
+      explainCurrentTrack: (_decision, loaded) => `explained:${loaded?.id}`,
+    },
+  });
+
+  const result = await radio.handleUserText({ ...args(queue), currentTrack: track("playing"), text: "为什么这首" });
+
+  assert.deepEqual(result, { status: "explained", hostText: "explained:current-trace" });
 });
 
 test("correction clears only ready items that conflict with negative constraints", async () => {
@@ -252,6 +295,33 @@ test("correction with no negative constraints clears stale ready queue but keeps
   });
 
   await radio.handleUserText({ ...args(queue), text: "不是这个方向" });
+
+  assert.deepEqual(
+    queue.items.map((item) => [item.track.id, item.status]),
+    [["playing", "playing"]],
+  );
+});
+
+test("new music direction clears stale ready queue so fresh brain items must be planned", async () => {
+  const queue = new PlaybackQueue();
+  queue.addReady(track("playing"), "url", reason({ text: "current song" }));
+  queue.addReady(track("stale-safe"), "url", reason({ text: "quiet piano from previous direction" }));
+  queue.addReady(track("stale-other"), "url", reason({ text: "soft ambient from previous direction" }));
+  queue.promoteNext();
+  const radio = brain({
+    intentRouter: {
+      classify: (text) =>
+        intent({
+          type: "music_direction_request",
+          rawText: text,
+          negativeConstraints: ["edm", "dubstep"],
+          shouldReplan: false,
+          shouldClearQueue: true,
+        }),
+    },
+  });
+
+  await radio.handleUserText({ ...args(queue), text: "我要专注写代码，不要 edm" });
 
   assert.deepEqual(
     queue.items.map((item) => [item.track.id, item.status]),
@@ -558,6 +628,30 @@ test("broad direction request returns acknowledgement before background planner 
 
   assert.deepEqual(result, { status: "acknowledged", hostText: "moving that way" });
   planning.resolve(episode("user_request"));
+});
+
+test("background planner failures are reported with session context", async () => {
+  const failures: Array<Record<string, unknown>> = [];
+  const radio = brain({
+    planner: {
+      plan: async () => {
+        throw new Error("planner timeout");
+      },
+    },
+    onBackgroundPlanFailure: (failure) => {
+      failures.push(failure as unknown as Record<string, unknown>);
+    },
+  });
+
+  await radio.handleUserText({ ...args(), text: "来点适合写代码的" });
+  await flushBackground();
+
+  assert.equal(failures.length, 1);
+  assert.equal(failures[0]?.uid, "u1");
+  assert.equal(failures[0]?.sessionId, 12);
+  assert.equal(failures[0]?.createdFrom, "user_request");
+  assert.equal(failures[0]?.intentType, "music_direction_request");
+  assert.equal(failures[0]?.message, "planner timeout");
 });
 
 test("planner and warmer receive startup user and correction orchestration args", async () => {

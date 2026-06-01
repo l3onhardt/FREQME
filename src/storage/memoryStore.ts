@@ -122,6 +122,22 @@ export class MemoryStore {
     return row ? parse<DecisionTrace>(row.trace_json, null as unknown as DecisionTrace) : null;
   }
 
+  getLatestDecisionTraceForTrack(uid: string | null, sessionId: number | null, songId: string): DecisionTrace | null {
+    if (!songId) return null;
+    const row = this.database.db
+      .prepare(`
+        SELECT trace_json
+        FROM decision_trace
+        WHERE (uid IS ? OR uid = ?)
+          AND (session_id IS ? OR session_id = ?)
+          AND json_extract(trace_json, '$.selectedTrack.id') = ?
+        ORDER BY created_at DESC, rowid DESC
+        LIMIT 1
+      `)
+      .get(uid, uid, sessionId, sessionId, songId) as { trace_json?: string } | undefined;
+    return row ? parse<DecisionTrace>(row.trace_json, null as unknown as DecisionTrace) : null;
+  }
+
   createSession(uid: string): number {
     const result = this.database.db
       .prepare("INSERT INTO session_log (uid) VALUES (?)")

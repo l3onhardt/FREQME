@@ -70,6 +70,84 @@ const personalContext: MemoryPack = {
   hardConstraints: ["Do not search the literal listener sentence."],
 };
 
+test("specific track exact metadata can verify without an LLM judge call", async () => {
+  const task: MusicTask = {
+    type: "specific_track",
+    primaryEntities: [],
+    workHint: "",
+    styleHint: "instrumental focus",
+    negativeConstraints: ["EDM"],
+    searchGoals: ["Nils Frahm Says"],
+    mustNotSearchLiteralUserSentence: true,
+  };
+  const llm = new FakeLlm();
+  const netease = {
+    async search(query: string): Promise<Track[]> {
+      return [{ id: "1", name: "Says", artist: "Nils Frahm", source: query }];
+    },
+  };
+  const agent = new SearchVerifyAgent(llm as any, netease as any, new FakeAudioResolver() as any);
+
+  const result = await agent.verify(task, "42", "");
+
+  assert.equal(result.status, "verified");
+  assert.equal(result.selectedSong?.name, "Says");
+  assert.equal(llm.calls.length, 0);
+  assert.equal(result.verification.versionNote, "Candidate metadata locally matches the concrete query.");
+});
+
+test("EDM negative constraints reject adjacent house and drum and bass episode queries", async () => {
+  const task: MusicTask = {
+    type: "specific_track",
+    primaryEntities: [],
+    workHint: "",
+    styleHint: "quiet focus",
+    negativeConstraints: ["EDM", "dubstep"],
+    searchGoals: ["Alexandre Pachabezian Una Mattina Deep House Remix"],
+    mustNotSearchLiteralUserSentence: true,
+  };
+  const searched: string[] = [];
+  const netease = {
+    async search(query: string): Promise<Track[]> {
+      searched.push(query);
+      return [{ id: "1", name: "Una Mattina Deep House Remix", artist: "Alexandre Pachabezian", source: query }];
+    },
+  };
+  const agent = new SearchVerifyAgent(new FakeLlm() as any, netease as any, new FakeAudioResolver() as any);
+
+  const result = await agent.verify(task, "42", "");
+
+  assert.equal(result.status, "not_found");
+  assert.deepEqual(searched, []);
+  assert.ok(result.diagnostics?.rejectedQueries?.includes("Alexandre Pachabezian Una Mattina Deep House Remix"));
+});
+
+test("EDM negative constraints reject liquid drum and bass episode queries", async () => {
+  const task: MusicTask = {
+    type: "specific_track",
+    primaryEntities: [],
+    workHint: "",
+    styleHint: "quiet focus",
+    negativeConstraints: ["EDM"],
+    searchGoals: ["Hybrid Minds Lights liquid drum and bass vocal soft"],
+    mustNotSearchLiteralUserSentence: true,
+  };
+  const searched: string[] = [];
+  const netease = {
+    async search(query: string): Promise<Track[]> {
+      searched.push(query);
+      return [{ id: "1", name: "Lights", artist: "Hybrid Minds", source: query }];
+    },
+  };
+  const agent = new SearchVerifyAgent(new FakeLlm() as any, netease as any, new FakeAudioResolver() as any);
+
+  const result = await agent.verify(task, "42", "");
+
+  assert.equal(result.status, "not_found");
+  assert.deepEqual(searched, []);
+  assert.ok(result.diagnostics?.rejectedQueries?.includes("Hybrid Minds Lights liquid drum and bass vocal soft"));
+});
+
 test("scene planner creates concrete artist-title queries and verifier rejects utility candidates", async () => {
   const task: MusicTask = {
     type: "scene_genre_direction",
