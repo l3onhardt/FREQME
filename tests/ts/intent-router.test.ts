@@ -46,6 +46,44 @@ test("specific track requests remain specific requests", () => {
   assert.equal(intent.query, "Nils Frahm Says");
 });
 
+test("specific track titles with accidental r b letters remain specific requests", () => {
+  const router = new IntentRouter();
+  const cases = [
+    { text: "放 Mr Brightside", query: "Mr Brightside" },
+    { text: "放 Starboy", query: "Starboy" },
+    { text: "放 Jazzman", query: "Jazzman" },
+    { text: "放 Ambient 1 Music for Airports", query: "Ambient 1 Music for Airports" },
+    { text: "放 年轻的朋友来相会", query: "年轻的朋友来相会" },
+    { text: "放 工作细胞", query: "工作细胞" },
+    { text: "放 深夜食堂", query: "深夜食堂" },
+    { text: "放 轻松熊", query: "轻松熊" },
+  ];
+
+  for (const { text, query } of cases) {
+    const intent = router.classify(text);
+
+    assert.equal(intent.type, "specific_track_request", text);
+    assert.equal(intent.query, query, text);
+  }
+});
+
+test("play verb plus broad scene/style remains a music direction", () => {
+  const router = new IntentRouter();
+  const cases = [
+    "放点深夜听的rnb",
+    "播放一点晚上听的 r&b",
+    "想听适合深夜的R&B",
+    "放点安静但有推动力的电子",
+  ];
+
+  for (const text of cases) {
+    const intent = router.classify(text);
+    assert.equal(intent.type, "music_direction_request", text);
+    assert.equal(intent.shouldReplan, true, text);
+    assert.equal(intent.shouldClearQueue, true, text);
+  }
+});
+
 test("negated-only terms do not become fallback positive seeds", () => {
   const router = new IntentRouter();
   const cases = [

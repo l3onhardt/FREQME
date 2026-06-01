@@ -39,7 +39,7 @@ export class IntentRouter {
       return this.intent("correction", text, "", seeds, negativeConstraints, true, true, false, "懂了，我先避开刚才那个方向，重新往你要的感觉收。");
     }
     const direct = text.match(/^(?:放|播放|点一首|我想听|想听)\s*(.{2,80})$/iu);
-    if (direct?.[1] && !/(来点|一些|适合|感觉|氛围|风格)/iu.test(direct[1])) {
+    if (direct?.[1] && !this.looksLikeBroadDirection(direct[1])) {
       return this.intent("specific_track_request", text, compactText(direct[1], 120), [], negativeConstraints, true, true, false, "我找一下这首。");
     }
     if (/(继续|保持|就这个|这个感觉)/iu.test(text)) {
@@ -78,6 +78,17 @@ export class IntentRouter {
 
   private negativeConstraints(text: string): string[] {
     return NEGATED_STYLE_PATTERNS.filter(([pattern]) => pattern.test(text)).map(([, label]) => label);
+  }
+
+  private looksLikeBroadDirection(text: string): boolean {
+    const trimmed = text.trim();
+    const directionContent = /(深夜|晚上|下午|早上|工作|写代码|专注|安静|舒缓|推动力|有劲|推进|轻一点|轻柔|轻松|电子|电音|摇滚|民谣|爵士|\br\s*&?\s*b\b|\brnb\b|\bjazz\b|\bambient\b|\bcity\s*pop\b|\bshoegaze\b)/iu;
+    return (
+      (/^(?:点|一点|一些|来点)/iu.test(trimmed) && directionContent.test(trimmed)) ||
+      (/(适合|感觉|氛围|风格|听的|用来|背景|歌|音乐)/iu.test(trimmed) && directionContent.test(trimmed)) ||
+      /^(?:电子|电音|摇滚|民谣|爵士)$/iu.test(trimmed) ||
+      /^(?:\br\s*&?\s*b\b|\brnb\b|\bjazz\b|\bambient\b|\bcity\s*pop\b|\bshoegaze\b)$/iu.test(trimmed)
+    );
   }
 
   private positiveSeeds(text: string, negativeConstraints: string[]): string[] {
