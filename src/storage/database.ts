@@ -99,6 +99,15 @@ export class AppDatabase {
         PRIMARY KEY(uid, memory_key)
       );
 
+      CREATE TABLE IF NOT EXISTS decision_trace (
+        id TEXT PRIMARY KEY,
+        uid TEXT,
+        session_id INTEGER,
+        episode_id TEXT NOT NULL,
+        trace_json TEXT NOT NULL,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+      );
+
       CREATE TABLE IF NOT EXISTS audio_resolution_cache (
         song_id TEXT PRIMARY KEY,
         url TEXT NOT NULL,
@@ -121,6 +130,7 @@ export class AppDatabase {
       CREATE INDEX IF NOT EXISTS idx_track_uid_played ON track_log(uid, played_at);
       CREATE INDEX IF NOT EXISTS idx_playback_event_uid_song ON playback_event(uid, song_id, created_at);
       CREATE INDEX IF NOT EXISTS idx_dj_memory_event_uid_created ON dj_memory_event(uid, created_at);
+      CREATE INDEX IF NOT EXISTS idx_decision_trace_uid_session ON decision_trace(uid, session_id, created_at);
     `);
     this.ensureColumn("auth_account", "cookie", "TEXT");
   }

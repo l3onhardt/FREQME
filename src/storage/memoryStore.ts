@@ -1,6 +1,7 @@
 import { AppDatabase } from "./database.js";
 import type { TasteProfile, Track, UserSettings } from "../types.js";
 import { config } from "../config.js";
+import type { DecisionTrace } from "../radio/radioBrainTypes.js";
 
 function json(value: unknown): string {
   return JSON.stringify(value ?? null);
@@ -96,6 +97,29 @@ export class MemoryStore {
       .prepare("SELECT profile_json FROM user_profile WHERE uid=?")
       .get(uid) as { profile_json?: string } | undefined;
     return row ? parse<TasteProfile>(row.profile_json, null as unknown as TasteProfile) : null;
+  }
+
+  saveDecisionTrace(trace: DecisionTrace): void {
+    this.database.db
+      .prepare(`
+        INSERT INTO decision_trace (id, uid, session_id, episode_id, trace_json, created_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET trace_json=excluded.trace_json
+      `)
+      .run(trace.id, trace.uid, trace.sessionId, trace.episodeId, json(trace), trace.createdAt);
+  }
+
+  getLatestDecisionTrace(uid: string | null, sessionId: number | null): DecisionTrace | null {
+    const row = this.database.db
+      .prepare(`
+        SELECT trace_json
+        FROM decision_trace
+        WHERE (uid IS ? OR uid = ?) AND (session_id IS ? OR session_id = ?)
+        ORDER BY created_at DESC
+        LIMIT 1
+      `)
+      .get(uid, uid, sessionId, sessionId) as { trace_json?: string } | undefined;
+    return row ? parse<DecisionTrace>(row.trace_json, null as unknown as DecisionTrace) : null;
   }
 
   createSession(uid: string): number {
