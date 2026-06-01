@@ -28,8 +28,8 @@ export class ReflectionLoop {
     }
     const preferenceEvidence = { ...(existing.preferenceEvidence || {}) };
     if (args.event === "preference_update") {
-      for (const constraint of args.constraints || []) {
-        const key = compactText(constraint, 80);
+      for (const key of dedupe((args.constraints || []).map((constraint) => compactText(constraint, 80)))) {
+        if (!key) continue;
         preferenceEvidence[key] = (preferenceEvidence[key] || 0) + 1;
       }
     }

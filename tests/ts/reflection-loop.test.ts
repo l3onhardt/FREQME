@@ -40,6 +40,32 @@ test("repeated explicit preference can create long term candidate", () => {
   assert.ok(second.longTermCandidates.some((item) => /中文歌|口水歌/.test(item)));
 });
 
+test("duplicate constraints in one preference update count as one evidence item", () => {
+  const loop = new ReflectionLoop();
+  const memory = loop.record({
+    existing: {},
+    event: "preference_update",
+    rawText: "more jazz",
+    constraints: ["jazz", "jazz"],
+  });
+
+  assert.equal(memory.preferenceEvidence.jazz, 1);
+  assert.equal(memory.longTermCandidates.length, 0);
+});
+
+test("blank preference constraints are ignored", () => {
+  const loop = new ReflectionLoop();
+  const memory = loop.record({
+    existing: { preferenceEvidence: { ambient: 1 } },
+    event: "preference_update",
+    rawText: "   ",
+    constraints: ["", "   ", "\n\t"],
+  });
+
+  assert.deepEqual(memory.preferenceEvidence, { ambient: 1 });
+  assert.equal(memory.longTermCandidates.length, 0);
+});
+
 test("repeated skip of the same track does not duplicate temporary rejection", () => {
   const loop = new ReflectionLoop();
   const first = loop.record({
