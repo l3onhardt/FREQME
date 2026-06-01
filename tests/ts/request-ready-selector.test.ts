@@ -5,6 +5,7 @@ import { PlaybackQueue } from "../../src/radio/playbackQueue.js";
 import {
   findNewBrainReadyItem,
   isCurrentRequestToken,
+  prepareFreshBrainReadyOrReplaceWithFallback,
   prepareFreshBrainReadyForPromotion,
   removeReadyItemsBefore,
   snapshotReadyItems,
@@ -79,4 +80,41 @@ test("fresh brain ready preparation rechecks before fallback can clear the queue
 
   assert.equal(selected?.track.id, "fresh-after-timeout");
   assert.deepEqual(queue.readyItems().map((item) => item.track.id), ["fresh-after-timeout"]);
+});
+
+test("sync fallback replacement preserves a fresh brain item that arrives right before clear", () => {
+  const queue = new PlaybackQueue(3);
+  queue.addReady(track("stale"), "stale-url", reason());
+  const beforeRequest = snapshotReadyItems(queue);
+  queue.addReady(track("fresh-before-clear"), "fresh-url", reason({
+    type: "ai_radio_episode",
+    text: "fresh before clear",
+    episodeId: "episode-before-clear",
+  }));
+
+  const result = prepareFreshBrainReadyOrReplaceWithFallback(queue, beforeRequest, {
+    track: track("fallback"),
+    url: "fallback-url",
+    selectionReason: reason({ text: "fallback" }),
+  });
+
+  assert.equal(result.source, "brain");
+  assert.equal(result.item.track.id, "fresh-before-clear");
+  assert.deepEqual(queue.readyItems().map((item) => item.track.id), ["fresh-before-clear"]);
+});
+
+test("sync fallback replacement clears stale items and queues fallback when no fresh brain item exists", () => {
+  const queue = new PlaybackQueue(3);
+  queue.addReady(track("stale"), "stale-url", reason());
+  const beforeRequest = snapshotReadyItems(queue);
+
+  const result = prepareFreshBrainReadyOrReplaceWithFallback(queue, beforeRequest, {
+    track: track("fallback"),
+    url: "fallback-url",
+    selectionReason: reason({ text: "fallback" }),
+  });
+
+  assert.equal(result.source, "fallback");
+  assert.equal(result.item.track.id, "fallback");
+  assert.deepEqual(queue.readyItems().map((item) => item.track.id), ["fallback"]);
 });

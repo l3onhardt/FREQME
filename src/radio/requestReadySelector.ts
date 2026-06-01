@@ -1,7 +1,18 @@
 import type { QueueItem } from "./playbackQueue.js";
 import type { PlaybackQueue } from "./playbackQueue.js";
+import type { SelectionReason, Track } from "../types.js";
 
 export type ReadyItemSnapshot = ReadonlySet<QueueItem>;
+
+export interface FallbackReadyItem {
+  track: Track;
+  url: string;
+  selectionReason: SelectionReason;
+}
+
+export type FreshOrFallbackReady =
+  | { source: "brain"; item: QueueItem }
+  | { source: "fallback"; item: QueueItem };
 
 export function snapshotReadyItems(queue: PlaybackQueue): ReadyItemSnapshot {
   return new Set(queue.readyItems());
@@ -16,6 +27,23 @@ export function prepareFreshBrainReadyForPromotion(queue: PlaybackQueue, beforeR
   if (!ready) return null;
   removeReadyItemsBefore(queue, ready);
   return ready;
+}
+
+export function prepareFreshBrainReadyOrReplaceWithFallback(
+  queue: PlaybackQueue,
+  beforeRequest: ReadyItemSnapshot,
+  fallback: FallbackReadyItem,
+): FreshOrFallbackReady {
+  const ready = prepareFreshBrainReadyForPromotion(queue, beforeRequest);
+  if (ready) return { source: "brain", item: ready };
+
+  queue.clearReady();
+  queue.addReady(fallback.track, fallback.url, fallback.selectionReason);
+  const item = queue.readyItems()[0];
+  if (!item) {
+    throw new Error("fallback ready item was not queued");
+  }
+  return { source: "fallback", item };
 }
 
 export function removeReadyItemsBefore(queue: PlaybackQueue, target: QueueItem | null): number {

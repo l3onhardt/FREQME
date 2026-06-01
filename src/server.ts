@@ -36,6 +36,7 @@ import { ReflectionLoop } from "./radio/reflectionLoop.js";
 import {
   findNewBrainReadyItem,
   isCurrentRequestToken,
+  prepareFreshBrainReadyOrReplaceWithFallback,
   prepareFreshBrainReadyForPromotion,
   snapshotReadyItems,
   type ReadyItemSnapshot,
@@ -682,16 +683,23 @@ async function handleRadioSocket(socket: WebSocketType): Promise<void> {
     recentTurns.push({ user: requestText, result: result.status, at: new Date().toISOString() });
     if (readyBeforeRequest && (await promoteFreshBrainReady(readyBeforeRequest, resultText || result.djText || "", requestToken))) return true;
     if (result.status === "queued" && result.track && result.url) {
-      queue.clearReady();
-      queue.addReady(
-        result.track,
-        result.url,
-        result.track.selectionReason || { type: "ai_station_director", text: result.plan?.stationBrief || "AI 已经重排电台方向。" },
-      );
-      if (result.djText) {
+      const fallbackReason = result.track.selectionReason || { type: "ai_station_director", text: result.plan?.stationBrief || "AI 已经重排电台方向。" };
+      const prepared =
+        readyBeforeRequest
+          ? prepareFreshBrainReadyOrReplaceWithFallback(queue, readyBeforeRequest, {
+              track: result.track,
+              url: result.url,
+              selectionReason: fallbackReason,
+            })
+          : (() => {
+              queue.clearReady();
+              queue.addReady(result.track, result.url, fallbackReason);
+              return { source: "fallback" as const, item: queue.readyItems()[0] };
+            })();
+      if (prepared.source === "fallback" && result.djText) {
         synthesizeAndSendDjMessage(result.djText);
       }
-      const ready = queue.readyItems()[0];
+      const ready = prepared.item;
       if (ready) {
         send({
           type: "request_status",
@@ -701,7 +709,9 @@ async function handleRadioSocket(socket: WebSocketType): Promise<void> {
         });
         await sendPreparedNext("played", { allowContinuation: false, skipPrewarmWait: true });
       }
-      prewarmTask = fillQueue(1, false).catch(() => undefined);
+      if (prepared.source === "fallback") {
+        prewarmTask = fillQueue(1, false).catch(() => undefined);
+      }
       return true;
     }
     if (result.status === "ask") {
