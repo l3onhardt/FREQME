@@ -445,6 +445,61 @@ test("stale warmer already in progress cannot add tracks after a newer correctio
   assert.deepEqual(staleSideEffects, []);
 });
 
+test("evicted keyed startup work cannot add tracks after same-session correction", async () => {
+  const queueA = new PlaybackQueue();
+  const startupWarmStarted = deferred<void>();
+  const startupWarmResume = deferred<void>();
+  const staleSideEffects: string[] = [];
+  const radio = brain({
+    bridgePicker: async () => null,
+    intentRouter: {
+      classify: (text) =>
+        intent({
+          type: "correction",
+          rawText: text,
+          negativeConstraints: ["edm"],
+          shouldReplan: true,
+          shouldClearQueue: true,
+        }),
+    },
+    planner: {
+      plan: async (planArgs) => episode(planArgs.createdFrom),
+    },
+    warmer: {
+      warm: async (warmArgs) => {
+        if (warmArgs.uid === "user-a" && warmArgs.sessionId === 101 && warmArgs.episode.createdFrom === "startup") {
+          startupWarmStarted.resolve();
+          await startupWarmResume.promise;
+          if (warmArgs.isCurrent?.()) {
+            staleSideEffects.push("stale-current");
+          }
+          warmArgs.queue.addReady(track("stale-startup"), "stale-url", reason({ text: "stale startup" }));
+          return 1;
+        }
+        if (warmArgs.uid === "user-a" && warmArgs.sessionId === 101 && warmArgs.episode.createdFrom === "correction") {
+          assert.equal(warmArgs.isCurrent?.(), true);
+          warmArgs.queue.addReady(track("fresh-correction"), "fresh-url", reason({ text: "fresh correction" }));
+          return 1;
+        }
+        return 0;
+      },
+    },
+  });
+
+  await radio.startSession({ ...args(queueA), uid: "user-a", sessionId: 101 });
+  await startupWarmStarted.promise;
+  for (let i = 0; i < 256; i += 1) {
+    await radio.startSession({ ...args(new PlaybackQueue()), uid: `evicting-user-${i}`, sessionId: i });
+  }
+  await radio.handleUserText({ ...args(queueA), uid: "user-a", sessionId: 101, text: "不要 edm" });
+
+  startupWarmResume.resolve();
+  await flushBackground();
+
+  assert.deepEqual(queueA.readyItems().map((item) => item.track.id), ["fresh-correction"]);
+  assert.deepEqual(staleSideEffects, []);
+});
+
 test("null-session fallback state migrates when identity becomes available on the same queue", async () => {
   const queue = new PlaybackQueue();
   const startupWarmStarted = deferred<void>();

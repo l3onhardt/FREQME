@@ -55,12 +55,17 @@ type PlanAndWarmArgs = RadioBrainArgs & {
   intentType: ListeningIntentDecision["type"] | "autoplay";
   generation: number;
   state: RadioBrainSessionState;
+  stateLocator: RadioBrainStateLocator;
 };
 
 interface RadioBrainSessionState {
   generation: number;
   reflectionMemory?: ReflectionMemory;
 }
+
+type RadioBrainStateLocator =
+  | { type: "keyed"; key: string }
+  | { type: "queue"; queue: PlaybackQueue };
 
 const REFLECTION_EVENT_TYPES = new Set<ListeningIntentDecision["type"]>([
   "correction",
@@ -146,6 +151,7 @@ export class RadioBrain {
       intentType: "autoplay",
       generation: state.generation,
       state,
+      stateLocator: this.stateLocatorFor(args),
     });
 
     return { status: "bridge_ready", hostText: "" };
@@ -182,6 +188,7 @@ export class RadioBrain {
         intentType: intent.type,
         generation: state.generation,
         state,
+        stateLocator: this.stateLocatorFor(args),
       });
     }
 
@@ -226,8 +233,11 @@ export class RadioBrain {
     });
   }
 
-  private isCurrent(args: Pick<PlanAndWarmArgs, "generation" | "state">): boolean {
-    return args.generation === args.state.generation;
+  private isCurrent(args: Pick<PlanAndWarmArgs, "generation" | "state" | "stateLocator">): boolean {
+    if (args.stateLocator.type === "keyed") {
+      return this.keyedStates.get(args.stateLocator.key) === args.state && args.generation === args.state.generation;
+    }
+    return this.queueStates.get(args.stateLocator.queue) === args.state && args.generation === args.state.generation;
   }
 
   private clearConflictingReady(queue: PlaybackQueue, intent: ListeningIntentDecision): void {
@@ -311,6 +321,12 @@ export class RadioBrain {
   private stableSessionKey(args: Pick<RadioBrainArgs, "uid" | "sessionId">): string | null {
     if (args.uid && args.sessionId !== null) return `${args.uid}/${args.sessionId}`;
     return null;
+  }
+
+  private stateLocatorFor(args: Pick<RadioBrainArgs, "uid" | "sessionId" | "queue">): RadioBrainStateLocator {
+    const key = this.stableSessionKey(args);
+    if (key) return { type: "keyed", key };
+    return { type: "queue", queue: args.queue };
   }
 
   private evictOldKeyedStates(): void {

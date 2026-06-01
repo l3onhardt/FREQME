@@ -346,6 +346,19 @@ test("queue warmer advances the episode cursor across repeated warm calls", asyn
   assert.equal(queue.readyItems()[0]?.track.name, "On the Nature of Daylight");
 });
 
+test("queue warmer removes exhausted episode cursors", async () => {
+  const queue = new PlaybackQueue(2);
+  const verifier = new FakeVerifier();
+  const traceStore = new FakeTraceStore();
+  const warmer = new QueueWarmer(verifier as any, traceStore as unknown as DecisionTraceStore);
+  const cursors = (warmer as unknown as { cursors: Map<string, number> }).cursors;
+
+  const added = await warmer.warm(warmArgs(queue, singlePrimaryEpisode));
+
+  assert.equal(added, 1);
+  assert.equal(cursors.has(singlePrimaryEpisode.id), false);
+});
+
 test("removeReadyWhere removes only ready items", () => {
   const queue = new PlaybackQueue(3);
   queue.addReady({ id: "played-target", name: "Played Target", artist: "A" }, "/played-target", { type: "test", text: "" });

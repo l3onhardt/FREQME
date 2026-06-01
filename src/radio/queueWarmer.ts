@@ -65,7 +65,11 @@ export class QueueWarmer {
       const queued = await this.tryItem(args, item);
       if (queued) added += 1;
     }
-    this.cursors.set(args.episode.id, cursor);
+    if (cursor >= args.episode.items.length) {
+      this.cursors.delete(args.episode.id);
+    } else {
+      this.cursors.set(args.episode.id, cursor);
+    }
     return added;
   }
 
