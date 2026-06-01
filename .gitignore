@@ -21,6 +21,7 @@ dist/
 # Auto-generated local UI experiments
 .superpowers/
 .playwright-mcp/
+.worktrees/
 logs/
 
 # OS
