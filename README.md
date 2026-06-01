@@ -82,6 +82,10 @@ npm start
 
 `npm run build` 是快速本地运行构建。`npm test` 会编译测试产物，再跑 TypeScript 测试、前端 WebSocket 测试，以及保留下来的网易云桥工具函数测试。
 
+## Continuous AI Host Smoke
+
+After changing radio brain behavior, run the local smoke checklist in `docs/superpowers/checklists/2026-06-01-continuous-ai-radio-host-smoke.md`. Unit tests prove the routing and queue behavior; the smoke confirms the logged-in NetEase path, real audio resolution, and host explanation flow.
+
 ## 本地数据
 
 新后端默认使用：
