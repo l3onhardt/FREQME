@@ -1,11 +1,12 @@
 import fs from "node:fs";
 import path from "node:path";
 import http from "node:http";
+import { createRequire } from "node:module";
 
-import express from "express";
-import { WebSocketServer, WebSocket } from "ws";
+import type { WebSocket as WebSocketType } from "ws";
 
 import { config } from "./config.js";
+import { runtimeStatus } from "./runtimeStatus.js";
 import { AppDatabase } from "./storage/database.js";
 import { MemoryStore } from "./storage/memoryStore.js";
 import { NeteaseService, extractProfile } from "./services/neteaseService.js";
@@ -17,14 +18,25 @@ import { ProfileEngine } from "./radio/profileEngine.js";
 import { DJMemoryManager } from "./radio/djMemory.js";
 import { DJRequestAgent } from "./radio/djRequestAgent.js";
 import { SearchVerifyAgent } from "./radio/searchVerifyAgent.js";
-import { QueueDirector } from "./radio/queueDirector.js";
+import { AIStationDirector } from "./radio/stationDirector.js";
 import { PlaybackQueue } from "./radio/playbackQueue.js";
 import { StreamScheduler } from "./radio/scheduler.js";
 import { DJEngine, shouldGenerateSegue } from "./radio/djEngine.js";
 import { detectScene, localTimeBlock, normalizeGeo, trackInfo } from "./radio/context.js";
-import type { TasteProfile, Track, UserSettings } from "./types.js";
+import type { StationEnvironment, TasteProfile, Track, UserSettings, WeatherSnapshot } from "./types.js";
 import { compactText } from "./utils/text.js";
+import { WeatherService } from "./services/weatherService.js";
 
+const require = createRequire(import.meta.url);
+
+process.on("uncaughtException", (error) => {
+  console.error("[BOOT] uncaught exception", error);
+});
+process.on("unhandledRejection", (error) => {
+  console.error("[BOOT] unhandled rejection", error);
+});
+
+console.log("[BOOT] starting FREQME TypeScript backend");
 const database = new AppDatabase();
 const store = new MemoryStore(database);
 const netease = new NeteaseService();
@@ -36,132 +48,234 @@ const profileEngine = new ProfileEngine(netease, llm, store);
 const djMemory = new DJMemoryManager(store);
 const djRequestAgent = new DJRequestAgent(llm);
 const searchVerifyAgent = new SearchVerifyAgent(llm, netease, audioResolver);
-const queueDirector = new QueueDirector(djRequestAgent, searchVerifyAgent, djMemory);
+const stationDirector = new AIStationDirector(llm, djRequestAgent, searchVerifyAgent, djMemory);
 const scheduler = new StreamScheduler(netease, store, audioResolver);
 const djEngine = new DJEngine(llm);
-
-const app = express();
-app.use(express.json({ limit: "1mb" }));
+const weatherService = new WeatherService();
 
 const projectRoot = path.resolve(".");
 const frontendDir = path.join(projectRoot, "frontend");
 
-app.use("/css", express.static(path.join(frontendDir, "css")));
-app.use("/js", express.static(path.join(frontendDir, "js")));
-
-app.get("/health", (_req, res) => res.json({ status: "ok", backend: "typescript" }));
-app.get("/", (_req, res) => res.sendFile(path.join(frontendDir, "index.html")));
-
-app.get("/api/auth/qr/key", async (_req, res) => res.json(await netease.qrKey()));
-app.get("/api/auth/qr/create", async (req, res) => res.json(await netease.qrCreate(String(req.query.key || ""))));
-app.get("/api/auth/qr/check", async (req, res) => res.json(await netease.qrCheck(String(req.query.key || ""))));
-app.get("/api/auth/status", async (_req, res) => {
-  const status = await netease.loginStatus();
-  const profile = extractProfile(status);
-  const uid = profile.userId == null ? "" : String(profile.userId);
-  if (uid) store.saveAuthAccount(uid, profile, netease.activeCookie());
-  res.json(status);
-});
-app.post("/api/auth/refresh", async (_req, res) => res.json(await netease.loginRefresh()));
-app.get("/api/auth/accounts", (_req, res) => {
-  res.json({
-    active_uid: currentStoredUid(),
-    accounts: store.listAuthAccounts().map((account) => ({
-      uid: account.uid,
-      profile: account.account,
-      updated_at: account.updatedAt,
-    })),
-  });
-});
-app.post("/api/auth/switch", async (req, res) => {
-  const uid = compactText((req.body as Record<string, unknown> | undefined)?.uid || "", 80);
-  const cookie = uid ? store.getAuthCookie(uid) : "";
-  if (!uid || !cookie) {
-    res.status(404).json({ error: "account not found" });
-    return;
-  }
-  netease.useCookie(cookie);
-  const status = await netease.loginStatus();
-  const profile = extractProfile(status);
-  const activeUid = profile.userId == null ? "" : String(profile.userId);
-  if (activeUid && activeUid !== uid) {
-    res.status(409).json({ error: "account cookie mismatch" });
-    return;
-  }
-  if (activeUid) store.saveAuthAccount(activeUid, profile, netease.activeCookie());
-  res.json({ active_uid: activeUid || uid, profile, status });
-});
-app.post("/api/auth/logout", (_req, res) => {
-  netease.clearCookie();
-  res.json({ ok: true });
-});
-
-app.get("/api/radio/onboarding/:uid", async (req, res) => {
-  const uid = String(req.params.uid);
-  if (!(await uidMatchesActiveLogin(uid))) {
-    res.status(403).json({ error: "forbidden" });
-    return;
-  }
-  const profile = store.getProfile(uid);
-  const settings = store.getUserSettings(uid);
-  res.json({
-    profile_ready: Boolean(profile),
-    profile: profile || {},
-    settings,
-    onboarded: Boolean(settings),
+const server = http.createServer((req, res) => {
+  void handleHttpRequest(req, res).catch((error) => {
+    sendJson(res, 500, { error: error instanceof Error ? error.message : "server error" });
   });
 });
 
-app.post("/api/radio/onboarding/:uid", async (req, res) => {
-  const uid = String(req.params.uid);
-  if (!(await uidMatchesActiveLogin(uid))) {
-    res.status(403).json({ error: "forbidden" });
-    return;
-  }
-  const payload = req.body && typeof req.body === "object" ? req.body : {};
-  const settings = normalizeSettings(payload);
-  store.saveUserSettings(uid, settings);
-  res.json({ settings, onboarded: true });
-});
-
-app.get("/api/radio/tts/:hash", (req, res) => {
-  const cached = tts.getCachedPath(String(req.params.hash || ""));
-  if (!cached) {
-    res.status(404).json({ error: "not found" });
-    return;
-  }
-  res.type("audio/wav").sendFile(path.resolve(cached));
-});
-
-app.get("/api/radio/audio/:songId", async (req, res) => {
-  const songId = String(req.params.songId || "");
-  const resolved = await audioResolver.resolve({ id: songId, name: "", artist: "" }, null, req.query.refresh === "1");
-  if (!resolved.ok || !resolved.url) {
-    res.status(404).json({ error: resolved.reason || "audio unavailable" });
-    return;
-  }
-  await proxyAudio(resolved.url, req.headers.range, res, songId);
-});
-
-app.get("/api/radio/lyrics/:songId", async (req, res) => {
-  const songId = String(req.params.songId || "");
-  res.json(
-    await lyrics.forSong(songId, {
-      name: String(req.query.name || ""),
-      artist: String(req.query.artist || ""),
-    }),
-  );
-});
-
-const server = http.createServer(app);
-const wss = new WebSocketServer({ server, path: "/ws" });
-wss.on("connection", (socket) => {
-  void handleRadioSocket(socket);
-});
-
+console.log(`[BOOT] binding http://${config.host}:${config.port}`);
 server.listen(config.port, config.host, () => {
   console.log(`FREQME TypeScript backend ready on http://${config.host}:${config.port}`);
+  void setupWebSocket();
 });
+
+async function setupWebSocket(): Promise<void> {
+  const { WebSocketServer } = require("ws") as { WebSocketServer: new (options: Record<string, unknown>) => { on: (event: string, handler: (socket: WebSocketType) => void) => void } };
+  const wss = new WebSocketServer({ server, path: "/ws" });
+  wss.on("connection", (socket: WebSocketType) => {
+    void handleRadioSocket(socket);
+  });
+  console.log("[BOOT] websocket ready");
+}
+
+async function handleHttpRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  const requestUrl = new URL(req.url || "/", `http://${config.host}:${config.port}`);
+  const pathname = requestUrl.pathname;
+
+  if (req.method === "GET" && pathname === "/health") {
+    sendJson(res, 200, { status: "ok", backend: "typescript" });
+    return;
+  }
+  if (req.method === "GET" && pathname === "/ready") {
+    sendJson(res, 200, runtimeStatus());
+    return;
+  }
+  if (req.method === "GET" && pathname === "/") {
+    sendFile(res, path.join(frontendDir, "index.html"), "text/html; charset=utf-8");
+    return;
+  }
+  if ((req.method === "GET" || req.method === "HEAD") && pathname === "/favicon.ico") {
+    res.writeHead(204);
+    res.end();
+    return;
+  }
+  if (req.method === "GET" && (pathname.startsWith("/css/") || pathname.startsWith("/js/"))) {
+    sendFrontendAsset(res, pathname);
+    return;
+  }
+  if (req.method === "GET" && pathname === "/api/auth/qr/key") {
+    sendJson(res, 200, await netease.qrKey());
+    return;
+  }
+  if (req.method === "GET" && pathname === "/api/auth/qr/create") {
+    sendJson(res, 200, await netease.qrCreate(requestUrl.searchParams.get("key") || ""));
+    return;
+  }
+  if (req.method === "GET" && pathname === "/api/auth/qr/check") {
+    sendJson(res, 200, await netease.qrCheck(requestUrl.searchParams.get("key") || ""));
+    return;
+  }
+  if (req.method === "GET" && pathname === "/api/auth/status") {
+    const status = await netease.loginStatus();
+    const profile = extractProfile(status);
+    const uid = profile.userId == null ? "" : String(profile.userId);
+    if (uid) store.saveAuthAccount(uid, profile, netease.activeCookie());
+    sendJson(res, 200, status);
+    return;
+  }
+  if (req.method === "POST" && pathname === "/api/auth/refresh") {
+    sendJson(res, 200, await netease.loginRefresh());
+    return;
+  }
+  if (req.method === "GET" && pathname === "/api/auth/accounts") {
+    sendJson(res, 200, {
+      active_uid: currentStoredUid(),
+      accounts: store.listAuthAccounts().map((account) => ({
+        uid: account.uid,
+        profile: account.account,
+        updated_at: account.updatedAt,
+      })),
+    });
+    return;
+  }
+  if (req.method === "POST" && pathname === "/api/auth/switch") {
+    const body = await readJsonBody(req);
+    const uid = compactText(body.uid || "", 80);
+    const cookie = uid ? store.getAuthCookie(uid) : "";
+    if (!uid || !cookie) {
+      sendJson(res, 404, { error: "account not found" });
+      return;
+    }
+    netease.useCookie(cookie);
+    const status = await netease.loginStatus();
+    const profile = extractProfile(status);
+    const activeUid = profile.userId == null ? "" : String(profile.userId);
+    if (activeUid && activeUid !== uid) {
+      sendJson(res, 409, { error: "account cookie mismatch" });
+      return;
+    }
+    if (activeUid) store.saveAuthAccount(activeUid, profile, netease.activeCookie());
+    sendJson(res, 200, { active_uid: activeUid || uid, profile, status });
+    return;
+  }
+  if (req.method === "POST" && pathname === "/api/auth/logout") {
+    netease.clearCookie();
+    sendJson(res, 200, { ok: true });
+    return;
+  }
+
+  const onboardingUid = matchPrefix(pathname, "/api/radio/onboarding/");
+  if (onboardingUid && req.method === "GET") {
+    const uid = onboardingUid;
+    if (!(await uidMatchesActiveLogin(uid))) {
+      sendJson(res, 403, { error: "forbidden" });
+      return;
+    }
+    const profile = store.getProfile(uid);
+    const settings = store.getUserSettings(uid);
+    sendJson(res, 200, {
+      profile_ready: Boolean(profile),
+      profile: profile || {},
+      settings,
+      onboarded: Boolean(settings),
+    });
+    return;
+  }
+  if (onboardingUid && req.method === "POST") {
+    const uid = onboardingUid;
+    if (!(await uidMatchesActiveLogin(uid))) {
+      sendJson(res, 403, { error: "forbidden" });
+      return;
+    }
+    const settings = normalizeSettings(await readJsonBody(req));
+    store.saveUserSettings(uid, settings);
+    sendJson(res, 200, { settings, onboarded: true });
+    return;
+  }
+
+  const ttsHash = matchPrefix(pathname, "/api/radio/tts/");
+  if (ttsHash && req.method === "GET") {
+    const cached = tts.getCachedPath(ttsHash);
+    if (!cached) {
+      sendJson(res, 404, { error: "not found" });
+      return;
+    }
+    sendFile(res, path.resolve(cached), "audio/wav");
+    return;
+  }
+
+  const audioSongId = matchPrefix(pathname, "/api/radio/audio/");
+  if (audioSongId && req.method === "GET") {
+    const resolved = await audioResolver.resolve({ id: audioSongId, name: "", artist: "" }, null, requestUrl.searchParams.get("refresh") === "1");
+    if (!resolved.ok || !resolved.url) {
+      sendJson(res, 404, { error: resolved.reason || "audio unavailable" });
+      return;
+    }
+    const range = Array.isArray(req.headers.range) ? req.headers.range[0] : req.headers.range;
+    await proxyAudio(resolved.url, range, res, audioSongId);
+    return;
+  }
+
+  const lyricSongId = matchPrefix(pathname, "/api/radio/lyrics/");
+  if (lyricSongId && req.method === "GET") {
+    sendJson(
+      res,
+      200,
+      await lyrics.forSong(lyricSongId, {
+        name: requestUrl.searchParams.get("name") || "",
+        artist: requestUrl.searchParams.get("artist") || "",
+      }),
+    );
+    return;
+  }
+
+  sendJson(res, 404, { error: "not found" });
+}
+
+function matchPrefix(pathname: string, prefix: string): string {
+  return pathname.startsWith(prefix) ? decodeURIComponent(pathname.slice(prefix.length)) : "";
+}
+
+function sendJson(res: http.ServerResponse, status: number, payload: unknown): void {
+  res.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
+  res.end(JSON.stringify(payload));
+}
+
+async function readJsonBody(req: http.IncomingMessage): Promise<Record<string, unknown>> {
+  const chunks: Buffer[] = [];
+  let size = 0;
+  for await (const chunk of req) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    size += buffer.length;
+    if (size > 1024 * 1024) throw new Error("request body too large");
+    chunks.push(buffer);
+  }
+  if (!chunks.length) return {};
+  const parsed = JSON.parse(Buffer.concat(chunks).toString("utf8")) as unknown;
+  return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : {};
+}
+
+function sendFrontendAsset(res: http.ServerResponse, pathname: string): void {
+  const file = path.resolve(frontendDir, decodeURIComponent(pathname.slice(1)));
+  if (!file.startsWith(frontendDir) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) {
+    sendJson(res, 404, { error: "not found" });
+    return;
+  }
+  const contentType = file.endsWith(".js") ? "application/javascript; charset=utf-8" : "text/css; charset=utf-8";
+  sendFile(res, file, contentType);
+}
+
+function sendFile(res: http.ServerResponse, file: string, contentType: string): void {
+  if (!fs.existsSync(file)) {
+    sendJson(res, 404, { error: "not found" });
+    return;
+  }
+  res.writeHead(200, {
+    "Content-Type": contentType,
+    "Content-Length": fs.statSync(file).size,
+    "Cache-Control": "public, max-age=0",
+  });
+  fs.createReadStream(file).pipe(res);
+}
 
 async function uidMatchesActiveLogin(uid: string): Promise<boolean> {
   if (!uid) return true;
@@ -195,22 +309,38 @@ function normalizeSettings(payload: Record<string, unknown>): UserSettings {
   };
 }
 
-async function proxyAudio(url: string, rangeHeader: string | undefined, res: express.Response, songId: string): Promise<void> {
+function stationEnvironment(scene: string, settings: Partial<UserSettings>, weather: WeatherSnapshot | null = null): StationEnvironment {
+  const weatherText = weather
+    ? [weather.condition, weather.temperatureC == null ? "" : `${weather.temperatureC}C`].filter(Boolean).join(" ")
+    : "天气未知";
+  return {
+    scene,
+    localTimeBlock: settings.localTimeBlock || "",
+    timezoneName: settings.timezoneName,
+    locale: settings.locale,
+    regionHint: settings.regionHint,
+    geo: settings.geo,
+    weather,
+    summary: [scene, settings.regionHint || "", settings.localTimeBlock || "", weatherText].filter(Boolean).join("，"),
+  };
+}
+
+async function proxyAudio(url: string, rangeHeader: string | undefined, res: http.ServerResponse, songId: string): Promise<void> {
   try {
     const headers: Record<string, string> = {};
     if (rangeHeader) headers.range = rangeHeader;
     const upstream = await fetch(url, { headers, redirect: "follow" });
     if (!upstream.ok || !upstream.body) {
       audioResolver.markFailed(songId, null, `upstream ${upstream.status}`);
-      res.status(502).json({ error: `upstream ${upstream.status}` });
+      sendJson(res, 502, { error: `upstream ${upstream.status}` });
       return;
     }
     const mediaType = upstream.headers.get("content-type") || "audio/mpeg";
     if (!mediaType.toLowerCase().startsWith("audio/")) {
-      res.status(502).json({ error: `upstream returned non-audio content: ${mediaType}` });
+      sendJson(res, 502, { error: `upstream returned non-audio content: ${mediaType}` });
       return;
     }
-    res.status(upstream.status);
+    res.statusCode = upstream.status;
     res.setHeader("Content-Type", mediaType);
     res.setHeader("Cache-Control", "public, max-age=3600");
     for (const header of ["accept-ranges", "content-range", "content-length"]) {
@@ -225,11 +355,11 @@ async function proxyAudio(url: string, rangeHeader: string | undefined, res: exp
     }
     res.end();
   } catch (error) {
-    res.status(502).json({ error: error instanceof Error ? error.message : "proxy failed" });
+    sendJson(res, 502, { error: error instanceof Error ? error.message : "proxy failed" });
   }
 }
 
-async function handleRadioSocket(socket: WebSocket): Promise<void> {
+async function handleRadioSocket(socket: WebSocketType): Promise<void> {
   let uid: string | null = null;
   let scene = "日常";
   let profile: TasteProfile | null = null;
@@ -237,17 +367,19 @@ async function handleRadioSocket(socket: WebSocket): Promise<void> {
   let currentTrack: Track | null = null;
   let currentSongId: string | null = null;
   let sessionId: number | null = null;
+  let environment: StationEnvironment = stationEnvironment(scene, settings);
   let trackIndex = 0;
   const playedTracks: Track[] = [];
   const loggedTrackIds = new Set<string>();
   const queue = new PlaybackQueue(1);
   const schedulerState = scheduler.newSessionState();
+  const stationState = stationDirector.newSessionState();
   const recentTurns: Array<Record<string, unknown>> = [];
   let prewarmTask: Promise<void> | null = null;
   let introSendCancelled = false;
 
   const send = (payload: Record<string, unknown>): void => {
-    if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(payload));
+    if (socket.readyState === 1) socket.send(JSON.stringify(payload));
   };
 
   const synthesize = async (text: string): Promise<string> => {
@@ -294,6 +426,44 @@ async function handleRadioSocket(socket: WebSocket): Promise<void> {
         break;
       }
       attempts += 1;
+      const directed = await stationDirector.pickNext({
+        state: stationState,
+        uid,
+        sessionId,
+        profile,
+        userSettings: settings,
+        environment,
+        currentTrack,
+        playedTracks,
+        readyQueue: queue.readyItems().map((item) => item.track),
+        recentTurns,
+      });
+      if (directed.status === "queued" && directed.track && directed.url) {
+        let segueText = "";
+        let ttsHash = "";
+        if (allowProgramBreak && shouldGenerateSegue(trackIndex + queue.readyItems().length + 1)) {
+          segueText = await djEngine
+            .generateProgramBreak({
+              profile,
+              scene,
+              playedTracks,
+              nextTrack: directed.track,
+              settings,
+            })
+            .catch(() => "");
+          if (segueText) ttsHash = await synthesize(segueText);
+        }
+        queue.addReady(
+          directed.track,
+          directed.url,
+          directed.track.selectionReason || { type: "ai_station_director", text: directed.plan?.stationBrief || "AI 正在接管电台走向。" },
+          { segueText, ttsHash },
+        );
+        added += 1;
+        continue;
+      }
+
+      store.logPlaybackEvent("ai_station_degraded_fallback", { uid, songId: currentSongId, reason: directed.djText });
       const track = await scheduler.pickNext({
         currentSongId,
         profile,
@@ -304,6 +474,13 @@ async function handleRadioSocket(socket: WebSocket): Promise<void> {
       if (!track) break;
       const prepared = await scheduler.prepareTrack(track, uid);
       if (!prepared) continue;
+      const queuedTrack = {
+        ...prepared.track,
+        selectionReason: {
+          type: "degraded_scheduler_fallback",
+          text: prepared.track.selectionReason?.text || "AI 暂时没有拿到稳的计划，先用降级电台不断档。",
+        },
+      };
       let segueText = "";
       let ttsHash = "";
       if (allowProgramBreak && shouldGenerateSegue(trackIndex + queue.readyItems().length + 1)) {
@@ -312,16 +489,16 @@ async function handleRadioSocket(socket: WebSocket): Promise<void> {
             profile,
             scene,
             playedTracks,
-            nextTrack: prepared.track,
+            nextTrack: queuedTrack,
             settings,
           })
           .catch(() => "");
         if (segueText) ttsHash = await synthesize(segueText);
       }
       queue.addReady(
-        prepared.track,
+        queuedTrack,
         prepared.url,
-        prepared.track.selectionReason || { type: "scheduler", text: "继续电台流。" },
+        queuedTrack.selectionReason,
         { segueText, ttsHash },
       );
       added += 1;
@@ -392,6 +569,7 @@ async function handleRadioSocket(socket: WebSocket): Promise<void> {
         };
         scene = detectScene(Number(message.utc_offset ?? 480));
         settings.localTimeBlock = localTimeBlock(scene);
+        environment = stationEnvironment(scene, settings, await weatherService.current(settings.geo).catch(() => null));
         profile = uid ? store.getProfile(uid) : null;
         if (!profile && uid) {
           void profileEngine
@@ -433,6 +611,7 @@ async function handleRadioSocket(socket: WebSocket): Promise<void> {
 
       if (type === "skip") {
         queue.markCurrent("skipped");
+        stationDirector.recordFeedback(stationState, { type: "skip", track: currentTrack ? trackInfo(currentTrack) : null });
         if (currentSongId) {
           store.logPlaybackEvent("skipped", { uid, songId: currentSongId });
           if (profile) {
@@ -448,39 +627,27 @@ async function handleRadioSocket(socket: WebSocket): Promise<void> {
         if (!requestText) return;
         introSendCancelled = true;
         store.logPlaybackEvent("song_request", { uid, songId: currentSongId, reason: requestText });
-        const result = await queueDirector.handleSongRequest({
+        const result = await stationDirector.handleUserRequest({
           requestText,
-          playbackQueue: queue,
+          state: stationState,
           uid,
           sessionId,
           profile,
           userSettings: settings,
-          playbackContext: {
-            currentTrack: trackInfo(currentTrack),
-            recentTracks: playedTracks.slice(-10).map(trackInfo),
-            readyQueue: queue.readyItems().map((item) => trackInfo(item.track)),
-            scene,
-          },
+          environment,
+          currentTrack,
+          playedTracks,
+          readyQueue: queue.readyItems().map((item) => item.track),
           recentTurns,
         });
         recentTurns.push({ user: requestText, result: result.status, at: new Date().toISOString() });
-        if (result.status === "queued") {
-          if (result.decision?.queuePolicy.continueDirection && result.decision.queuePolicy.durationTracks > 1) {
-            scheduler.applyListeningIntent(
-              schedulerState,
-              {
-                label:
-                  result.decision.musicTask.styleHint ||
-                  result.decision.musicTask.primaryEntities.map((entity) => entity.name).join(" / ") ||
-                  requestText,
-                rawText: requestText,
-                expiresAfterTracks: result.decision.queuePolicy.durationTracks,
-                constraints: result.decision.musicTask.negativeConstraints,
-                seedTask: result.decision.musicTask,
-              },
-              settings,
-            );
-          }
+        if (result.status === "queued" && result.track && result.url) {
+          queue.clearReady();
+          queue.addReady(
+            result.track,
+            result.url,
+            result.track.selectionReason || { type: "ai_station_director", text: result.plan?.stationBrief || "AI 已经重排电台方向。" },
+          );
           if (result.djText) {
             synthesizeAndSendDjMessage(result.djText);
           }

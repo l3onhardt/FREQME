@@ -136,6 +136,20 @@ test("DJ request agent does not invent local artist decisions when LLM is unavai
   assert.deepEqual(decision.musicTask.searchGoals, []);
 });
 
+test("DJ request agent keeps clear scene and style requests actionable when LLM is unavailable", async () => {
+  const agent = new DJRequestAgent(new ThrowingLlm() as any);
+  const decision = await agent.decide("我想听晚上 emo 的歌，不要 edm，不要 dubstep", emptyContext);
+
+  assert.equal(decision.action, "set_direction_and_play");
+  assert.equal(decision.musicTask.type, "scene_genre_direction");
+  assert.equal(decision.queuePolicy.continueDirection, true);
+  assert.ok(decision.queuePolicy.durationTracks >= 4);
+  assert.match(decision.musicTask.styleHint, /emo/i);
+  assert.ok(decision.musicTask.negativeConstraints.includes("EDM"));
+  assert.ok(decision.musicTask.negativeConstraints.includes("dubstep"));
+  assert.ok(decision.musicTask.searchGoals.every((goal) => goal !== decision.rawText));
+});
+
 test("negative feedback is also interpreted through LLM JSON and remains session-scoped", async () => {
   const llm = new FakeLlm(
     JSON.stringify({

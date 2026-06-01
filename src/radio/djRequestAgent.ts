@@ -44,7 +44,7 @@ export class DJRequestAgent {
     const response = await this.chatJson(this.prompt(clean, contextPack)).catch(() => "");
     const data = extractJsonObject(response);
     if (!Object.keys(data).length) {
-      return this.safeQuestion(clean, "The DJ request agent did not return valid JSON.");
+      return this.localSceneStyleDecision(clean) || this.safeQuestion(clean, "The DJ request agent did not return valid JSON.");
     }
     return this.decisionFromData(clean, data);
   }
@@ -139,6 +139,86 @@ Return only JSON:
       memoryUpdate: { sessionPreference: [], possibleLongTermPreference: [], negativeConstraints: [] },
       rawText,
     };
+  }
+
+  private localSceneStyleDecision(rawText: string): DJDecision | null {
+    const normalized = rawText.toLowerCase();
+    const styleMarkers: Array<{ test: RegExp; label: string; goals: string[] }> = [
+      {
+        test: /\bemo\b|情绪|忧郁|难过|emo 的歌|emo的歌/iu,
+        label: "late-night emo / sad alt-pop",
+        goals: ["late night emo", "sad indie emo", "sad alt-pop"],
+      },
+      {
+        test: /\br\s*&?\s*b\b|\brnb\b/iu,
+        label: "R&B",
+        goals: ["warm R&B", "late-night R&B", "alt R&B"],
+      },
+      {
+        test: /jazz|爵士/iu,
+        label: "jazz",
+        goals: ["vocal jazz", "late-night jazz", "soft jazz"],
+      },
+      {
+        test: /ambient|氛围|放松|舒缓/iu,
+        label: "ambient / chillout",
+        goals: ["ambient", "chillout", "organic ambient"],
+      },
+      {
+        test: /city\s*pop|citypop|城市流行/iu,
+        label: "city pop",
+        goals: ["city pop", "Japanese city pop"],
+      },
+      {
+        test: /shoegaze|盯鞋/iu,
+        label: "shoegaze",
+        goals: ["shoegaze", "dream pop shoegaze"],
+      },
+    ];
+    const marker = styleMarkers.find((item) => item.test.test(normalized));
+    if (!marker) return null;
+    const scenes = [
+      /\bnight\b|晚上|夜晚|深夜|睡前/iu.test(rawText) ? "夜晚" : "",
+      /雨|下雨|rain/iu.test(rawText) ? "雨天" : "",
+      /开车|路上|通勤/iu.test(rawText) ? "路上" : "",
+    ].filter(Boolean);
+    const negativeConstraints = this.localNegativeConstraints(rawText);
+    const styleHint = compactText([...scenes, marker.label].join(" "), 120);
+    return {
+      action: "set_direction_and_play",
+      understoodIntent: compactText(`用户想听${styleHint || marker.label}，并希望电台持续沿着这个方向。`, 260),
+      musicTask: {
+        type: "scene_genre_direction",
+        primaryEntities: [
+          ...scenes.map((scene) => ({ role: "scene" as const, name: scene })),
+          { role: "genre", name: marker.label },
+        ],
+        workHint: "",
+        styleHint,
+        negativeConstraints,
+        searchGoals: marker.goals,
+        mustNotSearchLiteralUserSentence: true,
+      },
+      queuePolicy: { durationTracks: 5, continueDirection: true, avoidRepetition: true },
+      uncertainty: { level: "medium", reason: "LLM fallback for a clear scene/style request.", shouldAskUser: false },
+      djResponse: { speakNow: "懂了，我先按这个氛围接住，后面也不乱跳。", tone: "warm_confident" },
+      memoryUpdate: {
+        sessionPreference: [styleHint || marker.label],
+        possibleLongTermPreference: [],
+        negativeConstraints,
+      },
+      rawText,
+    };
+  }
+
+  private localNegativeConstraints(rawText: string): string[] {
+    const constraints: string[] = [];
+    const text = rawText.toLowerCase();
+    if (/\bedm\b|电子舞曲|电音/iu.test(text)) constraints.push("EDM");
+    if (/dubstep|回响贝斯/iu.test(text)) constraints.push("dubstep");
+    if (/不要太炸|别太炸|不炸|太炸|炸场|高能/iu.test(rawText)) constraints.push("高能量");
+    if (/不要中文|别中文|中文歌/iu.test(rawText)) constraints.push("中文歌");
+    return constraints;
   }
 
   private normalizeMusicTask(value: unknown): MusicTask {

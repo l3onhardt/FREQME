@@ -97,6 +97,7 @@ test("voice design TTS sends the configured voice description instead of audio.v
     base: config.mimoApiBase,
     model: config.mimoTtsModel,
     voice: config.mimoTtsVoice,
+    warmFemale: config.mimoTtsVoiceWarmFemale,
   };
   const previousFetch = globalThis.fetch;
   let requestBody: any = null;
@@ -105,6 +106,7 @@ test("voice design TTS sends the configured voice description instead of audio.v
   config.mimoApiBase = "https://example.test/v1";
   config.mimoTtsModel = "mimo-v2.5-tts-voicedesign";
   config.mimoTtsVoice = "一位女性电台主播，有磁性，深夜电台的主播，有感染力。";
+  config.mimoTtsVoiceWarmFemale = config.mimoTtsVoice;
   globalThis.fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
     requestBody = JSON.parse(String(init?.body || "{}"));
     return {
@@ -130,6 +132,7 @@ test("voice design TTS sends the configured voice description instead of audio.v
     config.mimoApiBase = previous.base;
     config.mimoTtsModel = previous.model;
     config.mimoTtsVoice = previous.voice;
+    config.mimoTtsVoiceWarmFemale = previous.warmFemale;
   }
 });
 
@@ -143,6 +146,7 @@ test("built-in TTS keeps using audio.voice for the preset voice model", async ()
     base: config.mimoApiBase,
     model: config.mimoTtsModel,
     voice: config.mimoTtsVoice,
+    warmFemale: config.mimoTtsVoiceWarmFemale,
   };
   const previousFetch = globalThis.fetch;
   let requestBody: any = null;
@@ -151,6 +155,7 @@ test("built-in TTS keeps using audio.voice for the preset voice model", async ()
   config.mimoApiBase = "https://example.test/v1";
   config.mimoTtsModel = "mimo-v2.5-tts";
   config.mimoTtsVoice = "Chloe";
+  config.mimoTtsVoiceWarmFemale = "Chloe";
   globalThis.fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
     requestBody = JSON.parse(String(init?.body || "{}"));
     return {
@@ -173,5 +178,6 @@ test("built-in TTS keeps using audio.voice for the preset voice model", async ()
     config.mimoApiBase = previous.base;
     config.mimoTtsModel = previous.model;
     config.mimoTtsVoice = previous.voice;
+    config.mimoTtsVoiceWarmFemale = previous.warmFemale;
   }
 });

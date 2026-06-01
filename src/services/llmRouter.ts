@@ -22,6 +22,25 @@ function providerOrder(budgetOk: boolean): string[] {
   return budgetOk ? [primary, fallback] : [fallback, primary];
 }
 
+function anthropicMessages(messages: Array<{ role: string; content: string }>): {
+  system?: string;
+  messages: Array<{ role: string; content: string }>;
+} {
+  const system = messages
+    .filter((message) => message.role === "system")
+    .map((message) => message.content)
+    .join("\n\n");
+  return {
+    ...(system ? { system } : {}),
+    messages: messages
+      .filter((message) => message.role !== "system")
+      .map((message) => ({
+        role: message.role === "assistant" ? "assistant" : "user",
+        content: message.content,
+      })),
+  };
+}
+
 export class LLMRouter {
   constructor(private readonly store: MemoryStore) {}
 
@@ -69,18 +88,18 @@ export class LLMRouter {
     if (provider === "anthropic") {
       const apiKey = config.llmFallbackApiKey;
       if (!apiKey) throw new Error("missing Anthropic API key");
-      const response = await fetch("https://api.anthropic.com/v1/messages", {
+      const response = await fetch(`${config.llmFallbackApiBase.replace(/\/$/, "")}/messages`, {
         method: "POST",
         signal,
         headers: {
-          "x-api-key": apiKey,
+          "api-key": apiKey,
           "anthropic-version": "2023-06-01",
           "content-type": "application/json",
         },
         body: JSON.stringify({
           model: config.llmFallbackModel,
           max_tokens: maxTokens,
-          messages,
+          ...anthropicMessages(messages),
         }),
       });
       if (!response.ok) throw new Error(`anthropic HTTP ${response.status}`);

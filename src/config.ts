@@ -31,7 +31,7 @@ export const config = {
   llmModel: process.env.LLM_MODEL || "mimo-v2.5-pro",
   llmFallbackProvider: process.env.LLM_FALLBACK_PROVIDER || "anthropic",
   llmFallbackApiKey: process.env.LLM_FALLBACK_API_KEY || "",
+  llmFallbackApiBase: process.env.LLM_FALLBACK_API_BASE || "https://api.anthropic.com/v1",
   llmFallbackModel: process.env.LLM_FALLBACK_MODEL || "claude-sonnet-4-6",
   maxDailyTokens: intEnv("MAX_DAILY_TOKENS", 100000),
 };
-

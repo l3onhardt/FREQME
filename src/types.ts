@@ -169,6 +169,43 @@ export interface ListeningIntent {
   seedTask?: MusicTask;
 }
 
+export interface WeatherSnapshot {
+  condition: string;
+  temperatureC?: number;
+  precipitationMm?: number;
+  windKph?: number;
+}
+
+export interface StationEnvironment {
+  scene: string;
+  localTimeBlock: string;
+  timezoneName?: string;
+  locale?: string;
+  regionHint?: string;
+  geo?: GeoContext;
+  weather?: WeatherSnapshot | null;
+  summary: string;
+}
+
+export interface StationPlanItem {
+  query: string;
+  reason: string;
+  style?: string;
+  musicTask?: MusicTask;
+}
+
+export interface StationPlan {
+  id: string;
+  stationBrief: string;
+  modeLabel: string;
+  durationTracks: number;
+  negativeConstraints: string[];
+  items: StationPlanItem[];
+  djResponse: string;
+  source: "ai";
+  createdAt: string;
+}
+
 export interface TasteProfile {
   uid: string;
   musicDna: {

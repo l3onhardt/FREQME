@@ -603,6 +603,60 @@ test("negative feedback blocks rejected style seeds and does not replay the avoi
   assert.ok(netease.queries.every((query) => !/\bR&B\b|\brnb\b|SZA|Daniel Caesar|Frank Ocean/i.test(query)));
 });
 
+test("late-night emo fallback turns Chinese abstract mood into concrete non-EDM songs", async () => {
+  class AbstractEmoLlm {
+    async chat(prompt: string): Promise<string> {
+      if (prompt.includes("Rewrite this DJ music task")) {
+        return JSON.stringify({
+          search_queries: ["忧郁钢琴电子", "内省旋律电子"],
+          picks: [{ artist: "", title: "", query: "忧郁钢琴电子" }],
+        });
+      }
+      return JSON.stringify({
+        chosen_id: "funeral",
+        confidence: 0.91,
+        matched_entities: ["late-night emo", "non-EDM"],
+        version_note: "concrete emo-adjacent track, not EDM or dubstep",
+        risk: "",
+      });
+    }
+  }
+  const task: MusicTask = {
+    type: "scene_genre_direction",
+    primaryEntities: [
+      { role: "scene", name: "夜晚" },
+      { role: "genre", name: "忧郁" },
+      { role: "genre", name: "深沉" },
+    ],
+    workHint: "",
+    styleHint: "旋律性强，情绪内敛，适合独处或沉思，避免高能节拍和过度电子化处理。",
+    negativeConstraints: ["EDM", "Dubstep", "高能量舞曲"],
+    searchGoals: ["适合夜晚的忧郁风格钢琴曲", "深沉的原声或氛围音乐", "带有情感张力但不吵闹的流行/独立音乐"],
+    mustNotSearchLiteralUserSentence: true,
+  };
+  const netease = {
+    queries: [] as string[],
+    async search(query: string): Promise<Track[]> {
+      this.queries.push(query);
+      if (query === "Phoebe Bridgers Funeral") return [{ id: "funeral", name: "Funeral", artist: "Phoebe Bridgers", source: query }];
+      return [{ id: "other", name: "I Bet on Losing Dogs", artist: "Mitski", source: query }];
+    },
+  };
+  const audioResolver = {
+    async resolveWithCandidates(track: Track): Promise<any> {
+      return { ok: true, songId: track.id, proxyUrl: `/api/radio/audio/${track.id}` };
+    },
+  };
+  const agent = new SearchVerifyAgent(new AbstractEmoLlm() as any, netease as any, audioResolver as any);
+
+  const result = await agent.verify(task, "42", "我想听晚上 emo 的歌，不要 edm，不要 dubstep", personalContext);
+
+  assert.equal(result.status, "verified");
+  assert.equal(result.selectedSong?.id, "funeral");
+  assert.ok(netease.queries.includes("Phoebe Bridgers Funeral"));
+  assert.ok(netease.queries.every((query) => !/EDM|Dubstep|忧郁钢琴电子|内省旋律电子/i.test(query)));
+});
+
 test("future bass fallback uses concrete artist-title songs instead of generic bass search", async () => {
   class GenericFutureBassLlm {
     async chat(prompt: string): Promise<string> {

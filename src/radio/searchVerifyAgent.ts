@@ -630,6 +630,21 @@ Return only JSON:
         contextPack,
       );
     }
+    if (this.hasEmoMarker(normalizedText)) {
+      return this.preferFreshQueries(
+        [
+          "Phoebe Bridgers Funeral",
+          "Mitski I Bet on Losing Dogs",
+          "Lord Huron The Night We Met",
+          "Cigarettes After Sex Apocalypse",
+          "Bon Iver Skinny Love",
+          "Billie Eilish when the party's over",
+          "Daughter Youth",
+          "The 1975 About You",
+        ],
+        contextPack,
+      );
+    }
     if (normalized.includes("futurebass") || normalized.includes("melodicfuturebass")) {
       return [
         "Seven Lions Rush Over Me",
@@ -713,6 +728,13 @@ Return only JSON:
 
   private hasRnbMarker(text: string): boolean {
     return /\br\s*&?\s*b\b|\brnb\b/iu.test(text);
+  }
+
+  private hasEmoMarker(text: string): boolean {
+    return (
+      /\bemo\b|sad\s+alt|sad\s+indie|melanchol|heartbreak/iu.test(text) ||
+      /忧郁|深沉|内省|情绪内敛|独处|沉思|情感张力|不吵闹|夜晚.*情绪|晚上.*情绪/u.test(text)
+    );
   }
 
   private isExplicitVerifierRejection(judgement: Record<string, unknown>): boolean {

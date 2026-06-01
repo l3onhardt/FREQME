@@ -6,23 +6,29 @@ import { config } from "../config.js";
 import type { MemoryStore } from "../storage/memoryStore.js";
 import type { UserSettings } from "../types.js";
 
-const voicePresets: Record<string, { configValue: string; director: string; prompt?: string }> = {
+type VoicePreset = {
+  configKey: "mimoTtsVoiceWarmFemale" | "mimoTtsVoiceWarmMale" | "mimoTtsVoiceBrightGirl";
+  director: string;
+  promptKey?: "mimoTtsVoiceWarmFemalePrompt";
+};
+
+const voicePresets: Record<string, VoicePreset> = {
   silver_female: {
-    configValue: config.mimoTtsVoiceWarmFemale,
+    configKey: "mimoTtsVoiceWarmFemale",
     director: "知性、低暖、克制的中文电台女主播音色，成熟自然，不甜腻。",
-    prompt: config.mimoTtsVoiceWarmFemalePrompt,
+    promptKey: "mimoTtsVoiceWarmFemalePrompt",
   },
   warm_female: {
-    configValue: config.mimoTtsVoiceWarmFemale,
+    configKey: "mimoTtsVoiceWarmFemale",
     director: "温暖、磁性、克制的中文电台女主播音色，亲切但不表演化。",
-    prompt: config.mimoTtsVoiceWarmFemalePrompt,
+    promptKey: "mimoTtsVoiceWarmFemalePrompt",
   },
   warm_male: {
-    configValue: config.mimoTtsVoiceWarmMale,
+    configKey: "mimoTtsVoiceWarmMale",
     director: "温和、低暖、沉稳的中文电台男主播音色，有陪伴感但不油腻。",
   },
   bright_girl: {
-    configValue: config.mimoTtsVoiceBrightGirl,
+    configKey: "mimoTtsVoiceBrightGirl",
     director: "年轻、明亮、干净的中文电台女主播音色，轻松但克制。",
   },
 };
@@ -164,12 +170,14 @@ export class TTSService {
   }
 
   private resolveVoice(preset: string): string {
-    return voicePresets[preset]?.configValue || config.mimoTtsVoice || "Cherry";
+    const voice = voicePresets[preset];
+    return (voice ? config[voice.configKey] : "") || config.mimoTtsVoice || "Cherry";
   }
 
   private directorPrompt(scene: string, preset: string): string {
     const voice = voicePresets[preset] || voicePresets.warm_female;
     const sceneText = sceneGuidance[scene] || sceneGuidance.日常;
-    return `[角色]${voice.director}[场景]${sceneText}[音色指引]${voice.prompt || ""}[指导]像真实电台主播一样说话，克制、自然、温暖。只读正文含义，不要加入夸张语气词、括号提示或舞台表演。`;
+    const prompt = voice.promptKey ? config[voice.promptKey] : "";
+    return `[角色]${voice.director}[场景]${sceneText}[音色指引]${prompt}[指导]像真实电台主播一样说话，克制、自然、温暖。只读正文含义，不要加入夸张语气词、括号提示或舞台表演。`;
   }
 }

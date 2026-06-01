@@ -6,9 +6,10 @@
 
 FREQME 已经切到单一 TypeScript 后端：
 
-- Node.js / TypeScript / Express / WebSocket
-- 直接集成 `NeteaseCloudMusicApi`
+- Node.js / TypeScript / 原生 HTTP / WebSocket
+- 内置轻量网易云适配层，避免主进程加载阻塞型网易云大包
 - 本地 SQLite 记忆、画像、TTS 缓存和音频 URL 缓存
+- AI Station Director 接管播放计划，旧调度器只做降级不断档兜底
 - 前端仍是 `frontend/index.html`、`frontend/js/radio.js`、`frontend/css/radio.css`
 
 不再需要 Python 虚拟环境，也不再需要单独启动 `netease-bridge`。
@@ -16,9 +17,10 @@ FREQME 已经切到单一 TypeScript 后端：
 ## 核心能力
 
 - AI DJ 会理解自然语言点歌，而不是直接搜用户原句。
+- AI Station Director 会按画像、时间、地点、天气、当前歌曲、近期反馈生成连续播放窗口，不再随机回到旧推荐池。
 - 模糊请求会先推断具体歌曲、歌手、作品、风格或场景，再搜索和校验。
 - 歌单、最近播放、喜欢列表、onboarding 备注、跳过和负反馈会进入本地画像。
-- 电台会根据时间、地区提示和浏览器授权的城市级位置调整播放方向。
+- 电台会根据时间、地区提示、浏览器授权的城市级位置和轻量天气快照调整播放方向。
 - TTS 失败时音乐继续播放，主播文字仍会显示。
 - WebSocket 队列会预热下一首，避免播放断档。
 
@@ -29,11 +31,18 @@ npm install
 npm run dev
 ```
 
-打开：
+`npm run dev` 会先构建后端，再用本地启动器选择端口。默认尝试 `8000`，如果被占用会自动尝试后续端口。
+
+打开启动日志里显示的地址，例如：
 
 ```text
 http://127.0.0.1:8000/
 ```
+
+健康检查分两层：
+
+- `/health` 只表示后端进程已经启动。
+- `/ready` 返回数据库、网易云懒加载状态、MIMO/LLM 配置是否存在，不会泄漏 key。
 
 ## 环境变量
 
@@ -52,6 +61,7 @@ LLM_API_BASE=https://token-plan-sgp.xiaomimimo.com/v1
 
 LLM_FALLBACK_PROVIDER=anthropic
 LLM_FALLBACK_API_KEY=
+LLM_FALLBACK_API_BASE=https://token-plan-sgp.xiaomimimo.com/anthropic/v1
 LLM_FALLBACK_MODEL=claude-sonnet-4-6
 
 PORT=8000
@@ -65,11 +75,12 @@ MAX_DAILY_TOKENS=100000
 
 ```powershell
 npm run build
+npm run start:local
 npm test
 npm start
 ```
 
-`npm test` 会先编译 TypeScript，再跑新的 TypeScript 测试、前端 WebSocket 测试，以及保留下来的网易云桥工具函数测试。
+`npm run build` 是快速本地运行构建。`npm test` 会编译测试产物，再跑 TypeScript 测试、前端 WebSocket 测试，以及保留下来的网易云桥工具函数测试。
 
 ## 本地数据
 
@@ -80,4 +91,3 @@ npm start
 - `data/tts_cache/`
 
 旧的 `data/radio.db` 不再作为主数据库使用。
-
