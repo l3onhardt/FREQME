@@ -33,7 +33,13 @@ import { HostResponder } from "./radio/hostResponder.js";
 import { EpisodePlanner } from "./radio/episodePlanner.js";
 import { QueueWarmer } from "./radio/queueWarmer.js";
 import { ReflectionLoop } from "./radio/reflectionLoop.js";
-import { findNewBrainReadyItem, removeReadyItemsBefore, snapshotReadyItems, type ReadyItemSnapshot } from "./radio/requestReadySelector.js";
+import {
+  findNewBrainReadyItem,
+  isCurrentRequestToken,
+  prepareFreshBrainReadyForPromotion,
+  snapshotReadyItems,
+  type ReadyItemSnapshot,
+} from "./radio/requestReadySelector.js";
 
 const require = createRequire(import.meta.url);
 
@@ -425,6 +431,8 @@ async function handleRadioSocket(socket: WebSocketType): Promise<void> {
   const recentTurns: Array<Record<string, unknown>> = [];
   let prewarmTask: Promise<void> | null = null;
   let introSendCancelled = false;
+  let nextRequestToken = 0;
+  let activeRequestToken: number | null = null;
 
   const send = (payload: Record<string, unknown>): void => {
     if (socket.readyState === 1) socket.send(JSON.stringify(payload));
@@ -486,21 +494,29 @@ async function handleRadioSocket(socket: WebSocketType): Promise<void> {
     }
   };
 
-  const waitForNewBrainReadyItem = async (beforeRequest: ReadyItemSnapshot, timeoutMs = 9000): Promise<ReturnType<typeof queue.readyItems>[number] | null> => {
+  const waitForNewBrainReadyItem = async (
+    beforeRequest: ReadyItemSnapshot,
+    timeoutMs = 9000,
+    requestToken?: number,
+  ): Promise<ReturnType<typeof queue.readyItems>[number] | null> => {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
+      if (requestToken != null && !isCurrentRequestToken(activeRequestToken, requestToken)) return null;
       const ready = findNewBrainReadyItem(queue, beforeRequest);
       if (ready) return ready;
       await new Promise((resolve) => setTimeout(resolve, 250));
     }
+    if (requestToken != null && !isCurrentRequestToken(activeRequestToken, requestToken)) return null;
     return findNewBrainReadyItem(queue, beforeRequest);
   };
 
-  const kickBrainContinuation = (): void => {
-    prewarmTask = radioBrain
+  const kickBrainContinuation = (): ReadyItemSnapshot => {
+    const beforeContinuation = snapshotReadyItems(queue);
+    void radioBrain
       .handleUserText({ ...brainArgs("继续保持这个感觉"), text: "继续保持这个感觉" })
       .then(() => undefined)
       .catch(() => undefined);
+    return beforeContinuation;
   };
 
   const rememberCurrentTrack = (track: Track): void => {
@@ -624,7 +640,31 @@ async function handleRadioSocket(socket: WebSocketType): Promise<void> {
     return false;
   };
 
-  const runStationDirectorRequestFallback = async (requestText: string): Promise<void> => {
+  const promoteFreshBrainReady = async (
+    beforeRequest: ReadyItemSnapshot,
+    resultText: string,
+    requestToken?: number,
+  ): Promise<boolean> => {
+    if (requestToken != null && !isCurrentRequestToken(activeRequestToken, requestToken)) return false;
+    const ready = prepareFreshBrainReadyForPromotion(queue, beforeRequest);
+    if (!ready) return false;
+    send({
+      type: "request_status",
+      status: "ready",
+      text: ready.selectionReason.text || resultText,
+      next_track: trackInfo(ready.track),
+    });
+    await sendPreparedNext("played", { allowContinuation: false, skipPrewarmWait: true });
+    return true;
+  };
+
+  const runStationDirectorRequestFallback = async (
+    requestText: string,
+    readyBeforeRequest?: ReadyItemSnapshot,
+    resultText = "",
+    requestToken?: number,
+  ): Promise<boolean> => {
+    if (readyBeforeRequest && (await promoteFreshBrainReady(readyBeforeRequest, resultText, requestToken))) return true;
     const result = await stationDirector.handleUserRequest({
       requestText,
       state: stationState,
@@ -638,7 +678,9 @@ async function handleRadioSocket(socket: WebSocketType): Promise<void> {
       readyQueue: queue.readyItems().map((item) => item.track),
       recentTurns,
     });
+    if (requestToken != null && !isCurrentRequestToken(activeRequestToken, requestToken)) return false;
     recentTurns.push({ user: requestText, result: result.status, at: new Date().toISOString() });
+    if (readyBeforeRequest && (await promoteFreshBrainReady(readyBeforeRequest, resultText || result.djText || "", requestToken))) return true;
     if (result.status === "queued" && result.track && result.url) {
       queue.clearReady();
       queue.addReady(
@@ -657,20 +699,32 @@ async function handleRadioSocket(socket: WebSocketType): Promise<void> {
           text: ready.selectionReason.text || `下一首准备好了：${ready.track.name}`,
           next_track: trackInfo(ready.track),
         });
-        void sendPreparedNext("played").catch(() => undefined);
+        await sendPreparedNext("played", { allowContinuation: false, skipPrewarmWait: true });
       }
       prewarmTask = fillQueue(1, false).catch(() => undefined);
-      return;
+      return true;
     }
     if (result.status === "ask") {
       send({ type: "request_status", status: "needs_clarification", text: result.djText });
-      return;
+      return false;
     }
     send({ type: "request_status", status: "not_found", text: result.djText || "我没拿到足够稳的可播放版本，先不乱放。" });
+    return false;
   };
 
-  const sendPreparedNext = async (previousEvent = "played"): Promise<void> => {
-    if (prewarmTask) await Promise.race([prewarmTask, new Promise((resolve) => setTimeout(resolve, 1500))]).catch(() => null);
+  const sendPreparedNext = async (
+    previousEvent = "played",
+    options: { allowContinuation?: boolean; skipPrewarmWait?: boolean } = {},
+  ): Promise<void> => {
+    const allowContinuation = options.allowContinuation !== false;
+    if (!options.skipPrewarmWait && prewarmTask) {
+      await Promise.race([prewarmTask, new Promise((resolve) => setTimeout(resolve, 1500))]).catch(() => null);
+    }
+    if (!queue.readyItems().length && allowContinuation && activeRequestToken == null) {
+      const beforeContinuation = kickBrainContinuation();
+      const ready = await waitForNewBrainReadyItem(beforeContinuation, 2000);
+      if (ready) prepareFreshBrainReadyForPromotion(queue, beforeContinuation);
+    }
     if (!queue.readyItems().length) await fillQueue(1, false);
     const item = queue.promoteNext(previousEvent);
     if (!item) {
@@ -690,7 +744,9 @@ async function handleRadioSocket(socket: WebSocketType): Promise<void> {
     } else {
       sendTrack(item.track, item.url);
     }
-    kickBrainContinuation();
+    if (allowContinuation && activeRequestToken == null) {
+      kickBrainContinuation();
+    }
   };
 
   socket.on("message", (raw) => {
@@ -780,36 +836,41 @@ async function handleRadioSocket(socket: WebSocketType): Promise<void> {
         if (!requestText) return;
         introSendCancelled = true;
         store.logPlaybackEvent("song_request", { uid, songId: currentSongId, reason: requestText });
+        const requestToken = ++nextRequestToken;
+        activeRequestToken = requestToken;
+        let shouldKickAfterRequest = false;
         const readyBeforeRequest = snapshotReadyItems(queue);
-        const args = brainArgs(requestText);
-        const result = await radioBrain.handleUserText({ ...args, text: requestText }).catch(() => null);
-        if (!result) {
-          await runStationDirectorRequestFallback(requestText);
-          return;
-        }
-        saveSessionWorkingMemory(args);
-        if (result.status === "explained") {
-          send({ type: "request_status", status: "explained", text: result.hostText });
+        try {
+          const args = brainArgs(requestText);
+          const result = await radioBrain.handleUserText({ ...args, text: requestText }).catch(() => null);
+          if (!isCurrentRequestToken(activeRequestToken, requestToken)) return;
+          if (!result) {
+            shouldKickAfterRequest = await runStationDirectorRequestFallback(requestText, readyBeforeRequest, "", requestToken);
+            return;
+          }
+          saveSessionWorkingMemory(args);
+          if (result.status === "explained") {
+            send({ type: "request_status", status: "explained", text: result.hostText });
+            synthesizeAndSendDjMessage(result.hostText);
+            recentTurns.push({ user: requestText, result: result.status, at: new Date().toISOString() });
+            return;
+          }
+          send({ type: "request_status", status: "planning", text: result.hostText });
           synthesizeAndSendDjMessage(result.hostText);
-          recentTurns.push({ user: requestText, result: result.status, at: new Date().toISOString() });
-          return;
+          const ready = await waitForNewBrainReadyItem(readyBeforeRequest, 9000, requestToken);
+          if (!isCurrentRequestToken(activeRequestToken, requestToken)) return;
+          if (ready) {
+            recentTurns.push({ user: requestText, result: "ready", at: new Date().toISOString() });
+            shouldKickAfterRequest = await promoteFreshBrainReady(readyBeforeRequest, result.hostText, requestToken);
+            return;
+          }
+          shouldKickAfterRequest = await runStationDirectorRequestFallback(requestText, readyBeforeRequest, result.hostText, requestToken);
+        } finally {
+          if (isCurrentRequestToken(activeRequestToken, requestToken)) {
+            activeRequestToken = null;
+            if (shouldKickAfterRequest) kickBrainContinuation();
+          }
         }
-        send({ type: "request_status", status: "planning", text: result.hostText });
-        synthesizeAndSendDjMessage(result.hostText);
-        const ready = await waitForNewBrainReadyItem(readyBeforeRequest, 9000);
-        if (ready) {
-          recentTurns.push({ user: requestText, result: "ready", at: new Date().toISOString() });
-          send({
-            type: "request_status",
-            status: "ready",
-            text: ready.selectionReason.text || result.hostText,
-            next_track: trackInfo(ready.track),
-          });
-          removeReadyItemsBefore(queue, ready);
-          await sendPreparedNext("played");
-          return;
-        }
-        await runStationDirectorRequestFallback(requestText);
       }
     })().catch((error) => {
       send({ type: "error", message: error instanceof Error ? error.message : "电台出错了。" });

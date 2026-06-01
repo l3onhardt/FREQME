@@ -11,6 +11,13 @@ export function findNewBrainReadyItem(queue: PlaybackQueue, beforeRequest: Ready
   return queue.readyItems().find((item) => !beforeRequest.has(item) && isBrainReadyItem(item)) || null;
 }
 
+export function prepareFreshBrainReadyForPromotion(queue: PlaybackQueue, beforeRequest: ReadyItemSnapshot): QueueItem | null {
+  const ready = findNewBrainReadyItem(queue, beforeRequest);
+  if (!ready) return null;
+  removeReadyItemsBefore(queue, ready);
+  return ready;
+}
+
 export function removeReadyItemsBefore(queue: PlaybackQueue, target: QueueItem | null): number {
   if (!target) return 0;
   const staleAhead = new Set<QueueItem>();
@@ -20,6 +27,10 @@ export function removeReadyItemsBefore(queue: PlaybackQueue, target: QueueItem |
   }
   if (!staleAhead.size) return 0;
   return queue.removeReadyWhere((item) => staleAhead.has(item));
+}
+
+export function isCurrentRequestToken(activeToken: number | null, requestToken: number): boolean {
+  return activeToken === requestToken;
 }
 
 function isBrainReadyItem(item: QueueItem): boolean {
