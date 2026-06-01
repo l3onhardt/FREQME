@@ -23,6 +23,25 @@ export interface ListeningIntentDecision {
   ackText: string;
 }
 
+export type DriftState = "on_contract" | "adjacent" | "bridge" | "off_contract";
+
+export interface StationContract {
+  id: string;
+  mainDirection: string;
+  rawUserText: string;
+  allowedAdjacent: string[];
+  softBridge: string[];
+  disallowed: string[];
+  positiveSeeds: string[];
+  negativeConstraints: string[];
+  driftBudget: number;
+  bridgeCount: number;
+  mustReturnToContract: boolean;
+  hostStyle: "quiet" | "standard" | "companion";
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface ProfileQuality {
   level: "low_confidence" | "usable" | "strong";
   score: number;
