@@ -72,3 +72,38 @@ test("bare high energy request is not a negative constraint", () => {
   assert.equal(intent.negativeConstraints.includes("高能量"), false);
   assert.ok(intent.positiveSeeds.some((seed) => /高能/.test(seed)));
 });
+
+test("negation allows bounded filler before style terms", () => {
+  const router = new IntentRouter();
+  const cases = [
+    { text: "别放 emo", constraint: "emo", leaked: /emo/i },
+    { text: "不要放 edm", constraint: "EDM", leaked: /edm|放 edm/i },
+    { text: "不要再来中文歌", constraint: "中文歌", leaked: /中文|中文歌|再来中文歌/ },
+  ];
+
+  for (const item of cases) {
+    const intent = router.classify(item.text);
+
+    assert.ok(intent.negativeConstraints.includes(item.constraint), item.text);
+    assert.equal(intent.positiveSeeds.some((seed) => item.leaked.test(seed)), false, item.text);
+  }
+});
+
+test("specific track commands do not require whitespace after Chinese verbs", () => {
+  const router = new IntentRouter();
+  const cases = ["放Nils Frahm Says", "播放Nils Frahm Says", "想听Nils Frahm Says", "点一首Nils Frahm Says"];
+
+  for (const text of cases) {
+    const intent = router.classify(text);
+
+    assert.equal(intent.type, "specific_track_request", text);
+    assert.equal(intent.query, "Nils Frahm Says", text);
+  }
+});
+
+test("broad direction guard still prevents direct-track classification", () => {
+  const router = new IntentRouter();
+  const intent = router.classify("想听适合写代码的");
+
+  assert.equal(intent.type, "music_direction_request");
+});

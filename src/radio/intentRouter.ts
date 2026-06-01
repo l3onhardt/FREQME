@@ -1,16 +1,24 @@
 import { compactText, dedupe } from "../utils/text.js";
 import type { ListeningIntentDecision } from "./radioBrainTypes.js";
 
+const NEGATION_PREFIX = String.raw`(?:不要|别|別|不想|拒绝|避开|別太|别太)`;
+const NEGATION_WITHOUT_TOO_PREFIX = String.raw`(?:不要|别|別|不想|拒绝|避开)`;
+const NEGATED_FILLER = String.raw`(?:\s*(?:再|放|来|有|太))*\s*`;
+
 const NEGATED_STYLE_PATTERNS: Array<[RegExp, string]> = [
-  [/(不要|别|別|不想|拒绝|避开|別太|别太)\s*(太\s*)?emo/iu, "emo"],
-  [/(不要|别|別|不想|拒绝|避开)\s*(edm|电子舞曲|电音)/iu, "EDM"],
-  [/(不要|别|別|不想|拒绝|避开)[^，。；;]*(dubstep|回响贝斯)/iu, "dubstep"],
-  [/(不要|别|別|不想|拒绝|避开|没有)\s*(人声|vocal|唱的|演唱)/iu, "人声"],
-  [/(不要|别|別|不想|拒绝|避开)\s*(中文|华语|中文歌)/iu, "中文歌"],
-  [/(不要|别|別|不想|拒绝|避开)\s*(高能量|高能)|太电|太电子|太吵|太炸|炸场/iu, "高能量"],
+  [new RegExp(String.raw`${NEGATION_PREFIX}${NEGATED_FILLER}emo`, "iu"), "emo"],
+  [new RegExp(String.raw`${NEGATION_WITHOUT_TOO_PREFIX}${NEGATED_FILLER}(?:edm|电子舞曲|电音)`, "iu"), "EDM"],
+  [new RegExp(String.raw`${NEGATION_WITHOUT_TOO_PREFIX}[^，。；;]{0,24}(?:dubstep|回响贝斯)`, "iu"), "dubstep"],
+  [new RegExp(String.raw`(?:${NEGATION_WITHOUT_TOO_PREFIX}|没有)${NEGATED_FILLER}(?:人声|vocal|唱的|演唱)`, "iu"), "人声"],
+  [new RegExp(String.raw`${NEGATION_WITHOUT_TOO_PREFIX}${NEGATED_FILLER}(?:中文|华语|中文歌)`, "iu"), "中文歌"],
+  [new RegExp(String.raw`${NEGATION_WITHOUT_TOO_PREFIX}${NEGATED_FILLER}(?:高能量|高能)|太电|太电子|太吵|太炸|炸场`, "iu"), "高能量"],
 ];
 
-const NEGATIVE_SEED_STRIP_PATTERNS: Record<string, RegExp> = {
+const NEGATED_STYLE_SPAN_PATTERNS = NEGATED_STYLE_PATTERNS.map(
+  ([pattern]) => new RegExp(pattern.source, pattern.flags.includes("g") ? pattern.flags : `${pattern.flags}g`),
+);
+
+const NEGATIVE_STYLE_TERM_PATTERNS: Record<string, RegExp> = {
   emo: /\bemo\b/giu,
   EDM: /\bedm\b|电子舞曲|电音/giu,
   dubstep: /\bdubstep\b|回响贝斯/giu,
@@ -30,7 +38,7 @@ export class IntentRouter {
       const seeds = /专注|写代码|工作流|安静/iu.test(text) ? ["安静专注工作流"] : ["调整后的方向"];
       return this.intent("correction", text, "", seeds, negativeConstraints, true, true, false, "懂了，我先避开刚才那个方向，重新往你要的感觉收。");
     }
-    const direct = text.match(/^(?:放|播放|点一首|我想听|想听)\s+(.{2,80})$/iu);
+    const direct = text.match(/^(?:放|播放|点一首|我想听|想听)\s*(.{2,80})$/iu);
     if (direct?.[1] && !/(来点|一些|适合|感觉|氛围|风格)/iu.test(direct[1])) {
       return this.intent("specific_track_request", text, compactText(direct[1], 120), [], negativeConstraints, true, true, false, "我找一下这首。");
     }
@@ -81,9 +89,13 @@ export class IntentRouter {
     if (/\bemo\b|忧郁|情绪/iu.test(text) && !negativeConstraints.includes("emo")) seeds.push("emo");
     if (/\br\s*&?\s*b\b|\brnb\b/iu.test(text)) seeds.push("R&B");
     if (!seeds.length && text) {
-      let fallback = text.replace(/不要|别太|别|不是这种/giu, "");
+      let fallback = text;
+      for (const pattern of NEGATED_STYLE_SPAN_PATTERNS) {
+        fallback = fallback.replace(pattern, "");
+      }
+      fallback = fallback.replace(/不要|别太|别|不是这种/giu, "");
       for (const constraint of negativeConstraints) {
-        fallback = fallback.replace(NEGATIVE_SEED_STRIP_PATTERNS[constraint] ?? /$./giu, "");
+        fallback = fallback.replace(NEGATIVE_STYLE_TERM_PATTERNS[constraint] ?? /$./giu, "");
       }
       const seed = compactText(fallback, 80);
       if (seed) seeds.push(seed);
