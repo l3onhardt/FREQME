@@ -1,0 +1,81 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+
+import { HostNarrationLayer } from "../../src/radio/hostNarrationLayer.js";
+import type { BoundaryDecision, StationContract } from "../../src/radio/radioBrainTypes.js";
+
+const contract: StationContract = {
+  id: "contract-1",
+  mainDirection: "late-night R&B",
+  rawUserText: "放点深夜听的rnb",
+  allowedAdjacent: ["alt-R&B"],
+  softBridge: ["ambient electronic"],
+  disallowed: ["classical chamber music"],
+  positiveSeeds: ["R&B"],
+  negativeConstraints: [],
+  driftBudget: 1,
+  bridgeCount: 0,
+  mustReturnToContract: false,
+  hostStyle: "standard",
+  createdAt: "2026-06-02T00:00:00.000Z",
+  updatedAt: "2026-06-02T00:00:00.000Z",
+};
+
+const internalTerms =
+  /profile|algorithm|model|candidate|trace|JSON|verification|boundary|contract|边界|合约|候选|画像|算法|模型|验证|轨迹/i;
+
+test("narrates bridge entry in listener-facing language", async () => {
+  const layer = new HostNarrationLayer();
+  const boundary: BoundaryDecision = { status: "accept_as_bridge", reason: "Allowed bridge", contractId: contract.id };
+  const result = await layer.forQueueItem({
+    stationContract: contract,
+    boundaryDecision: boundary,
+    track: { id: "jon", name: "A Drifting Down", artist: "Jon Hopkins" },
+    reason: "ambient electronic bridge",
+    recentNarrationCount: 0,
+  });
+
+  assert.equal(result.shouldSpeak, true);
+  assert.equal(result.event, "bridge_entered");
+  assert.match(result.text, /过渡|拉回|R&B/i);
+  assert.doesNotMatch(result.text, internalTerms);
+});
+
+test("suppresses ordinary on-contract continuations", async () => {
+  const layer = new HostNarrationLayer();
+  const result = await layer.forQueueItem({
+    stationContract: contract,
+    boundaryDecision: { status: "accept", reason: "fits", contractId: contract.id },
+    track: { id: "rnb", name: "Pink + White", artist: "Frank Ocean" },
+    reason: "fits contract",
+    recentNarrationCount: 1,
+  });
+
+  assert.equal(result.shouldSpeak, false);
+  assert.equal(result.text, "");
+});
+
+test("narrates adjacent moves sparingly", async () => {
+  const layer = new HostNarrationLayer();
+  const result = await layer.forQueueItem({
+    stationContract: contract,
+    boundaryDecision: { status: "accept_as_adjacent", reason: "nearby texture", contractId: contract.id },
+    track: { id: "adjacent", name: "Softly", artist: "Adjacent Artist" },
+    reason: "nearby texture",
+    recentNarrationCount: 0,
+  });
+
+  assert.equal(result.shouldSpeak, true);
+  assert.equal(result.event, "direction_changed");
+  assert.match(result.text, /late-night R&B/i);
+  assert.doesNotMatch(result.text, internalTerms);
+});
+
+test("acknowledges station direction without internal terms", () => {
+  const layer = new HostNarrationLayer();
+  const text = layer.requestAck(contract);
+
+  assert.match(text, /late-night R&B/i);
+  assert.doesNotMatch(text, internalTerms);
+  assert.ok(text.length <= 120);
+});

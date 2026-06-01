@@ -56,6 +56,22 @@ export interface BoundaryDecision {
   contractId?: string;
 }
 
+export interface HostNarration {
+  event:
+    | "station_open"
+    | "request_ack"
+    | "direction_changed"
+    | "bridge_entered"
+    | "return_to_contract"
+    | "track_explanation"
+    | "drift_corrected"
+    | "still_planning"
+    | "recovery";
+  text: string;
+  ttsHash?: string;
+  spoken: boolean;
+}
+
 export interface ProfileQuality {
   level: "low_confidence" | "usable" | "strong";
   score: number;
@@ -109,5 +125,6 @@ export interface DecisionTrace {
   latencyMs: Record<string, number>;
   hostText: string;
   boundaryDecision?: BoundaryDecision;
+  narration?: HostNarration;
   createdAt: string;
 }
