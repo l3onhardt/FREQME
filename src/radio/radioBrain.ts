@@ -120,6 +120,8 @@ class GenerationGuardedQueue extends PlaybackQueue {
 }
 
 export class RadioBrain {
+  private static readonly maxKeyedStates = 256;
+
   private readonly keyedStates = new Map<string, RadioBrainSessionState>();
   private readonly queueStates = new WeakMap<PlaybackQueue, RadioBrainSessionState>();
 
@@ -220,6 +222,7 @@ export class RadioBrain {
       environment: args.environment,
       targetReady: 2,
       contextPack: args.contextPack,
+      isCurrent: () => this.isCurrent(args),
     });
   }
 
@@ -287,9 +290,14 @@ export class RadioBrain {
     const key = this.stableSessionKey(args);
     if (key) {
       const existing = this.keyedStates.get(key);
-      if (existing) return existing;
-      const state: RadioBrainSessionState = { generation: 0 };
+      if (existing) {
+        this.queueStates.delete(args.queue);
+        return existing;
+      }
+      const state = this.queueStates.get(args.queue) || { generation: 0 };
       this.keyedStates.set(key, state);
+      this.queueStates.delete(args.queue);
+      this.evictOldKeyedStates();
       return state;
     }
 
@@ -303,6 +311,14 @@ export class RadioBrain {
   private stableSessionKey(args: Pick<RadioBrainArgs, "uid" | "sessionId">): string | null {
     if (args.uid && args.sessionId !== null) return `${args.uid}/${args.sessionId}`;
     return null;
+  }
+
+  private evictOldKeyedStates(): void {
+    while (this.keyedStates.size > RadioBrain.maxKeyedStates) {
+      const oldestKey = this.keyedStates.keys().next().value;
+      if (!oldestKey) return;
+      this.keyedStates.delete(oldestKey);
+    }
   }
 
   private startupIntent(): ListeningIntentDecision {

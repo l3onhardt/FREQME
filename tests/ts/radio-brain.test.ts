@@ -399,6 +399,56 @@ test("stale warmer already in progress cannot add tracks after a newer correctio
   const queue = new PlaybackQueue();
   const startupWarmStarted = deferred<void>();
   const startupWarmResume = deferred<void>();
+  const staleSideEffects: string[] = [];
+  const radio = brain({
+    bridgePicker: async () => null,
+    intentRouter: {
+      classify: (text) =>
+        intent({
+          type: "correction",
+          rawText: text,
+          negativeConstraints: ["edm"],
+          shouldReplan: true,
+          shouldClearQueue: true,
+        }),
+    },
+    planner: {
+      plan: async (planArgs) => episode(planArgs.createdFrom),
+    },
+    warmer: {
+      warm: async (warmArgs) => {
+        if (warmArgs.episode.createdFrom === "startup") {
+          assert.equal(typeof warmArgs.isCurrent, "function");
+          startupWarmStarted.resolve();
+          await startupWarmResume.promise;
+          if (warmArgs.isCurrent?.()) {
+            staleSideEffects.push("stale-current");
+          }
+          warmArgs.queue.addReady(track("stale-startup"), "stale-url", reason({ text: "stale startup" }));
+          return 1;
+        }
+        assert.equal(warmArgs.isCurrent?.(), true);
+        warmArgs.queue.addReady(track("fresh-correction"), "fresh-url", reason({ text: "fresh correction" }));
+        return 1;
+      },
+    },
+  });
+
+  await radio.startSession(args(queue));
+  await startupWarmStarted.promise;
+  await radio.handleUserText({ ...args(queue), text: "不要 edm" });
+
+  startupWarmResume.resolve();
+  await flushBackground();
+
+  assert.deepEqual(queue.readyItems().map((item) => item.track.id), ["fresh-correction"]);
+  assert.deepEqual(staleSideEffects, []);
+});
+
+test("null-session fallback state migrates when identity becomes available on the same queue", async () => {
+  const queue = new PlaybackQueue();
+  const startupWarmStarted = deferred<void>();
+  const startupWarmResume = deferred<void>();
   const radio = brain({
     bridgePicker: async () => null,
     intentRouter: {
@@ -419,23 +469,23 @@ test("stale warmer already in progress cannot add tracks after a newer correctio
         if (warmArgs.episode.createdFrom === "startup") {
           startupWarmStarted.resolve();
           await startupWarmResume.promise;
-          warmArgs.queue.addReady(track("stale-startup"), "stale-url", reason({ text: "stale startup" }));
+          warmArgs.queue.addReady(track("anonymous-stale"), "stale-url", reason({ text: "anonymous startup" }));
           return 1;
         }
-        warmArgs.queue.addReady(track("fresh-correction"), "fresh-url", reason({ text: "fresh correction" }));
+        warmArgs.queue.addReady(track("identified-fresh"), "fresh-url", reason({ text: "identified correction" }));
         return 1;
       },
     },
   });
 
-  await radio.startSession(args(queue));
+  await radio.startSession({ ...args(queue), uid: null, sessionId: null });
   await startupWarmStarted.promise;
-  await radio.handleUserText({ ...args(queue), text: "不要 edm" });
+  await radio.handleUserText({ ...args(queue), uid: "identified", sessionId: 99, text: "不要 edm" });
 
   startupWarmResume.resolve();
   await flushBackground();
 
-  assert.deepEqual(queue.readyItems().map((item) => item.track.id), ["fresh-correction"]);
+  assert.deepEqual(queue.readyItems().map((item) => item.track.id), ["identified-fresh"]);
 });
 
 test("broad direction request returns acknowledgement before background planner resolves", async () => {
@@ -664,4 +714,37 @@ test("reflection memory is isolated between user sessions on one radio brain", a
   await radio.handleUserText({ ...args(), uid: "user-b", sessionId: 2, contextPack: memoryPack(), text: "avoid-b" });
 
   assert.deepEqual(seenExistingConstraints, [["old"], ["old"]]);
+});
+
+test("keyed session reflection state is bounded and evicts oldest sessions", async () => {
+  const seenExistingConstraints: string[][] = [];
+  const radio = brain({
+    intentRouter: {
+      classify: (text) =>
+        intent({
+          type: "preference_update",
+          rawText: text,
+          negativeConstraints: [text],
+          shouldReplan: false,
+          shouldClearQueue: false,
+        }),
+    },
+    reflectionLoop: {
+      record: (recordArgs) => {
+        seenExistingConstraints.push(recordArgs.existing.currentConstraints || []);
+        return {
+          ...recordArgs.existing,
+          currentConstraints: [...(recordArgs.existing.currentConstraints || []), ...(recordArgs.constraints || [])],
+        };
+      },
+    },
+  });
+
+  await radio.handleUserText({ ...args(), uid: "oldest", sessionId: 1, contextPack: memoryPack(), text: "oldest-pref" });
+  for (let index = 0; index < 256; index += 1) {
+    await radio.handleUserText({ ...args(), uid: `user-${index}`, sessionId: index, contextPack: memoryPack(), text: `pref-${index}` });
+  }
+  await radio.handleUserText({ ...args(), uid: "oldest", sessionId: 1, contextPack: memoryPack(), text: "oldest-again" });
+
+  assert.deepEqual(seenExistingConstraints.at(-1), ["old"]);
 });

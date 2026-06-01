@@ -184,6 +184,20 @@ class ThrowingVerifier extends FakeVerifier {
   }
 }
 
+class CurrentFlippingVerifier extends FakeVerifier {
+  constructor(private readonly flipCurrent: () => void) {
+    super();
+  }
+
+  override async verify(task: MusicTask): Promise<SearchVerification> {
+    const result = await super.verify(task);
+    if (result.status === "verified") {
+      this.flipCurrent();
+    }
+    return result;
+  }
+}
+
 class FakeTraceStore {
   traces: unknown[] = [];
 
@@ -272,6 +286,26 @@ test("queue warmer treats verifier exceptions as failed attempts and continues",
   assert.equal(queue.readyItems()[0]?.track.name, "On the Nature of Daylight");
   assert.equal(verifier.tasks[0]?.searchGoals[0], "throw query");
   assert.equal(verifier.tasks[1]?.searchGoals[0], "Max Richter On the Nature of Daylight");
+});
+
+test("queue warmer does not save a trace or queue a track after becoming stale", async () => {
+  const queue = new PlaybackQueue(2);
+  let current = true;
+  const verifier = new CurrentFlippingVerifier(() => {
+    current = false;
+  });
+  const traceStore = new FakeTraceStore();
+  const warmer = new QueueWarmer(verifier as any, traceStore as unknown as DecisionTraceStore);
+
+  const added = await warmer.warm({
+    ...warmArgs(queue, singlePrimaryEpisode),
+    isCurrent: () => current,
+  });
+
+  assert.equal(added, 0);
+  assert.equal(queue.readyDepth(), 0);
+  assert.equal(traceStore.traces.length, 0);
+  assert.equal(verifier.tasks.length, 1);
 });
 
 test("queue warmer does not exceed targetReady when queue already has ready items", async () => {

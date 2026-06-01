@@ -20,6 +20,7 @@ export interface QueueWarmArgs {
   environment: StationEnvironment;
   targetReady: number;
   contextPack: MemoryPack;
+  isCurrent?: () => boolean;
 }
 
 export class QueueWarmer {
@@ -32,6 +33,7 @@ export class QueueWarmer {
   ) {}
 
   async warm(args: QueueWarmArgs): Promise<number> {
+    if (!this.isCurrent(args)) return 0;
     const previous = this.inFlight.get(args.episode.id) || Promise.resolve();
     const run = previous.then(
       () => this.warmEpisode(args),
@@ -52,9 +54,11 @@ export class QueueWarmer {
   }
 
   private async warmEpisode(args: QueueWarmArgs): Promise<number> {
+    if (!this.isCurrent(args)) return 0;
     let added = 0;
     let cursor = this.cursors.get(args.episode.id) || 0;
     while (args.queue.readyDepth() < args.targetReady && cursor < args.episode.items.length) {
+      if (!this.isCurrent(args)) return added;
       const item = args.episode.items[cursor];
       cursor += 1;
       if (!item) continue;
@@ -66,21 +70,25 @@ export class QueueWarmer {
   }
 
   private async tryItem(args: QueueWarmArgs, item: RadioEpisodeItem): Promise<boolean> {
+    if (!this.isCurrent(args)) return false;
     const queries = [item.primaryQuery, ...item.backupQueries].filter(Boolean);
     const rejectedCandidates: string[] = [];
     const verificationAttempts: string[] = [];
     const startedAt = Date.now();
 
     for (let index = 0; index < queries.length; index += 1) {
+      if (!this.isCurrent(args)) return false;
       const query = queries[index] || "";
       verificationAttempts.push(query);
       const task = this.taskForQuery(args.episode, item, query);
       const verification = await this.verifier.verify(task, args.uid, "", args.contextPack).catch(() => null);
+      if (!this.isCurrent(args)) return false;
       if (!verification || verification.status !== "verified" || !verification.selectedSong || !verification.url) {
         rejectedCandidates.push(query);
         continue;
       }
       if (args.queue.readyDepth() >= args.targetReady) return false;
+      if (!this.isCurrent(args)) return false;
 
       const fallbackLevel: DecisionTrace["fallbackLevel"] = index === 0 ? "episode_primary" : "episode_backup";
       const traceId = `${args.episode.id}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -115,6 +123,10 @@ export class QueueWarmer {
       return true;
     }
     return false;
+  }
+
+  private isCurrent(args: QueueWarmArgs): boolean {
+    return args.isCurrent ? args.isCurrent() : true;
   }
 
   private taskForQuery(episode: RadioEpisode, item: RadioEpisodeItem, query: string): MusicTask {
