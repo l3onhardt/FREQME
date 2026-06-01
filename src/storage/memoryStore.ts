@@ -115,7 +115,7 @@ export class MemoryStore {
         SELECT trace_json
         FROM decision_trace
         WHERE (uid IS ? OR uid = ?) AND (session_id IS ? OR session_id = ?)
-        ORDER BY created_at DESC
+        ORDER BY created_at DESC, rowid DESC
         LIMIT 1
       `)
       .get(uid, uid, sessionId, sessionId) as { trace_json?: string } | undefined;
