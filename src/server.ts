@@ -33,6 +33,7 @@ import { HostResponder } from "./radio/hostResponder.js";
 import { EpisodePlanner } from "./radio/episodePlanner.js";
 import { QueueWarmer } from "./radio/queueWarmer.js";
 import { ReflectionLoop } from "./radio/reflectionLoop.js";
+import { findNewBrainReadyItem, removeReadyItemsBefore, snapshotReadyItems, type ReadyItemSnapshot } from "./radio/requestReadySelector.js";
 
 const require = createRequire(import.meta.url);
 
@@ -485,14 +486,14 @@ async function handleRadioSocket(socket: WebSocketType): Promise<void> {
     }
   };
 
-  const waitForReadyItem = async (timeoutMs = 9000): Promise<ReturnType<typeof queue.readyItems>[number] | null> => {
+  const waitForNewBrainReadyItem = async (beforeRequest: ReadyItemSnapshot, timeoutMs = 9000): Promise<ReturnType<typeof queue.readyItems>[number] | null> => {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
-      const ready = queue.readyItems()[0];
+      const ready = findNewBrainReadyItem(queue, beforeRequest);
       if (ready) return ready;
       await new Promise((resolve) => setTimeout(resolve, 250));
     }
-    return queue.readyItems()[0] || null;
+    return findNewBrainReadyItem(queue, beforeRequest);
   };
 
   const kickBrainContinuation = (): void => {
@@ -779,6 +780,7 @@ async function handleRadioSocket(socket: WebSocketType): Promise<void> {
         if (!requestText) return;
         introSendCancelled = true;
         store.logPlaybackEvent("song_request", { uid, songId: currentSongId, reason: requestText });
+        const readyBeforeRequest = snapshotReadyItems(queue);
         const args = brainArgs(requestText);
         const result = await radioBrain.handleUserText({ ...args, text: requestText }).catch(() => null);
         if (!result) {
@@ -794,7 +796,7 @@ async function handleRadioSocket(socket: WebSocketType): Promise<void> {
         }
         send({ type: "request_status", status: "planning", text: result.hostText });
         synthesizeAndSendDjMessage(result.hostText);
-        const ready = await waitForReadyItem(9000);
+        const ready = await waitForNewBrainReadyItem(readyBeforeRequest, 9000);
         if (ready) {
           recentTurns.push({ user: requestText, result: "ready", at: new Date().toISOString() });
           send({
@@ -803,6 +805,7 @@ async function handleRadioSocket(socket: WebSocketType): Promise<void> {
             text: ready.selectionReason.text || result.hostText,
             next_track: trackInfo(ready.track),
           });
+          removeReadyItemsBefore(queue, ready);
           await sendPreparedNext("played");
           return;
         }
