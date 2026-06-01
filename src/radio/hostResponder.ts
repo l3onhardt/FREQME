@@ -1,6 +1,15 @@
 import { compactText } from "../utils/text.js";
 import type { DecisionTrace, ListeningIntentDecision } from "./radioBrainTypes.js";
 
+function describeTrack(artistValue: string, nameValue: string): string {
+  const artist = compactText(artistValue, 120);
+  const name = compactText(nameValue, 120);
+  if (artist && name && artist !== name) return `${artist} 的 ${name}`;
+  if (name) return name;
+  if (artist) return `${artist} 的这首歌`;
+  return "这首歌";
+}
+
 export class HostResponder {
   acknowledge(intent: ListeningIntentDecision): string {
     if (intent.type === "explanation_question") return intent.ackText;
@@ -14,8 +23,9 @@ export class HostResponder {
 
   explainCurrentTrack(intent: ListeningIntentDecision, trace: DecisionTrace | null): string {
     if (!trace) return "这首是我根据刚才的电台方向接上的，但这次没有留下足够完整的选择记录。";
-    const track = `${trace.selectedTrack.artist} 的 ${trace.selectedTrack.name}`.trim();
-    const reason = trace.reason || trace.hostText || "它和刚才的电台方向比较贴合。";
+    const track = describeTrack(trace.selectedTrack.artist, trace.selectedTrack.name);
+    const reason =
+      compactText(trace.reason, 180) || compactText(trace.hostText, 180) || "它和刚才的电台方向比较贴合。";
     return compactText(`${track} 是因为${reason}`, 180);
   }
 }

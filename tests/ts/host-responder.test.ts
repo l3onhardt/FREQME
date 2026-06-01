@@ -60,3 +60,70 @@ test("fast acknowledgement reflects correction constraints", () => {
 
   assert.match(text, /避开|重新|专注/);
 });
+
+test("explains naturally when artist is empty", () => {
+  const responder = new HostResponder();
+  const text = responder.explainCurrentTrack(explanationIntent, {
+    ...trace,
+    selectedTrack: { ...trace.selectedTrack, artist: "   " },
+  });
+
+  assert.match(text, /^Says 是因为/);
+  assert.doesNotMatch(text, /^的 Says/);
+});
+
+test("explains naturally when song name is empty", () => {
+  const responder = new HostResponder();
+  const text = responder.explainCurrentTrack(explanationIntent, {
+    ...trace,
+    selectedTrack: { ...trace.selectedTrack, name: "   " },
+  });
+
+  assert.match(text, /^Nils Frahm 的这首歌 是因为/);
+  assert.doesNotMatch(text, /的\s+是因为/);
+});
+
+test("explains naturally when artist and song name are empty", () => {
+  const responder = new HostResponder();
+  const text = responder.explainCurrentTrack(explanationIntent, {
+    ...trace,
+    selectedTrack: { ...trace.selectedTrack, artist: "   ", name: "   " },
+  });
+
+  assert.match(text, /^这首歌 是因为/);
+  assert.doesNotMatch(text, /^的\s+是因为/);
+});
+
+test("explains naturally when artist and song name are duplicated", () => {
+  const responder = new HostResponder();
+  const text = responder.explainCurrentTrack(explanationIntent, {
+    ...trace,
+    selectedTrack: { ...trace.selectedTrack, artist: "Says", name: " Says " },
+  });
+
+  assert.match(text, /^Says 是因为/);
+  assert.doesNotMatch(text, /^Says 的 Says/);
+});
+
+test("uses host text when reason is only whitespace", () => {
+  const responder = new HostResponder();
+  const text = responder.explainCurrentTrack(explanationIntent, {
+    ...trace,
+    reason: "   ",
+    hostText: "  这首先把工作流压稳。  ",
+  });
+
+  assert.match(text, /工作流压稳/);
+  assert.doesNotMatch(text, /是因为\s*$/);
+});
+
+test("uses generic explanation fallback when reason and host text are empty", () => {
+  const responder = new HostResponder();
+  const text = responder.explainCurrentTrack(explanationIntent, {
+    ...trace,
+    reason: "   ",
+    hostText: "   ",
+  });
+
+  assert.match(text, /电台方向比较贴合/);
+});
