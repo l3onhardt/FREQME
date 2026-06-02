@@ -19,11 +19,14 @@ const BANNED_LISTENER_TERMS = [
 
 export function decideHostSpeech(args: HostPolicyArgs): RadioHostDecision {
   if (args.eventType === "login_completed" || args.eventType === "session_restored") {
+    const defaultText = args.profileReady
+      ? "我按你熟悉的听歌习惯先接上，今晚我们慢慢往里走。"
+      : "我先放一首稳的，你的音乐习惯我在后台慢慢整理。";
     return {
       shouldSpeak: true,
       event: "station_open",
       reason: args.profileReady ? "station handoff with ready profile" : "station handoff while profile warms",
-      text: sanitizeHostText(args.proposedText || "我先放一首稳的，你的音乐习惯我在后台慢慢整理。"),
+      text: sanitizeHostText(args.proposedText || defaultText),
     };
   }
 

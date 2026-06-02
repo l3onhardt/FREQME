@@ -15,6 +15,20 @@ test("host speaks for first station handoff", () => {
   assert.equal(decision.event, "station_open");
 });
 
+test("host opening line changes after profile is ready", () => {
+  const decision = decideHostSpeech({
+    eventType: "login_completed",
+    recentHostLines: [],
+    profileReady: true,
+    lowInterruption: false,
+  });
+
+  assert.equal(decision.shouldSpeak, true);
+  assert.equal(decision.event, "station_open");
+  assert.doesNotMatch(decision.text || "", /后台|整理/);
+  assert.match(decision.text || "", /熟悉|接上|习惯/);
+});
+
 test("host records silence for ordinary continuation", () => {
   const decision = decideHostSpeech({
     eventType: "track_completed",
