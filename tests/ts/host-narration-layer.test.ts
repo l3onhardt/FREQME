@@ -21,6 +21,14 @@ const contract: StationContract = {
   updatedAt: "2026-06-02T00:00:00.000Z",
 };
 
+const vagueContinuationContract: StationContract = {
+  ...contract,
+  id: "contract-vague",
+  mainDirection: "继续保持这个感觉",
+  rawUserText: "继续保持这个感觉",
+  positiveSeeds: ["继续保持这个感觉"],
+};
+
 const internalTerms =
   /profile|algorithm|model|candidate|trace|JSON|verification|boundary|contract|边界|合约|候选|画像|算法|模型|验证|轨迹/i;
 
@@ -68,6 +76,22 @@ test("narrates adjacent moves sparingly", async () => {
   assert.equal(result.shouldSpeak, true);
   assert.equal(result.event, "direction_changed");
   assert.match(result.text, /late-night R&B/i);
+  assert.doesNotMatch(result.text, internalTerms);
+});
+
+test("does not read vague continuation text aloud as the station direction", async () => {
+  const layer = new HostNarrationLayer();
+  const result = await layer.forQueueItem({
+    stationContract: vagueContinuationContract,
+    boundaryDecision: { status: "accept_as_adjacent", reason: "nearby texture", contractId: vagueContinuationContract.id },
+    track: { id: "adjacent", name: "Says", artist: "Nils Frahm" },
+    reason: "nearby texture",
+    recentNarrationCount: 0,
+  });
+
+  assert.equal(result.shouldSpeak, true);
+  assert.equal(result.event, "direction_changed");
+  assert.doesNotMatch(result.text, /继续保持这个感觉|主线还是|当前电台方向/);
   assert.doesNotMatch(result.text, internalTerms);
 });
 
