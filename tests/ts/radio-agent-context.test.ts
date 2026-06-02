@@ -68,3 +68,59 @@ test("agent context caps large artifacts before model boundary", () => {
   assert.ok(snapshot.profile.length < huge.length);
   assert.match(snapshot.profile, /truncated for agent context/);
 });
+
+test("agent context strips raw track and event payload data", () => {
+  const rawPayload = { raw_json: { secret: "netease-private-json" }, source_json: { rows: ["library-row"] } };
+  const snapshot = buildRadioAgentContextSnapshot({
+    uid: "42",
+    sessionId: 7,
+    eventType: "queue_low",
+    artifacts: {},
+    recentEvents: [
+      {
+        uid: "42",
+        sessionId: 7,
+        type: "queue_low",
+        priority: "warm",
+        payload: {
+          currentTrack: {
+            id: "s1",
+            name: "Good Days",
+            artist: "SZA",
+            raw: { secret: "event-track-raw" },
+            source: "netease",
+          },
+          readyQueue: [
+            { id: "s2", name: "Pink + White", artist: "Frank Ocean", raw: { secret: "queue-track-raw" } },
+          ],
+          text: `${"turn it down ".repeat(1000)}event-text-secret`,
+          timezoneName: "Asia/Hong_Kong",
+          localTimeBlock: "late_night",
+          raw: rawPayload,
+          source_json: rawPayload,
+        },
+        createdAt: "2026-06-03T01:00:00.000Z",
+      },
+    ],
+    memories: [],
+    currentTrack: {
+      id: "s1",
+      name: "Good Days",
+      artist: "SZA",
+      raw: { secret: "current-track-raw" },
+      source: "netease",
+    },
+    readyQueue: [
+      { id: "s2", name: "Pink + White", artist: "Frank Ocean", raw: { secret: "ready-queue-raw" } },
+    ],
+  });
+
+  assert.equal(Object.hasOwn(snapshot.currentTrack ?? {}, "raw"), false);
+  assert.equal(Object.hasOwn(snapshot.readyQueue[0] ?? {}, "raw"), false);
+  assert.equal(Object.hasOwn((snapshot.recentEvents[0]?.payload.currentTrack as Record<string, unknown>) ?? {}, "raw"), false);
+  assert.equal(Object.hasOwn((snapshot.recentEvents[0]?.payload.readyQueue as Record<string, unknown>[])[0] ?? {}, "raw"), false);
+  assert.equal(Object.hasOwn(snapshot.recentEvents[0]?.payload ?? {}, "raw"), false);
+  assert.equal(Object.hasOwn(snapshot.recentEvents[0]?.payload ?? {}, "source_json"), false);
+  assert.match(String(snapshot.recentEvents[0]?.payload.text), /truncated for agent context/);
+  assert.doesNotMatch(JSON.stringify(snapshot), /current-track-raw|ready-queue-raw|event-track-raw|queue-track-raw|netease-private-json|library-row|event-text-secret/);
+});
