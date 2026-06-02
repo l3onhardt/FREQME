@@ -102,6 +102,20 @@ export interface RadioAgentHandleResult {
   hostDecision?: RadioHostDecision;
 }
 
+export interface RadioAgentContextSnapshot {
+  uid: string | null;
+  sessionId: number | null;
+  eventType: RadioAgentEventType;
+  profile: string;
+  now: string;
+  contract: string;
+  memoryFacts: RadioAgentMemory[];
+  memoryHypotheses: RadioAgentMemory[];
+  recentEvents: RadioAgentEvent[];
+  currentTrack: Track | null;
+  readyQueue: Track[];
+}
+
 const HOT_EVENTS = new Set<RadioAgentEventType>([
   "login_completed",
   "session_restored",
