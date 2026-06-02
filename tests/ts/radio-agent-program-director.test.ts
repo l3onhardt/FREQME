@@ -11,7 +11,7 @@ test("model JSON planning creates an agent-owned radio window from compact conte
   const model: ProgramPlanningModel = {
     chat: async (prompt, options) => {
       prompts.push(prompt);
-      assert.deepEqual(options, { responseFormat: "json" });
+      assert.deepEqual(options, { responseFormat: { type: "json_object" } });
       return JSON.stringify({
         station_brief: "Late-night R&B with a gentle discovery edge.",
         main_direction: "Keep the SZA thread warm, then widen toward Frank Ocean textures.",
@@ -33,9 +33,9 @@ test("model JSON planning creates an agent-owned radio window from compact conte
         ],
         host_intent: {
           should_speak: true,
-          event: "bridge",
+          event: "bridge_entered",
           reason: "queue_low",
-          text: "The JSON candidate trace says this model should verify the next tool call.",
+          text: "A soft bridge, then back to the late-night thread.",
         },
         trace_basis: ["profile", "memory", "ready_queue"],
       });
@@ -59,12 +59,48 @@ test("model JSON planning creates an agent-owned radio window from compact conte
     window.candidateTasks.map((task) => task.query),
     ["SZA Snooze", "Frank Ocean Pink + White", "Daniel Caesar Japanese Denim", "H.E.R. Focus", "Kelela Raven"],
   );
+  assert.ok(window.candidateTasks.every((task) => typeof task.style === "string"));
   assert.deepEqual(window.candidateTasks[0]?.negativeConstraints, ["no remixes"]);
-  assert.equal(window.hostIntent.shouldSpeak, false);
-  assert.equal(window.hostIntent.text, "");
+  assert.equal(window.candidateTasks[2]?.style, "");
+  assert.equal(window.hostIntent.shouldSpeak, true);
+  assert.equal(window.hostIntent.event, "bridge_entered");
+  assert.equal(window.hostIntent.text, "A soft bridge, then back to the late-night thread.");
   assert.doesNotMatch(String(window.hostIntent.text), /model|JSON|candidate|trace|prompt|verification|shadow mode|tool call/i);
-  assert.deepEqual(window.traceBasis, ["profile", "memory", "ready_queue"]);
+  assert.deepEqual(window.traceBasis, traceBasisFromContext(contextSnapshot()));
   assertPromptIncludesCompactContext(prompts[0] ?? "");
+});
+
+test("program director preserves spec-compliant host events and sanitizes internal host text", async () => {
+  const events = [
+    "station_open",
+    "request_ack",
+    "bridge_entered",
+    "return_to_contract",
+    "explanation",
+    "correction",
+    "recovery",
+    "silent",
+  ] as const;
+
+  for (const event of events) {
+    const model: ProgramPlanningModel = {
+      chat: async () => JSON.stringify({
+        candidate_tasks: [{ query: "SZA Snooze", reason: "Known anchor." }],
+        host_intent: {
+          should_speak: event !== "silent",
+          event,
+          reason: "contract",
+          text: event === "explanation" ? "The model JSON trace says to speak." : "Keeping the thread warm.",
+        },
+      }),
+    };
+    const director = new RadioAgentProgramDirector(model, () => NOW);
+
+    const window = await director.plan(contextSnapshot());
+
+    assert.equal(window.hostIntent.event, event === "explanation" ? "silent" : event);
+    assert.equal(window.hostIntent.text, event === "explanation" || event === "silent" ? "" : "Keeping the thread warm.");
+  }
 });
 
 test("model failure falls back to deterministic memory anchors", async () => {
@@ -154,7 +190,8 @@ function assertFallbackWindow(window: RadioAgentProgramWindow): void {
   assert.equal(window.uid, "42");
   assert.equal(window.sessionId, 7);
   assert.equal(window.createdAt, NOW);
-  assert.equal(window.source, "fallback");
+  assert.equal(window.source, "deterministic_fallback");
+  assert.deepEqual(window.traceBasis, traceBasisFromContext(contextSnapshot()));
   assert.match(window.stationBrief, /late-night R&B/i);
   assert.match(window.mainDirection, /SZA/i);
   assert.ok(window.candidateTasks.length >= 2);
@@ -162,8 +199,18 @@ function assertFallbackWindow(window: RadioAgentProgramWindow): void {
   assert.match(window.candidateTasks[0]?.query ?? "", /SZA/i);
   assert.match(window.candidateTasks[1]?.query ?? "", /Frank Ocean/i);
   assert.ok(window.candidateTasks.every((task) => task.reason.length > 0));
+  assert.ok(window.candidateTasks.every((task) => typeof task.style === "string"));
   assert.ok(window.candidateTasks.every((task) => !/study|sleep|playlist|timer|white noise/i.test(task.query)));
   assert.equal(window.hostIntent.shouldSpeak, false);
+  assert.equal(window.hostIntent.event, "silent");
   assert.equal(window.hostIntent.text, "");
-  assert.ok(window.traceBasis.some((basis) => basis.includes("artist:SZA")));
+}
+
+function traceBasisFromContext(context: RadioAgentContextSnapshot): RadioAgentProgramWindow["traceBasis"] {
+  return {
+    profile: context.profile,
+    now: context.now,
+    contract: context.contract,
+    eventType: context.eventType,
+  };
 }

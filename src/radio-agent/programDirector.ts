@@ -7,7 +7,15 @@ import type {
 } from "./types.js";
 
 export interface ProgramPlanningModel {
-  chat(prompt: string, options?: { responseFormat?: "json" }): Promise<string>;
+  chat(
+    prompt: string,
+    options?: {
+      responseFormat?: Record<string, unknown>;
+      maxTokens?: number;
+      system?: string;
+      timeoutMs?: number;
+    },
+  ): Promise<string>;
 }
 
 type ProgramWindowSource = RadioAgentProgramWindow["source"];
@@ -17,7 +25,16 @@ const HOST_TEXT_LIMIT = 140;
 const INTERNAL_HOST_TERMS = /\b(model|json|candidate|trace|prompt|verification|shadow mode|tool call)\b/i;
 const RAW_COMMAND_QUERY = /^\s*(please\s+)?(play|put on|queue|find|search|give me|can you|could you|i want|i need)\b/i;
 const UTILITY_AUDIO_QUERY = /\b(playlist|study|studying|sleep|lofi|lo-fi|white noise|brown noise|pink noise|rain sounds|timer|meditation|focus music|ambient sounds)\b/i;
-const HOST_EVENTS: RadioAgentHostIntent["event"][] = ["none", "opening", "bridge", "return", "recovery"];
+const HOST_EVENTS: RadioAgentHostIntent["event"][] = [
+  "station_open",
+  "request_ack",
+  "bridge_entered",
+  "return_to_contract",
+  "explanation",
+  "correction",
+  "recovery",
+  "silent",
+];
 
 export class RadioAgentProgramDirector {
   constructor(
@@ -30,7 +47,7 @@ export class RadioAgentProgramDirector {
 
     try {
       const prompt = buildPrompt(context, createdAt);
-      const raw = await this.model.chat(prompt, { responseFormat: "json" });
+      const raw = await this.model.chat(prompt, { responseFormat: { type: "json_object" } });
       const parsed = parseJsonObject(raw);
       const window = buildWindowFromParsed(context, parsed, createdAt, "model");
       if (window.candidateTasks.length > 0) return window;
@@ -82,7 +99,7 @@ function buildWindowFromParsed(
     returnRequirement: stringValue(valueFor(parsed, "returnRequirement")) || "Return to the station brief after adjacent exploration.",
     candidateTasks,
     hostIntent: toHostIntent(valueFor(parsed, "hostIntent")),
-    traceBasis: stringArray(valueFor(parsed, "traceBasis")),
+    traceBasis: traceBasisFromContext(context),
     source,
     createdAt,
   };
@@ -102,12 +119,8 @@ function buildFallbackWindow(context: RadioAgentContextSnapshot, createdAt: stri
     returnRequirement: "Return to the current station contract after one adjacent bridge.",
     candidateTasks,
     hostIntent: silentHostIntent("fallback"),
-    traceBasis: [
-      ...context.memoryFacts.slice(0, MAX_CANDIDATE_TASKS).map((memory) => `memory:${memory.key}`),
-      context.contract ? "contract" : "",
-      context.currentTrack ? "current_track" : "",
-    ].filter(Boolean),
-    source: "fallback",
+    traceBasis: traceBasisFromContext(context),
+    source: "deterministic_fallback",
     createdAt,
   };
 }
@@ -137,7 +150,7 @@ function toCandidateTask(value: unknown): RadioAgentCandidateTask | null {
   const task: RadioAgentCandidateTask = {
     query: stringValue(valueFor(value, "query")),
     reason: stringValue(valueFor(value, "reason")) || "Model-selected radio direction.",
-    style: optionalString(valueFor(value, "style")),
+    style: stringValue(valueFor(value, "style")),
     negativeConstraints: stringArray(valueFor(value, "negativeConstraints")),
   };
   return isAllowedCandidateTask(task) ? task : null;
@@ -171,7 +184,16 @@ function sanitizeHostText(text: string): string {
 }
 
 function silentHostIntent(reason: string): RadioAgentHostIntent {
-  return { shouldSpeak: false, event: "none", reason, text: "" };
+  return { shouldSpeak: false, event: "silent", reason, text: "" };
+}
+
+function traceBasisFromContext(context: RadioAgentContextSnapshot): RadioAgentProgramWindow["traceBasis"] {
+  return {
+    profile: context.profile,
+    now: context.now,
+    contract: context.contract,
+    eventType: context.eventType,
+  };
 }
 
 function parseJsonObject(raw: string): Record<string, unknown> {
@@ -214,9 +236,9 @@ function extractDisallowed(contract: string): string[] {
   return avoid.split(",").map((item) => item.trim()).filter(Boolean);
 }
 
-function styleFromContract(contract: string): string | undefined {
+function styleFromContract(contract: string): string {
   const goal = firstContractLine(contract, "station_goal");
-  return goal || undefined;
+  return goal || "";
 }
 
 function memoryAnchor(memory: RadioAgentMemory | undefined): string {
@@ -245,11 +267,6 @@ function stringValue(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
 }
 
-function optionalString(value: unknown): string | undefined {
-  const text = stringValue(value);
-  return text || undefined;
-}
-
 function stringArray(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   return value.map(stringValue).filter(Boolean);
@@ -266,7 +283,7 @@ function numberValue(value: unknown, fallback: number): number {
 function hostEventValue(value: unknown): RadioAgentHostIntent["event"] {
   return typeof value === "string" && HOST_EVENTS.includes(value as RadioAgentHostIntent["event"])
     ? (value as RadioAgentHostIntent["event"])
-    : "none";
+    : "silent";
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

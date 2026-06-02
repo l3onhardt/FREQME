@@ -80,13 +80,21 @@ export interface RadioHostDecision {
 export interface RadioAgentCandidateTask {
   query: string;
   reason: string;
-  style?: string;
+  style: string;
   negativeConstraints: string[];
 }
 
 export interface RadioAgentHostIntent {
   shouldSpeak: boolean;
-  event: "none" | "opening" | "bridge" | "return" | "recovery";
+  event:
+    | "station_open"
+    | "request_ack"
+    | "bridge_entered"
+    | "return_to_contract"
+    | "explanation"
+    | "correction"
+    | "recovery"
+    | "silent";
   reason: string;
   text: string;
 }
@@ -103,8 +111,13 @@ export interface RadioAgentProgramWindow {
   returnRequirement: string;
   candidateTasks: RadioAgentCandidateTask[];
   hostIntent: RadioAgentHostIntent;
-  traceBasis: string[];
-  source: "model" | "fallback";
+  traceBasis: {
+    profile: string;
+    now: string;
+    contract: string;
+    eventType: RadioAgentEventType;
+  };
+  source: "model" | "deterministic_fallback";
   createdAt: string;
 }
 
