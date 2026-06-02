@@ -1,4 +1,10 @@
 import { AppDatabase } from "./database.js";
+import {
+  isRadioAgentEventType,
+  priorityForRadioAgentEvent,
+  type RadioAgentEventType,
+  type RadioAgentPriority,
+} from "../radio-agent/types.js";
 
 function json(value: unknown): string {
   return JSON.stringify(value ?? null);
@@ -17,8 +23,8 @@ export interface RadioAgentEventRecord {
   id?: number;
   uid: string | null;
   sessionId?: number | null;
-  type: string;
-  priority: string;
+  type: RadioAgentEventType;
+  priority: RadioAgentPriority;
   payload: Record<string, unknown>;
   createdAt: string;
 }
@@ -100,15 +106,18 @@ export class RadioAgentStore {
         LIMIT ?
       `)
       .all(uid, uid, sessionId, sessionId, limit) as Array<Record<string, unknown>>;
-    return rows.map((row) => ({
-      id: Number(row.id || 0),
-      uid: typeof row.uid === "string" ? row.uid : null,
-      sessionId: typeof row.session_id === "number" ? row.session_id : null,
-      type: String(row.event_type || ""),
-      priority: String(row.priority || ""),
-      payload: parse(String(row.payload_json || "{}"), {}),
-      createdAt: String(row.created_at || ""),
-    }));
+    return rows.map((row) => {
+      const type = isRadioAgentEventType(row.event_type) ? row.event_type : "idle_tick";
+      return {
+        id: Number(row.id || 0),
+        uid: typeof row.uid === "string" ? row.uid : null,
+        sessionId: typeof row.session_id === "number" ? row.session_id : null,
+        type,
+        priority: radioAgentPriority(row.priority, type),
+        payload: parse(String(row.payload_json || "{}"), {}),
+        createdAt: String(row.created_at || ""),
+      };
+    });
   }
 
   upsertMemory(memory: RadioAgentMemoryRecord): void {
@@ -307,4 +316,8 @@ export class RadioAgentStore {
       createdAt: String(row.created_at || ""),
     }));
   }
+}
+
+function radioAgentPriority(value: unknown, type: RadioAgentEventType): RadioAgentPriority {
+  return value === "hot" || value === "warm" || value === "cold" ? value : priorityForRadioAgentEvent(type);
 }

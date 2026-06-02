@@ -9,6 +9,7 @@ import { config } from "./config.js";
 import { runtimeStatus } from "./runtimeStatus.js";
 import { AppDatabase } from "./storage/database.js";
 import { MemoryStore } from "./storage/memoryStore.js";
+import { RadioAgentStore } from "./storage/radioAgentStore.js";
 import { NeteaseService, extractProfile } from "./services/neteaseService.js";
 import { AudioResolver } from "./services/audioResolver.js";
 import { LLMRouter } from "./services/llmRouter.js";
@@ -36,6 +37,8 @@ import { ReflectionLoop } from "./radio/reflectionLoop.js";
 import { StationContractManager } from "./radio/stationContract.js";
 import { BoundaryGuard } from "./radio/boundaryGuard.js";
 import { HostNarrationLayer } from "./radio/hostNarrationLayer.js";
+import { LibraryCensus } from "./radio-agent/libraryCensus.js";
+import { RadioAgentRuntime } from "./radio-agent/radioAgentRuntime.js";
 import {
   CONTINUATION_BRAIN_READY_TIMEOUT_MS,
   USER_REQUEST_BRAIN_READY_TIMEOUT_MS,
@@ -63,6 +66,13 @@ console.log("[BOOT] starting FREQME TypeScript backend");
 const database = new AppDatabase();
 const store = new MemoryStore(database);
 const netease = new NeteaseService();
+const radioAgentStore = new RadioAgentStore(database);
+const libraryCensus = new LibraryCensus(netease, radioAgentStore);
+const radioAgent = new RadioAgentRuntime({
+  mode: "shadow",
+  store: radioAgentStore,
+  census: libraryCensus,
+});
 const llm = new LLMRouter(store);
 const tts = new TTSService(store);
 const audioResolver = new AudioResolver(netease, store);
@@ -171,7 +181,14 @@ async function handleHttpRequest(req: http.IncomingMessage, res: http.ServerResp
     const status = await netease.loginStatus();
     const profile = extractProfile(status);
     const uid = profile.userId == null ? "" : String(profile.userId);
-    if (uid) store.saveAuthAccount(uid, profile, netease.activeCookie());
+    if (uid) {
+      store.saveAuthAccount(uid, profile, netease.activeCookie());
+      mirrorRadioAgent({
+        type: "login_completed",
+        uid,
+        payload: { source: "auth_status" },
+      });
+    }
     sendJson(res, 200, status);
     return;
   }
@@ -206,7 +223,14 @@ async function handleHttpRequest(req: http.IncomingMessage, res: http.ServerResp
       sendJson(res, 409, { error: "account cookie mismatch" });
       return;
     }
-    if (activeUid) store.saveAuthAccount(activeUid, profile, netease.activeCookie());
+    if (activeUid) {
+      store.saveAuthAccount(activeUid, profile, netease.activeCookie());
+      mirrorRadioAgent({
+        type: "login_completed",
+        uid: activeUid,
+        payload: { source: "auth_switch" },
+      });
+    }
     sendJson(res, 200, { active_uid: activeUid || uid, profile, status });
     return;
   }
@@ -281,7 +305,25 @@ async function handleHttpRequest(req: http.IncomingMessage, res: http.ServerResp
     return;
   }
 
+  if (req.method === "GET" && pathname === "/api/radio/agent/status") {
+    const uid = requestUrl.searchParams.get("uid") || currentStoredUid() || null;
+    const sessionIdValue = Number(requestUrl.searchParams.get("session_id") || "");
+    const sessionId = Number.isFinite(sessionIdValue) && sessionIdValue > 0 ? sessionIdValue : null;
+    sendJson(res, 200, radioAgent.status(uid, sessionId));
+    return;
+  }
+
   sendJson(res, 404, { error: "not found" });
+}
+
+function mirrorRadioAgent(event: Record<string, unknown>): void {
+  void radioAgent.handle(event).catch((error) => {
+    store.logPlaybackEvent("radio_agent_error", {
+      uid: typeof event.uid === "string" ? event.uid : null,
+      reason: error instanceof Error ? error.message : String(error),
+      payload: { eventType: event.type },
+    });
+  });
 }
 
 function matchPrefix(pathname: string, prefix: string): string {
@@ -584,6 +626,12 @@ async function handleRadioSocket(socket: WebSocketType): Promise<void> {
       store.logPlaybackEvent("started", { uid, songId: track.id });
       loggedTrackIds.add(track.id);
     }
+    mirrorRadioAgent({
+      type: "playback_started",
+      uid,
+      sessionId,
+      track: trackInfo(track),
+    });
   };
 
   const sendTrack = (track: Track, url: string): void => {
@@ -784,6 +832,14 @@ async function handleRadioSocket(socket: WebSocketType): Promise<void> {
     if (!options.skipPrewarmWait && prewarmTask) {
       await Promise.race([prewarmTask, new Promise((resolve) => setTimeout(resolve, 1500))]).catch(() => null);
     }
+    if (!queue.readyItems().length) {
+      mirrorRadioAgent({
+        type: "queue_low",
+        uid,
+        sessionId,
+        currentTrack: currentTrack ? trackInfo(currentTrack) : null,
+      });
+    }
     if (!queue.readyItems().length && allowContinuation && activeRequestToken == null) {
       const beforeContinuation = kickBrainContinuation();
       const ready = await waitForNewBrainReadyItem(beforeContinuation, CONTINUATION_BRAIN_READY_TIMEOUT_MS);
@@ -853,6 +909,17 @@ async function handleRadioSocket(socket: WebSocketType): Promise<void> {
             .catch(() => undefined);
         }
         sessionId = uid ? store.createSession(uid) : null;
+        mirrorRadioAgent({
+          type: "session_restored",
+          uid,
+          sessionId,
+          payload: {
+            source: "websocket_handshake",
+            scene,
+            timezoneName: settings.timezoneName || "",
+            localTimeBlock: settings.localTimeBlock || "",
+          },
+        });
         const defaultIntro = djEngine.defaultIntro(scene);
         const defaultTtsTask = synthesize(defaultIntro).catch(() => "");
         const introTask = djEngine.generateIntro(profile, scene, settings).catch(() => "");
@@ -882,10 +949,22 @@ async function handleRadioSocket(socket: WebSocketType): Promise<void> {
       }
 
       if (type === "track_ended") {
+        mirrorRadioAgent({
+          type: "track_completed",
+          uid,
+          sessionId,
+          track: currentTrack ? trackInfo(currentTrack) : null,
+        });
         await sendPreparedNext("played");
       }
 
       if (type === "skip") {
+        mirrorRadioAgent({
+          type: "track_skipped",
+          uid,
+          sessionId,
+          track: currentTrack ? trackInfo(currentTrack) : null,
+        });
         queue.markCurrent("skipped");
         stationDirector.recordFeedback(stationState, { type: "skip", track: currentTrack ? trackInfo(currentTrack) : null });
         if (currentSongId) {
@@ -901,6 +980,13 @@ async function handleRadioSocket(socket: WebSocketType): Promise<void> {
       if (type === "song_request") {
         const requestText = compactText(message.text || "", 120);
         if (!requestText) return;
+        mirrorRadioAgent({
+          type: "user_text",
+          uid,
+          sessionId,
+          text: requestText,
+          currentTrack: currentTrack ? trackInfo(currentTrack) : null,
+        });
         introSendCancelled = true;
         store.logPlaybackEvent("song_request", { uid, songId: currentSongId, reason: requestText });
         const requestToken = ++nextRequestToken;

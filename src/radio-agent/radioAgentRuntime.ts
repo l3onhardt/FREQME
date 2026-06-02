@@ -62,7 +62,7 @@ export class RadioAgentRuntime {
     }
 
     const hostDecision = this.decideHost(persistedEvent);
-    this.saveDecision(event, "host", hostDecision);
+    this.saveDecision(event, "host", { ...hostDecision });
 
     return {
       controlsPlayback: false,
