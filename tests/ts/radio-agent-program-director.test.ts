@@ -11,7 +11,11 @@ test("model JSON planning creates an agent-owned radio window from compact conte
   const model: ProgramPlanningModel = {
     chat: async (prompt, options) => {
       prompts.push(prompt);
-      assert.deepEqual(options, { responseFormat: { type: "json_object" } });
+      assert.deepEqual(options?.responseFormat, { type: "json_object" });
+      assert.equal(options?.maxTokens, 1100);
+      assert.match(options?.system ?? "", /program director/i);
+      assert.match(options?.system ?? "", /valid JSON/i);
+      assert.equal(options?.timeoutMs, 14000);
       return JSON.stringify({
         station_brief: "Late-night R&B with a gentle discovery edge.",
         main_direction: "Keep the SZA thread warm, then widen toward Frank Ocean textures.",
@@ -103,6 +107,27 @@ test("program director preserves spec-compliant host events and sanitizes intern
   }
 });
 
+test("program director silences invalid model host events", async () => {
+  const model: ProgramPlanningModel = {
+    chat: async () => JSON.stringify({
+      candidate_tasks: [{ query: "SZA Snooze", reason: "Known anchor." }],
+      host_intent: {
+        should_speak: true,
+        event: "made_up_event",
+        reason: "bad event",
+        text: "Keeping the thread warm.",
+      },
+    }),
+  };
+  const director = new RadioAgentProgramDirector(model, () => NOW);
+
+  const window = await director.plan(contextSnapshot());
+
+  assert.equal(window.hostIntent.shouldSpeak, false);
+  assert.equal(window.hostIntent.event, "silent");
+  assert.equal(window.hostIntent.text, "");
+});
+
 test("model failure falls back to deterministic memory anchors", async () => {
   const model: ProgramPlanningModel = {
     chat: async () => {
@@ -140,6 +165,25 @@ test("fallback planning uses the current contract when no playback or memory anc
   assert.ok(window.candidateTasks.length > 0);
   assert.match(window.candidateTasks[0]?.query ?? "", /late-night R&B|neo soul|vocals/i);
   assert.ok(window.candidateTasks.every((task) => typeof task.style === "string"));
+});
+
+test("fallback planning still produces a safe candidate when all anchors are missing", async () => {
+  const director = new RadioAgentProgramDirector(null, () => NOW);
+
+  const window = await director.plan({
+    ...contextSnapshot(),
+    profile: "",
+    now: "",
+    contract: "",
+    memoryFacts: [],
+    memoryHypotheses: [],
+    currentTrack: null,
+    readyQueue: [],
+  });
+
+  assert.equal(window.source, "deterministic_fallback");
+  assert.ok(window.candidateTasks.length > 0);
+  assert.doesNotMatch(window.candidateTasks[0]?.query ?? "", /study|sleep|playlist|timer|white noise/i);
 });
 
 test("empty model tasks fall back to deterministic memory anchors", async () => {

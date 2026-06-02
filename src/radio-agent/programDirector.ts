@@ -22,6 +22,11 @@ type ProgramWindowSource = RadioAgentProgramWindow["source"];
 
 const MAX_CANDIDATE_TASKS = 5;
 const HOST_TEXT_LIMIT = 140;
+const PROGRAM_DIRECTOR_MAX_TOKENS = 1100;
+const PROGRAM_DIRECTOR_TIMEOUT_MS = 14000;
+const PROGRAM_DIRECTOR_SYSTEM =
+  "You are FREQME's personal AI radio program director. Return only valid JSON. Never mention models, prompts, traces, verification, tool calls, or internal systems.";
+const DEFAULT_FALLBACK_QUERY = "warm vocal radio discovery";
 const INTERNAL_HOST_TERMS = /\b(model|json|candidate|trace|prompt|verification|shadow mode|tool call)\b/i;
 const RAW_COMMAND_QUERY = /^\s*(please\s+)?(play|put on|queue|find|search|give me|can you|could you|i want|i need)\b/i;
 const UTILITY_AUDIO_QUERY = /\b(playlist|study|studying|sleep|lofi|lo-fi|white noise|brown noise|pink noise|rain sounds|timer|meditation|focus music|ambient sounds)\b/i;
@@ -48,7 +53,12 @@ export class RadioAgentProgramDirector {
     if (this.model) {
       try {
         const prompt = buildPrompt(context, createdAt);
-        const raw = await this.model.chat(prompt, { responseFormat: { type: "json_object" } });
+        const raw = await this.model.chat(prompt, {
+          maxTokens: PROGRAM_DIRECTOR_MAX_TOKENS,
+          system: PROGRAM_DIRECTOR_SYSTEM,
+          responseFormat: { type: "json_object" },
+          timeoutMs: PROGRAM_DIRECTOR_TIMEOUT_MS,
+        });
         const parsed = parseJsonObject(raw);
         const window = buildWindowFromParsed(context, parsed, createdAt, "model");
         if (window.candidateTasks.length > 0) return window;
@@ -133,6 +143,7 @@ function fallbackCandidateTasks(context: RadioAgentContextSnapshot): RadioAgentC
     context.currentTrack?.artist,
     ...context.readyQueue.map((track) => track.artist),
     contractAnchor(context.contract),
+    DEFAULT_FALLBACK_QUERY,
   ]
     .filter((anchor): anchor is string => Boolean(anchor?.trim()))
     .map((anchor) => anchor.trim());
@@ -175,7 +186,7 @@ function toHostIntent(value: unknown): RadioAgentHostIntent {
   const reason = stringValue(valueFor(value, "reason"));
   const text = sanitizeHostText(stringValue(valueFor(value, "text")));
 
-  if (!shouldSpeak || !text) return silentHostIntent(reason || "silent");
+  if (!shouldSpeak || event === "silent" || !text) return silentHostIntent(reason || "silent");
   return { shouldSpeak: true, event, reason, text };
 }
 
