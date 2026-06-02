@@ -407,8 +407,8 @@ export class NeteaseService {
     return sanitizeLoginBody(body) as Record<string, unknown>;
   }
 
-  async userPlaylist(uid: string): Promise<Record<string, unknown>[]> {
-    const body = await this.cachedCall("user_playlist", this.withCookie({ uid }), profileCacheTtlMs);
+  async userPlaylist(uid: string, options: { limit?: number; offset?: number } = {}): Promise<Record<string, unknown>[]> {
+    const body = await this.cachedCall("user_playlist", this.withCookie({ uid, ...options }), profileCacheTtlMs);
     return Array.isArray(body.playlist) ? (body.playlist as Record<string, unknown>[]) : [];
   }
 
