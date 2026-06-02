@@ -77,6 +77,37 @@ export interface RadioHostDecision {
   text?: string;
 }
 
+export interface RadioAgentCandidateTask {
+  query: string;
+  reason: string;
+  style?: string;
+  negativeConstraints: string[];
+}
+
+export interface RadioAgentHostIntent {
+  shouldSpeak: boolean;
+  event: "none" | "opening" | "bridge" | "return" | "recovery";
+  reason: string;
+  text: string;
+}
+
+export interface RadioAgentProgramWindow {
+  id: string;
+  uid: string | null;
+  sessionId: number | null;
+  stationBrief: string;
+  mainDirection: string;
+  allowedAdjacent: string[];
+  bridgeBudget: number;
+  disallowed: string[];
+  returnRequirement: string;
+  candidateTasks: RadioAgentCandidateTask[];
+  hostIntent: RadioAgentHostIntent;
+  traceBasis: string[];
+  source: "model" | "fallback";
+  createdAt: string;
+}
+
 export interface RadioShadowDecision {
   id: string;
   uid: string | null;
