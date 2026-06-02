@@ -57,6 +57,84 @@ test("shadow runtime handles library scan failure without taking playback contro
   assert.ok(events.includes("radio_agent_library_scan_failed"));
 });
 
+test("runtime does not start duplicate library scans while one is already running", async () => {
+  const events: string[] = [];
+  let scans = 0;
+  let resolveScan: (() => void) | null = null;
+  const store = {
+    appendEvent: (event: { type: string }) => {
+      events.push(event.type);
+      return events.length;
+    },
+    recentEvents: () => [],
+    upsertMemory: () => undefined,
+    memories: () => [],
+    saveArtifact: () => undefined,
+    artifact: () => null,
+    saveShadowDecision: () => undefined,
+    latestShadowDecisions: () => [],
+  };
+  const census = {
+    scan: async () => {
+      scans += 1;
+      await new Promise<void>((resolve) => {
+        resolveScan = resolve;
+      });
+      return { playlistsScanned: 1, tracksScanned: 1, failures: [] };
+    },
+  };
+
+  const runtime = new RadioAgentRuntime({ mode: "shadow", store, census, now: () => "2026-06-03T01:02:03.000Z" });
+  await runtime.handle({ type: "login_completed", uid: "42", sessionId: 1 });
+  await runtime.handle({ type: "login_completed", uid: "42", sessionId: 1 });
+
+  assert.equal(scans, 1);
+  assert.equal(events.filter((event) => event === "library_scan_requested").length, 1);
+  resolveScan?.();
+  await runtime.flushBackgroundWork();
+  assert.equal(events.filter((event) => event === "library_scan_completed").length, 1);
+});
+
+test("runtime skips full library scan when a recent completed scan is fresh", async () => {
+  const events: string[] = [];
+  let scans = 0;
+  const store = {
+    appendEvent: (event: { type: string }) => {
+      events.push(event.type);
+      return events.length;
+    },
+    recentEvents: () => [
+      {
+        uid: "42",
+        sessionId: null,
+        type: "library_scan_completed",
+        priority: "warm",
+        payload: { result: { playlistsScanned: 50, tracksScanned: 6458, failures: [] } },
+        createdAt: "2026-06-03T00:30:00.000Z",
+      },
+    ],
+    upsertMemory: () => undefined,
+    memories: () => [],
+    saveArtifact: () => undefined,
+    artifact: () => null,
+    saveShadowDecision: () => undefined,
+    latestShadowDecisions: () => [],
+  };
+  const census = {
+    scan: async () => {
+      scans += 1;
+      return { playlistsScanned: 1, tracksScanned: 1, failures: [] };
+    },
+  };
+
+  const runtime = new RadioAgentRuntime({ mode: "shadow", store, census, now: () => "2026-06-03T01:02:03.000Z" });
+  await runtime.handle({ type: "login_completed", uid: "42" });
+  await runtime.flushBackgroundWork();
+
+  assert.equal(scans, 0);
+  assert.equal(events.filter((event) => event === "library_scan_requested").length, 0);
+});
+
 test("runtime writes skip session evidence as a shadow decision", async () => {
   const decisions: Array<{ decisionType: string; payload: Record<string, unknown> }> = [];
   const store = {

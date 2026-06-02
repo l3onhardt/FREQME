@@ -12,6 +12,8 @@ import {
 } from "./types.js";
 import type { RadioAgentArtifactRecord } from "../storage/radioAgentStore.js";
 
+const DEFAULT_LIBRARY_SCAN_FRESHNESS_MS = 6 * 60 * 60 * 1000;
+
 interface RadioAgentRuntimeStore {
   appendEvent(event: RadioAgentEvent): number;
   recentEvents(uid: string | null, sessionId: number | null, limit: number): RadioAgentEvent[];
@@ -27,16 +29,20 @@ export interface RadioAgentRuntimeDeps {
   mode: RadioAgentMode;
   store: RadioAgentRuntimeStore;
   census?: Pick<LibraryCensus, "scan">;
+  libraryScanFreshnessMs?: number;
   now?: () => string;
 }
 
 export class RadioAgentRuntime {
   private readonly now: () => string;
+  private readonly libraryScanFreshnessMs: number;
+  private readonly activeLibraryScans = new Set<string>();
   private readonly backgroundWork = new Set<Promise<unknown>>();
   private sequence = 0;
 
   constructor(private readonly deps: RadioAgentRuntimeDeps) {
     this.now = deps.now ?? (() => new Date().toISOString());
+    this.libraryScanFreshnessMs = deps.libraryScanFreshnessMs ?? DEFAULT_LIBRARY_SCAN_FRESHNESS_MS;
   }
 
   async handle(input: Record<string, unknown>): Promise<RadioAgentHandleResult> {
@@ -45,16 +51,7 @@ export class RadioAgentRuntime {
     const persistedEvent = { ...event, id };
 
     if (event.type === "login_completed" && event.uid) {
-      const scanEvent: RadioAgentEvent = {
-        uid: event.uid,
-        sessionId: event.sessionId,
-        type: "library_scan_requested",
-        priority: "cold",
-        payload: { reason: "login_completed" },
-        createdAt: this.now(),
-      };
-      this.deps.store.appendEvent(scanEvent);
-      this.startLibraryScan(scanEvent);
+      this.maybeStartLibraryScan(event);
     }
 
     if (event.type === "track_skipped") {
@@ -100,16 +97,48 @@ export class RadioAgentRuntime {
     await Promise.allSettled([...this.backgroundWork]);
   }
 
+  private maybeStartLibraryScan(event: RadioAgentEvent): void {
+    if (!event.uid || !this.deps.census) return;
+    if (this.activeLibraryScans.has(event.uid)) return;
+    if (this.hasFreshLibraryScan(event.uid)) return;
+
+    const scanEvent: RadioAgentEvent = {
+      uid: event.uid,
+      sessionId: event.sessionId,
+      type: "library_scan_requested",
+      priority: "cold",
+      payload: { reason: "login_completed" },
+      createdAt: this.now(),
+    };
+    this.deps.store.appendEvent(scanEvent);
+    this.startLibraryScan(scanEvent);
+  }
+
   private startLibraryScan(event: RadioAgentEvent): void {
     if (!event.uid || !this.deps.census) return;
+    this.activeLibraryScans.add(event.uid);
     const work = this.deps.census
       .scan(event.uid)
       .then((result) => this.recordScanCompleted(event, result))
       .catch((error: unknown) => this.recordScanFailed(event, error))
       .finally(() => {
         this.backgroundWork.delete(work);
+        if (event.uid) this.activeLibraryScans.delete(event.uid);
       });
     this.backgroundWork.add(work);
+  }
+
+  private hasFreshLibraryScan(uid: string): boolean {
+    if (this.libraryScanFreshnessMs <= 0) return false;
+    const nowMs = Date.parse(this.now());
+    if (!Number.isFinite(nowMs)) return false;
+
+    return this.deps.store.recentEvents(uid, null, 20).some((event) => {
+      if (event.type !== "library_scan_completed") return false;
+      if (scanCompletedWithFailures(event)) return false;
+      const completedAt = Date.parse(event.createdAt);
+      return Number.isFinite(completedAt) && completedAt <= nowMs && nowMs - completedAt <= this.libraryScanFreshnessMs;
+    });
   }
 
   private recordScanCompleted(event: RadioAgentEvent, result: LibraryCensusResult): void {
@@ -172,4 +201,14 @@ export class RadioAgentRuntime {
     this.sequence += 1;
     return `${type}-${this.now()}-${this.sequence}`;
   }
+}
+
+function scanCompletedWithFailures(event: RadioAgentEvent): boolean {
+  const result = event.payload.result;
+  if (!isRecord(result)) return false;
+  return Array.isArray(result.failures) && result.failures.length > 0;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
