@@ -1,0 +1,190 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+
+import { RadioAgentProgramExecutor } from "../../src/radio-agent/programExecutor.js";
+import type { RadioAgentProgramWindow } from "../../src/radio-agent/types.js";
+import type { MusicTask, SearchVerification } from "../../src/types.js";
+
+const internalTerms = /candidate|trace|verification|model|JSON|prompt|tool call/i;
+
+function programWindow(overrides: Partial<RadioAgentProgramWindow> = {}): RadioAgentProgramWindow {
+  return {
+    id: "window-1",
+    uid: "42",
+    sessionId: 9,
+    stationBrief: "Keep late-night R&B coherent.",
+    mainDirection: "late-night R&B",
+    allowedAdjacent: ["alt-R&B"],
+    bridgeBudget: 1,
+    disallowed: ["classical chamber music", "high-energy EDM"],
+    returnRequirement: "Return to vocal R&B.",
+    candidateTasks: [
+      {
+        query: "SZA Good Days",
+        reason: "Known taste anchor.",
+        style: "R&B",
+        negativeConstraints: ["classical chamber music"],
+      },
+    ],
+    hostIntent: {
+      shouldSpeak: true,
+      event: "return_to_contract",
+      reason: "set station lane",
+      text: "Keeping this close to your late-night R&B lane.",
+    },
+    traceBasis: {
+      profile: "SZA",
+      now: "local_time_block: late_night",
+      contract: "late-night R&B",
+      eventType: "queue_low",
+    },
+    source: "model",
+    createdAt: "2026-06-03T01:02:03.000Z",
+    ...overrides,
+  };
+}
+
+test("program executor verifies the first candidate through search tools", async () => {
+  const window = programWindow();
+  const verifier = {
+    verify: async (task: MusicTask, uid?: string | null, stationBrief?: string): Promise<SearchVerification> => {
+      assert.equal(task.searchGoals[0], "SZA Good Days");
+      assert.equal(task.mustNotSearchLiteralUserSentence, true);
+      assert.equal(uid, "42");
+      assert.match(stationBrief ?? "", /Keep late-night R&B coherent/);
+      assert.ok(task.negativeConstraints.includes("classical chamber music"));
+      assert.ok(task.negativeConstraints.includes("high-energy EDM"));
+      assert.equal(
+        task.negativeConstraints.filter((constraint) => constraint === "classical chamber music").length,
+        1,
+      );
+
+      return {
+        status: "verified",
+        selectedSong: { id: "s1", name: "Good Days", artist: "SZA" },
+        url: "/api/radio/audio/s1",
+        verification: { confidence: 0.8, versionNote: "matched" },
+        fallbackCandidates: [],
+        recoveryOptions: [],
+        usedQuery: "SZA Good Days",
+      };
+    },
+  };
+
+  const executor = new RadioAgentProgramExecutor(verifier as any, () => "trace-1");
+  const prepared = await executor.prepareFirstPlayable(window);
+
+  assert.equal(prepared?.track.id, "s1");
+  assert.equal(prepared?.track.name, "Good Days");
+  assert.equal(prepared?.track.artist, "SZA");
+  assert.equal(prepared?.url, "/api/radio/audio/s1");
+  assert.equal(prepared?.selectionReason.type, "radio_agent_program");
+  assert.equal(prepared?.selectionReason.traceId, "trace-1");
+  assert.equal(prepared?.selectionReason.text, "Known taste anchor.");
+  assert.equal(prepared?.segueText, "Keeping this close to your late-night R&B lane.");
+  assert.equal(prepared?.decisionTrace.id, "trace-1");
+  assert.equal(prepared?.decisionTrace.episodeId, window.id);
+  assert.equal(prepared?.decisionTrace.selectedTrack.id, "s1");
+  assert.equal(prepared?.decisionTrace.selectedTrack.name, "Good Days");
+  assert.equal(prepared?.decisionTrace.selectedTrack.artist, "SZA");
+  assert.doesNotMatch(prepared?.decisionTrace.reason ?? "", internalTerms);
+});
+
+test("program executor returns null when no candidate verifies", async () => {
+  const verifier = {
+    verify: async (): Promise<SearchVerification> => ({
+      status: "not_found",
+      verification: {},
+      fallbackCandidates: [],
+      recoveryOptions: [],
+      failureReason: "none",
+    }),
+  };
+
+  const executor = new RadioAgentProgramExecutor(verifier as any, () => "trace-2");
+  const prepared = await executor.prepareFirstPlayable(programWindow());
+
+  assert.equal(prepared, null);
+});
+
+test("program executor leaves segue text empty when host intent should not speak", async () => {
+  const verifier = {
+    verify: async (): Promise<SearchVerification> => ({
+      status: "verified",
+      selectedSong: { id: "s1", name: "Good Days", artist: "SZA" },
+      url: "/api/radio/audio/s1",
+      verification: { confidence: 0.8, versionNote: "matched" },
+      fallbackCandidates: [],
+      recoveryOptions: [],
+      usedQuery: "SZA Good Days",
+    }),
+  };
+  const executor = new RadioAgentProgramExecutor(verifier as any, () => "trace-3");
+
+  const prepared = await executor.prepareFirstPlayable(
+    programWindow({
+      hostIntent: {
+        shouldSpeak: false,
+        event: "silent",
+        reason: "ordinary continuation",
+        text: "Keeping this close to your late-night R&B lane.",
+      },
+    }),
+  );
+
+  assert.equal(prepared?.segueText, "");
+  assert.equal(prepared?.decisionTrace.hostText, "");
+});
+
+test("program executor tries later candidates until the first playable track verifies", async () => {
+  const calls: string[] = [];
+  const verifier = {
+    verify: async (task: MusicTask): Promise<SearchVerification> => {
+      calls.push(task.searchGoals[0] ?? "");
+      if (task.searchGoals[0] === "Frank Ocean Pink + White") {
+        return {
+          status: "verified",
+          selectedSong: { id: "s2", name: "Pink + White", artist: "Frank Ocean" },
+          url: "/api/radio/audio/s2",
+          verification: { confidence: 0.82, versionNote: "matched" },
+          fallbackCandidates: [],
+          recoveryOptions: [],
+          usedQuery: "Frank Ocean Pink + White",
+        };
+      }
+      return {
+        status: "not_found",
+        verification: {},
+        fallbackCandidates: [],
+        recoveryOptions: [],
+        failureReason: "first candidate not playable",
+      };
+    },
+  };
+  const executor = new RadioAgentProgramExecutor(verifier as any, () => "trace-4");
+
+  const prepared = await executor.prepareFirstPlayable(
+    programWindow({
+      candidateTasks: [
+        {
+          query: "SZA Good Days",
+          reason: "Known taste anchor.",
+          style: "R&B",
+          negativeConstraints: [],
+        },
+        {
+          query: "Frank Ocean Pink + White",
+          reason: "Soft adjacent bridge.",
+          style: "alt-R&B",
+          negativeConstraints: [],
+        },
+      ],
+    }),
+  );
+
+  assert.deepEqual(calls, ["SZA Good Days", "Frank Ocean Pink + White"]);
+  assert.equal(prepared?.track.id, "s2");
+  assert.equal(prepared?.selectionReason.fallbackLevel, "episode_backup");
+  assert.deepEqual(prepared?.decisionTrace.rejectedCandidates, ["SZA Good Days"]);
+  assert.deepEqual(prepared?.decisionTrace.verificationAttempts, ["SZA Good Days", "Frank Ocean Pink + White"]);
+});

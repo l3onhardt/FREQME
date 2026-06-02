@@ -1,4 +1,5 @@
-import type { Track } from "../types.js";
+import type { DecisionTrace } from "../radio/radioBrainTypes.js";
+import type { SelectionReason, Track } from "../types.js";
 
 export type RadioAgentPriority = "hot" | "warm" | "cold";
 export type RadioAgentMode = "shadow" | "assisted" | "active";
@@ -119,6 +120,14 @@ export interface RadioAgentProgramWindow {
   };
   source: "model" | "deterministic_fallback";
   createdAt: string;
+}
+
+export interface RadioAgentPreparedTrack {
+  track: Track;
+  url: string;
+  selectionReason: SelectionReason;
+  segueText: string;
+  decisionTrace: DecisionTrace;
 }
 
 export interface RadioShadowDecision {
