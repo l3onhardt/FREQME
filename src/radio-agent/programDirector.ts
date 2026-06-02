@@ -181,7 +181,7 @@ function isAllowedCandidateTask(task: RadioAgentCandidateTask): boolean {
 function toHostIntent(value: unknown): RadioAgentHostIntent {
   if (!isRecord(value)) return silentHostIntent("missing_host_intent");
 
-  const shouldSpeak = Boolean(valueFor(value, "shouldSpeak"));
+  const shouldSpeak = valueFor(value, "shouldSpeak") === true;
   const event = hostEventValue(valueFor(value, "event"));
   const reason = stringValue(valueFor(value, "reason"));
   const text = sanitizeHostText(stringValue(valueFor(value, "text")));

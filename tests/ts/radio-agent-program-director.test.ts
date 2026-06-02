@@ -128,6 +128,29 @@ test("program director silences invalid model host events", async () => {
   assert.equal(window.hostIntent.text, "");
 });
 
+test("program director only speaks when should_speak is a literal boolean true", async () => {
+  for (const shouldSpeak of ["false", "true", 1, null]) {
+    const model: ProgramPlanningModel = {
+      chat: async () => JSON.stringify({
+        candidate_tasks: [{ query: "SZA Snooze", reason: "Known anchor." }],
+        host_intent: {
+          should_speak: shouldSpeak,
+          event: "bridge_entered",
+          reason: "malformed boolean",
+          text: "Keeping the thread warm.",
+        },
+      }),
+    };
+    const director = new RadioAgentProgramDirector(model, () => NOW);
+
+    const window = await director.plan(contextSnapshot());
+
+    assert.equal(window.hostIntent.shouldSpeak, false);
+    assert.equal(window.hostIntent.event, "silent");
+    assert.equal(window.hostIntent.text, "");
+  }
+});
+
 test("model failure falls back to deterministic memory anchors", async () => {
   const model: ProgramPlanningModel = {
     chat: async () => {
