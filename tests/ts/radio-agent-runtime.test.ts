@@ -368,12 +368,15 @@ test("runtime plans an agent-owned program window on queue low", async () => {
   store.saveArtifact("42", "user_profile.md", "# User Profile\nSZA", "taste-distiller/v2-compact");
   store.saveArtifact("42", "station_now.md", "# Station Now\nlate_night", "station-context/v1");
   store.saveArtifact("42", "program_contract.md", "# Program Contract\nlate-night R&B", "program-contract/v1");
+  let receivedSnapshot: Record<string, unknown> | null = null;
   const programDirector = {
-    plan: async () =>
-      programWindow({
+    plan: async (snapshot: Record<string, unknown>) => {
+      receivedSnapshot = snapshot;
+      return programWindow({
         candidateTasks: [{ query: "SZA Good Days", reason: "Known anchor.", style: "R&B", negativeConstraints: [] }],
         source: "model",
-      }),
+      });
+    },
   };
 
   const runtime = new RadioAgentRuntime({
@@ -386,12 +389,28 @@ test("runtime plans an agent-owned program window on queue low", async () => {
     type: "queue_low",
     uid: "42",
     sessionId: 9,
-    currentTrack: { id: "s1", name: "Good Days", artist: "SZA" },
+    currentTrack: { id: "s1", name: "Good Days", artist: "SZA", raw: { secret: true } },
+    readyQueue: [{ id: "s2", name: "Pink + White", artist: "Frank Ocean", raw: { secret: true } }],
+    payload: {
+      raw_json: { secret: true },
+      track: { id: "s1", name: "Good Days", artist: "SZA", raw: { secret: true } },
+    },
   });
 
   assert.equal(result.controlsPlayback, false);
   assert.equal(result.programWindow?.candidateTasks[0]?.query, "SZA Good Days");
   assert.ok(store.decisions.some((decision) => decision.decisionType === "program_window"));
+  assert.equal(receivedSnapshot?.uid, "42");
+  assert.equal(receivedSnapshot?.sessionId, 9);
+  assert.equal(receivedSnapshot?.eventType, "queue_low");
+  assert.match(String(receivedSnapshot?.profile), /SZA/);
+  assert.match(String(receivedSnapshot?.now), /late_night/);
+  assert.match(String(receivedSnapshot?.contract), /late-night R&B/);
+  assert.equal((receivedSnapshot?.memoryFacts as RadioAgentMemory[] | undefined)?.[0]?.key, "artist:SZA");
+  assert.equal((receivedSnapshot?.currentTrack as Record<string, unknown> | null)?.name, "Good Days");
+  assert.equal((receivedSnapshot?.currentTrack as Record<string, unknown> | null)?.raw, undefined);
+  assert.equal(((receivedSnapshot?.readyQueue as Record<string, unknown>[] | undefined)?.[0] ?? {}).raw, undefined);
+  assert.equal(((receivedSnapshot?.recentEvents as RadioAgentEvent[] | undefined)?.[0]?.payload ?? {}).raw_json, undefined);
 });
 
 test("shadow mode records program windows but still never controls playback", async () => {
@@ -474,6 +493,44 @@ test("runtime keeps host decisions when no program director is configured", asyn
   assert.equal(result.controlsPlayback, false);
   assert.equal(result.programWindow, undefined);
   assert.ok(result.hostDecision);
+  assert.ok(store.decisions.some((decision) => decision.decisionType === "host"));
+});
+
+test("active mode records program windows but still never controls playback", async () => {
+  const store = runtimeStore();
+  const runtime = new RadioAgentRuntime({
+    mode: "active",
+    store,
+    programDirector: { plan: async () => programWindow({ source: "deterministic_fallback" }) },
+    now: () => "2026-06-03T01:02:03.000Z",
+  });
+
+  const result = await runtime.handle({ type: "queue_low", uid: "42", sessionId: 9 });
+
+  assert.equal(result.controlsPlayback, false);
+  assert.equal(result.programWindow?.source, "deterministic_fallback");
+  assert.ok(store.decisions.some((decision) => decision.decisionType === "program_window"));
+});
+
+test("runtime keeps host decisions when program director planning fails", async () => {
+  const store = runtimeStore();
+  const runtime = new RadioAgentRuntime({
+    mode: "assisted",
+    store,
+    programDirector: {
+      plan: async () => {
+        throw new Error("planner down");
+      },
+    },
+    now: () => "2026-06-03T01:02:03.000Z",
+  });
+
+  const result = await runtime.handle({ type: "queue_low", uid: "42", sessionId: 9 });
+
+  assert.equal(result.controlsPlayback, false);
+  assert.equal(result.programWindow, undefined);
+  assert.ok(result.hostDecision);
+  assert.equal(store.decisions.some((decision) => decision.decisionType === "program_window"), false);
   assert.ok(store.decisions.some((decision) => decision.decisionType === "host"));
 });
 
