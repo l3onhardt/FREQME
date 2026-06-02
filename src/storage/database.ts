@@ -127,10 +127,74 @@ export class AppDatabase {
         tokens_used INTEGER DEFAULT 0
       );
 
+      CREATE TABLE IF NOT EXISTS radio_agent_event (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        uid TEXT,
+        session_id INTEGER,
+        event_type TEXT NOT NULL,
+        priority TEXT NOT NULL,
+        payload_json TEXT NOT NULL,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+      );
+
+      CREATE TABLE IF NOT EXISTS radio_agent_memory (
+        uid TEXT NOT NULL,
+        memory_key TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        value_text TEXT NOT NULL,
+        confidence REAL DEFAULT 0.5,
+        evidence_count INTEGER DEFAULT 1,
+        evidence_refs_json TEXT NOT NULL,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY(uid, memory_key)
+      );
+
+      CREATE TABLE IF NOT EXISTS radio_library_playlist (
+        uid TEXT NOT NULL,
+        playlist_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        raw_json TEXT NOT NULL,
+        scanned_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY(uid, playlist_id)
+      );
+
+      CREATE TABLE IF NOT EXISTS radio_library_track (
+        uid TEXT NOT NULL,
+        playlist_id TEXT NOT NULL,
+        song_id TEXT NOT NULL,
+        song_name TEXT NOT NULL,
+        artist TEXT,
+        album TEXT,
+        source_json TEXT NOT NULL,
+        scanned_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY(uid, playlist_id, song_id)
+      );
+
+      CREATE TABLE IF NOT EXISTS radio_agent_artifact (
+        uid TEXT NOT NULL,
+        artifact_key TEXT NOT NULL,
+        content TEXT NOT NULL,
+        source_version TEXT NOT NULL,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY(uid, artifact_key)
+      );
+
+      CREATE TABLE IF NOT EXISTS radio_agent_shadow_decision (
+        id TEXT PRIMARY KEY,
+        uid TEXT,
+        session_id INTEGER,
+        decision_type TEXT NOT NULL,
+        payload_json TEXT NOT NULL,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+      );
+
       CREATE INDEX IF NOT EXISTS idx_track_uid_played ON track_log(uid, played_at);
       CREATE INDEX IF NOT EXISTS idx_playback_event_uid_song ON playback_event(uid, song_id, created_at);
       CREATE INDEX IF NOT EXISTS idx_dj_memory_event_uid_created ON dj_memory_event(uid, created_at);
       CREATE INDEX IF NOT EXISTS idx_decision_trace_uid_session ON decision_trace(uid, session_id, created_at);
+      CREATE INDEX IF NOT EXISTS idx_radio_agent_event_uid_session ON radio_agent_event(uid, session_id, created_at);
+      CREATE INDEX IF NOT EXISTS idx_radio_library_track_uid_song ON radio_library_track(uid, song_id);
+      CREATE INDEX IF NOT EXISTS idx_radio_agent_shadow_uid_session ON radio_agent_shadow_decision(uid, session_id, created_at);
     `);
     this.ensureColumn("auth_account", "cookie", "TEXT");
   }
