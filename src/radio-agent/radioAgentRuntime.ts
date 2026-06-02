@@ -1,5 +1,11 @@
 import type { LibraryCensus, LibraryCensusResult } from "./libraryCensus.js";
+import {
+  buildProgramContractMarkdown,
+  buildStationNowMarkdown,
+  buildUserProfileMarkdown,
+} from "./contextArtifacts.js";
 import { decideHostSpeech } from "./hostPolicy.js";
+import { distillTasteFacts, type TasteEvidenceItem } from "./tasteDistiller.js";
 import {
   normalizeRadioAgentEvent,
   type RadioAgentEvent,
@@ -8,9 +14,12 @@ import {
   type RadioAgentMode,
   type RadioAgentStatus,
   type RadioHostDecision,
+  type RadioLibraryPlaylist,
+  type RadioLibraryTrack,
   type RadioShadowDecision,
 } from "./types.js";
 import type { RadioAgentArtifactRecord } from "../storage/radioAgentStore.js";
+import type { Track } from "../types.js";
 
 const DEFAULT_LIBRARY_SCAN_FRESHNESS_MS = 6 * 60 * 60 * 1000;
 
@@ -19,6 +28,8 @@ interface RadioAgentRuntimeStore {
   recentEvents(uid: string | null, sessionId: number | null, limit: number): RadioAgentEvent[];
   upsertMemory(memory: RadioAgentMemory): void;
   memories(uid: string, kind: string, limit: number): RadioAgentMemory[];
+  playlists?(uid: string, limit: number): RadioLibraryPlaylist[];
+  libraryTracks?(uid: string, limit: number): RadioLibraryTrack[];
   saveArtifact(uid: string, artifactKey: string, content: string, sourceVersion: string): void;
   artifact(uid: string, artifactKey: string): RadioAgentArtifactRecord | null;
   saveShadowDecision(decision: RadioShadowDecision): void;
@@ -56,6 +67,10 @@ export class RadioAgentRuntime {
 
     if (event.type === "track_skipped") {
       this.saveSessionEvidence(event, "skip", "Single skip recorded as session evidence, not a permanent dislike.");
+    }
+
+    if (event.type === "session_restored" || event.type === "playback_started" || event.type === "track_completed") {
+      this.refreshStationArtifacts(persistedEvent);
     }
 
     const hostDecision = this.decideHost(persistedEvent);
@@ -100,7 +115,10 @@ export class RadioAgentRuntime {
   private maybeStartLibraryScan(event: RadioAgentEvent): void {
     if (!event.uid || !this.deps.census) return;
     if (this.activeLibraryScans.has(event.uid)) return;
-    if (this.hasFreshLibraryScan(event.uid)) return;
+    if (this.hasFreshLibraryScan(event.uid)) {
+      this.refreshProfileArtifactsIfMissing(event);
+      return;
+    }
 
     const scanEvent: RadioAgentEvent = {
       uid: event.uid,
@@ -112,6 +130,11 @@ export class RadioAgentRuntime {
     };
     this.deps.store.appendEvent(scanEvent);
     this.startLibraryScan(scanEvent);
+  }
+
+  private refreshProfileArtifactsIfMissing(event: RadioAgentEvent): void {
+    if (!event.uid || this.deps.store.artifact(event.uid, "user_profile.md")) return;
+    this.refreshProfileArtifacts(event);
   }
 
   private startLibraryScan(event: RadioAgentEvent): void {
@@ -150,6 +173,7 @@ export class RadioAgentRuntime {
       payload: { result },
       createdAt: this.now(),
     });
+    this.refreshProfileArtifacts(event);
   }
 
   private recordScanFailed(event: RadioAgentEvent, error: unknown): void {
@@ -168,6 +192,117 @@ export class RadioAgentRuntime {
       shouldSpeak: false,
       event: evidenceType,
       reason: note,
+    });
+  }
+
+  private refreshProfileArtifacts(event: RadioAgentEvent): void {
+    if (!event.uid || !this.deps.store.playlists || !this.deps.store.libraryTracks) return;
+
+    const playlists = this.deps.store.playlists(event.uid, 500);
+    const libraryTracks = this.deps.store.libraryTracks(event.uid, 10000);
+    if (!playlists.length && !libraryTracks.length) return;
+
+    const result = distillTasteFacts({
+      uid: event.uid,
+      libraryTracks,
+      playlists,
+      recentEvents: this.deps.store.recentEvents(event.uid, null, 200),
+    });
+    const updatedAt = this.now();
+    const evidenceItems = [...result.facts, ...result.hypotheses, ...result.sessionEvidence];
+    for (const item of evidenceItems) {
+      this.deps.store.upsertMemory({
+        uid: event.uid,
+        key: item.key,
+        kind: item.kind,
+        value: item.value,
+        confidence: item.confidence,
+        evidenceCount: item.evidenceCount,
+        evidenceRefs: item.evidenceRefs,
+        updatedAt,
+      });
+    }
+
+    this.deps.store.saveArtifact(
+      event.uid,
+      "user_profile.md",
+      buildUserProfileMarkdown({
+        uid: event.uid,
+        facts: result.facts,
+        hypotheses: result.hypotheses,
+        updatedAt,
+      }),
+      `taste-distiller/v1 tracks=${libraryTracks.length} playlists=${playlists.length}`,
+    );
+    this.deps.store.appendEvent({
+      uid: event.uid,
+      sessionId: event.sessionId,
+      type: "profile_artifacts_refreshed",
+      priority: "warm",
+      payload: {
+        facts: result.facts.length,
+        hypotheses: result.hypotheses.length,
+        sessionEvidence: result.sessionEvidence.length,
+        tracks: libraryTracks.length,
+        playlists: playlists.length,
+      },
+      createdAt: updatedAt,
+    });
+  }
+
+  private refreshStationArtifacts(event: RadioAgentEvent): void {
+    if (!event.uid) return;
+
+    const recentEvents = this.deps.store.recentEvents(event.uid, event.sessionId ?? null, 20);
+    const sessionEvent = recentEvents.find((recentEvent) => recentEvent.type === "session_restored");
+    const playbackEvents = recentEvents.filter((recentEvent) => recentEvent.type === "playback_started");
+    const currentTrack = extractTrack(event.payload.track) || extractTrack(event.payload.currentTrack) || extractTrack(playbackEvents[0]?.payload.track);
+    const recentTracks = playbackEvents.map((recentEvent) => extractTrack(recentEvent.payload.track)).filter(isTrack).slice(0, 5);
+    const timezoneName = stringValue(event.payload.timezoneName) || stringValue(sessionEvent?.payload.timezoneName);
+    const localTimeBlock = stringValue(event.payload.localTimeBlock) || stringValue(sessionEvent?.payload.localTimeBlock);
+    const listenerStateHypothesis = listenerStateForEvent(event);
+
+    this.deps.store.saveArtifact(
+      event.uid,
+      "station_now.md",
+      buildStationNowMarkdown({
+        localTimeBlock,
+        timezoneName,
+        currentTrack,
+        recentTracks,
+        listenerStateHypothesis,
+        confidence: currentTrack || localTimeBlock ? "medium" : "low",
+      }),
+      `station-context/v1 session=${event.sessionId ?? "none"}`,
+    );
+
+    const tasteFacts = this.deps.store.memories(event.uid, "taste_fact", 5);
+    const tasteHypotheses = this.deps.store.memories(event.uid, "taste_hypothesis", 5);
+    this.deps.store.saveArtifact(
+      event.uid,
+      "program_contract.md",
+      buildProgramContractMarkdown({
+        stationGoal: stationGoalFromMemory(tasteFacts, localTimeBlock),
+        allowedMoves: allowedMovesFromMemory(tasteFacts, tasteHypotheses),
+        blockedMoves: [
+          "Do not drift without a deliberate bridge.",
+          "Do not treat one skip as permanent long-term dislike.",
+        ],
+        hostStyle: "short, warm, low-interruption, and grounded in real listening evidence",
+      }),
+      `program-contract/v1 session=${event.sessionId ?? "none"}`,
+    );
+    this.deps.store.appendEvent({
+      uid: event.uid,
+      sessionId: event.sessionId,
+      type: "station_context_refreshed",
+      priority: "warm",
+      payload: {
+        currentTrack: currentTrack ? { id: currentTrack.id, name: currentTrack.name, artist: currentTrack.artist } : null,
+        localTimeBlock,
+        timezoneName,
+      },
+      createdAt: this.now(),
     });
   }
 
@@ -211,4 +346,41 @@ function scanCompletedWithFailures(event: RadioAgentEvent): boolean {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function extractTrack(value: unknown): Track | null {
+  if (!isRecord(value)) return null;
+  const id = stringValue(value.id || value.songId);
+  const name = stringValue(value.name || value.songName);
+  const artist = stringValue(value.artist);
+  if (!id && !name) return null;
+  return { id, name, artist };
+}
+
+function isTrack(value: Track | null): value is Track {
+  return value !== null;
+}
+
+function stringValue(value: unknown): string {
+  return value == null ? "" : String(value).trim();
+}
+
+function listenerStateForEvent(event: RadioAgentEvent): string {
+  if (event.type === "playback_started") return "music is active; keep interruption low unless a meaningful transition appears";
+  if (event.type === "track_completed") return "ordinary continuation; speak only for a deliberate bridge or recovery";
+  if (event.type === "session_restored") return "fresh or restored session; profile and context should warm in the background";
+  return "unknown";
+}
+
+function stationGoalFromMemory(facts: RadioAgentMemory[], localTimeBlock: string): string {
+  if (!facts.length) return `Build a coherent ${localTimeBlock || "current"} radio session while profile confidence warms.`;
+  return facts
+    .slice(0, 3)
+    .map((fact) => fact.value)
+    .join(" ");
+}
+
+function allowedMovesFromMemory(facts: RadioAgentMemory[], hypotheses: RadioAgentMemory[]): string[] {
+  const moves = [...facts.slice(0, 3), ...hypotheses.slice(0, 2)].map((item) => item.value);
+  return moves.length ? moves : ["Stay close to the current track until stronger profile evidence is available."];
 }

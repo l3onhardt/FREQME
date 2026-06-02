@@ -9,6 +9,8 @@ export type RadioAgentEventType =
   | "library_scan_requested"
   | "library_scan_completed"
   | "radio_agent_library_scan_failed"
+  | "profile_artifacts_refreshed"
+  | "station_context_refreshed"
   | "playback_started"
   | "playback_progress"
   | "track_completed"
@@ -116,6 +118,8 @@ const WARM_EVENTS = new Set<RadioAgentEventType>([
   "location_updated",
   "library_scan_completed",
   "radio_agent_library_scan_failed",
+  "profile_artifacts_refreshed",
+  "station_context_refreshed",
 ]);
 
 const COLD_EVENTS = new Set<RadioAgentEventType>([
