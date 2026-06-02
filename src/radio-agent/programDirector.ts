@@ -38,21 +38,23 @@ const HOST_EVENTS: RadioAgentHostIntent["event"][] = [
 
 export class RadioAgentProgramDirector {
   constructor(
-    private readonly model: ProgramPlanningModel,
+    private readonly model: ProgramPlanningModel | null,
     private readonly now: () => string = () => new Date().toISOString(),
   ) {}
 
   async plan(context: RadioAgentContextSnapshot): Promise<RadioAgentProgramWindow> {
     const createdAt = this.now();
 
-    try {
-      const prompt = buildPrompt(context, createdAt);
-      const raw = await this.model.chat(prompt, { responseFormat: { type: "json_object" } });
-      const parsed = parseJsonObject(raw);
-      const window = buildWindowFromParsed(context, parsed, createdAt, "model");
-      if (window.candidateTasks.length > 0) return window;
-    } catch {
-      // The agent can keep programming from durable context when planning fails.
+    if (this.model) {
+      try {
+        const prompt = buildPrompt(context, createdAt);
+        const raw = await this.model.chat(prompt, { responseFormat: { type: "json_object" } });
+        const parsed = parseJsonObject(raw);
+        const window = buildWindowFromParsed(context, parsed, createdAt, "model");
+        if (window.candidateTasks.length > 0) return window;
+      } catch {
+        // The agent can keep programming from durable context when planning fails.
+      }
     }
 
     return buildFallbackWindow(context, createdAt);
@@ -130,6 +132,7 @@ function fallbackCandidateTasks(context: RadioAgentContextSnapshot): RadioAgentC
     ...context.memoryFacts.map(memoryAnchor),
     context.currentTrack?.artist,
     ...context.readyQueue.map((track) => track.artist),
+    contractAnchor(context.contract),
   ]
     .filter((anchor): anchor is string => Boolean(anchor?.trim()))
     .map((anchor) => anchor.trim());
@@ -239,6 +242,10 @@ function extractDisallowed(contract: string): string[] {
 function styleFromContract(contract: string): string {
   const goal = firstContractLine(contract, "station_goal");
   return goal || "";
+}
+
+function contractAnchor(contract: string): string {
+  return firstContractLine(contract, "station_goal");
 }
 
 function memoryAnchor(memory: RadioAgentMemory | undefined): string {

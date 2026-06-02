@@ -116,6 +116,32 @@ test("model failure falls back to deterministic memory anchors", async () => {
   assertFallbackWindow(window);
 });
 
+test("program director supports deterministic planning when no model is configured", async () => {
+  const director = new RadioAgentProgramDirector(null, () => NOW);
+
+  const window = await director.plan(contextSnapshot());
+
+  assertFallbackWindow(window);
+});
+
+test("fallback planning uses the current contract when no playback or memory anchors exist", async () => {
+  const director = new RadioAgentProgramDirector(null, () => NOW);
+
+  const window = await director.plan({
+    ...contextSnapshot(),
+    memoryFacts: [],
+    memoryHypotheses: [],
+    currentTrack: null,
+    readyQueue: [],
+    contract: "# Program Contract\nstation_goal: late-night R&B with soft neo soul vocals\navoid: sleep sounds, study beats",
+  });
+
+  assert.equal(window.source, "deterministic_fallback");
+  assert.ok(window.candidateTasks.length > 0);
+  assert.match(window.candidateTasks[0]?.query ?? "", /late-night R&B|neo soul|vocals/i);
+  assert.ok(window.candidateTasks.every((task) => typeof task.style === "string"));
+});
+
 test("empty model tasks fall back to deterministic memory anchors", async () => {
   const model: ProgramPlanningModel = {
     chat: async () => JSON.stringify({ candidate_tasks: [{ query: "sleep sounds", reason: "not music programming" }] }),
