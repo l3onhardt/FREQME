@@ -226,6 +226,35 @@ test("runtime backfills a missing profile from a fresh existing library scan", a
   assert.ok(store.memoryRows.some((memory) => memory.key === "artist:SZA"));
 });
 
+test("runtime refreshes stale profile artifact versions from existing library evidence", async () => {
+  const store = runtimeStore({
+    recentEvents: (uid: string | null, sessionId: number | null, limit: number) =>
+      [
+        {
+          uid,
+          sessionId,
+          type: "library_scan_completed",
+          priority: "warm",
+          payload: { result: { playlistsScanned: 2, tracksScanned: 3, failures: [] } },
+          createdAt: "2026-06-03T00:30:00.000Z",
+        },
+      ].slice(0, limit),
+    playlists: () => [{ uid: "42", playlistId: "p1", name: "late night rnb", raw: {}, scannedAt: "" }],
+    libraryTracks: () => [
+      { uid: "42", playlistId: "p1", songId: "1", songName: "A", artist: "SZA", album: "", source: {}, scannedAt: "" },
+      { uid: "42", playlistId: "p1", songId: "2", songName: "B", artist: "SZA", album: "", source: {}, scannedAt: "" },
+    ],
+  });
+  store.saveArtifact("42", "user_profile.md", "# huge old profile\n", "taste-distiller/v1 tracks=6458 playlists=50");
+
+  const runtime = new RadioAgentRuntime({ mode: "shadow", store, now: () => "2026-06-03T01:02:03.000Z" });
+  await runtime.handle({ type: "login_completed", uid: "42" });
+
+  const artifact = store.artifact("42", "user_profile.md");
+  assert.ok(artifact?.content.includes("SZA"));
+  assert.ok(artifact?.sourceVersion.startsWith("taste-distiller/v2-compact"));
+});
+
 test("runtime writes skip session evidence as a shadow decision", async () => {
   const decisions: Array<{ decisionType: string; payload: Record<string, unknown> }> = [];
   const store = {

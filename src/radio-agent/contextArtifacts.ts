@@ -1,5 +1,8 @@
 import type { Track } from "../types.js";
 
+const USER_PROFILE_FACT_LIMIT = 24;
+const USER_PROFILE_HYPOTHESIS_LIMIT = 12;
+
 export interface ProfileEvidenceForMarkdown {
   key: string;
   value: string;
@@ -38,10 +41,10 @@ export function buildUserProfileMarkdown(args: BuildUserProfileMarkdownArgs): st
     `updated: ${args.updatedAt}`,
     "",
     "## Stable Taste Facts",
-    ...evidenceLines(args.facts),
+    ...evidenceLines(args.facts, USER_PROFILE_FACT_LIMIT, "facts"),
     "",
     "## Hypotheses",
-    ...evidenceLines(args.hypotheses),
+    ...evidenceLines(args.hypotheses, USER_PROFILE_HYPOTHESIS_LIMIT, "hypotheses"),
     "",
     "## Operating Notes",
     "- Treat hypotheses as tentative until repeated behavior confirms them.",
@@ -89,9 +92,16 @@ export function buildProgramContractMarkdown(args: BuildProgramContractMarkdownA
   ].join("\n");
 }
 
-function evidenceLines(items: ProfileEvidenceForMarkdown[]): string[] {
+function evidenceLines(items: ProfileEvidenceForMarkdown[], limit: number, label: string): string[] {
   if (!items.length) return ["- none"];
-  return items.map((item) => `- ${item.key}: ${item.value} (confidence: ${formatConfidence(item.confidence)}, evidence: ${item.evidenceCount})`);
+  const shown = items
+    .slice(0, limit)
+    .map((item) => `- ${item.key}: ${item.value} (confidence: ${formatConfidence(item.confidence)}, evidence: ${item.evidenceCount})`);
+  const omitted = items.length - shown.length;
+  if (omitted > 0) {
+    shown.push(`- ${omitted} additional ${label} omitted from compact context.`);
+  }
+  return shown;
 }
 
 function trackLines(tracks: Track[]): string[] {

@@ -22,6 +22,7 @@ import type { RadioAgentArtifactRecord } from "../storage/radioAgentStore.js";
 import type { Track } from "../types.js";
 
 const DEFAULT_LIBRARY_SCAN_FRESHNESS_MS = 6 * 60 * 60 * 1000;
+const COMPACT_PROFILE_SOURCE_VERSION = "taste-distiller/v2-compact";
 
 interface RadioAgentRuntimeStore {
   appendEvent(event: RadioAgentEvent): number;
@@ -113,12 +114,13 @@ export class RadioAgentRuntime {
   }
 
   private maybeStartLibraryScan(event: RadioAgentEvent): void {
-    if (!event.uid || !this.deps.census) return;
+    if (!event.uid) return;
     if (this.activeLibraryScans.has(event.uid)) return;
     if (this.hasFreshLibraryScan(event.uid)) {
-      this.refreshProfileArtifactsIfMissing(event);
+      this.refreshProfileArtifactsIfNeeded(event);
       return;
     }
+    if (!this.deps.census) return;
 
     const scanEvent: RadioAgentEvent = {
       uid: event.uid,
@@ -132,8 +134,10 @@ export class RadioAgentRuntime {
     this.startLibraryScan(scanEvent);
   }
 
-  private refreshProfileArtifactsIfMissing(event: RadioAgentEvent): void {
-    if (!event.uid || this.deps.store.artifact(event.uid, "user_profile.md")) return;
+  private refreshProfileArtifactsIfNeeded(event: RadioAgentEvent): void {
+    if (!event.uid) return;
+    const artifact = this.deps.store.artifact(event.uid, "user_profile.md");
+    if (artifact?.sourceVersion.startsWith(COMPACT_PROFILE_SOURCE_VERSION)) return;
     this.refreshProfileArtifacts(event);
   }
 
@@ -232,7 +236,7 @@ export class RadioAgentRuntime {
         hypotheses: result.hypotheses,
         updatedAt,
       }),
-      `taste-distiller/v1 tracks=${libraryTracks.length} playlists=${playlists.length}`,
+      `${COMPACT_PROFILE_SOURCE_VERSION} tracks=${libraryTracks.length} playlists=${playlists.length} facts=${result.facts.length} hypotheses=${result.hypotheses.length}`,
     );
     this.deps.store.appendEvent({
       uid: event.uid,

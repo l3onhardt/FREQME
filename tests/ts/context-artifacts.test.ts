@@ -21,6 +21,30 @@ test("user profile markdown separates facts from hypotheses", () => {
   assert.match(markdown, /updated: 2026-06-03T00:00:00.000Z/);
 });
 
+test("user profile markdown caps long evidence lists for agent context", () => {
+  const markdown = buildUserProfileMarkdown({
+    uid: "42",
+    facts: Array.from({ length: 40 }, (_, index) => ({
+      key: `artist:${index}`,
+      value: `Artist ${index}`,
+      confidence: 0.9,
+      evidenceCount: 40 - index,
+    })),
+    hypotheses: Array.from({ length: 20 }, (_, index) => ({
+      key: `theme:${index}`,
+      value: `Theme ${index}`,
+      confidence: 0.6,
+      evidenceCount: 20 - index,
+    })),
+    updatedAt: "2026-06-03T00:00:00.000Z",
+  });
+
+  assert.match(markdown, /artist:23/);
+  assert.doesNotMatch(markdown, /artist:24/);
+  assert.match(markdown, /16 additional facts omitted/);
+  assert.match(markdown, /8 additional hypotheses omitted/);
+});
+
 test("station now markdown includes uncertainty", () => {
   const markdown = buildStationNowMarkdown({
     localTimeBlock: "late_night",
