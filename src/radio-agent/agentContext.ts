@@ -33,7 +33,7 @@ export function buildRadioAgentContextSnapshot(
     contract: compactArtifact(args.artifacts["program_contract.md"]),
     memoryFacts: args.memories.filter((memory) => memory.kind === "taste_fact"),
     memoryHypotheses: args.memories.filter((memory) => memory.kind === "taste_hypothesis"),
-    recentEvents: args.recentEvents.slice(-12).map(sanitizeEvent),
+    recentEvents: args.recentEvents.slice(0, 12).map(sanitizeEvent),
     currentTrack: sanitizeTrack(args.currentTrack ?? null),
     readyQueue: args.readyQueue.map((track) => sanitizeTrack(track)).filter((track) => track !== null),
   };

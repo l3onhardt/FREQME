@@ -124,3 +124,29 @@ test("agent context strips raw track and event payload data", () => {
   assert.match(String(snapshot.recentEvents[0]?.payload.text), /truncated for agent context/);
   assert.doesNotMatch(JSON.stringify(snapshot), /current-track-raw|ready-queue-raw|event-track-raw|queue-track-raw|netease-private-json|library-row|event-text-secret/);
 });
+
+test("agent context keeps the latest 12 newest-first recent events", () => {
+  const events: RadioAgentEvent[] = Array.from({ length: 15 }, (_, index) => ({
+    uid: "42",
+    sessionId: 7,
+    type: "playback_progress",
+    priority: "cold",
+    payload: { text: `event-${index}` },
+    createdAt: `2026-06-03T01:${String(index).padStart(2, "0")}:00.000Z`,
+  }));
+
+  const snapshot = buildRadioAgentContextSnapshot({
+    uid: "42",
+    sessionId: 7,
+    eventType: "queue_low",
+    artifacts: {},
+    recentEvents: events,
+    memories: [],
+    currentTrack: null,
+    readyQueue: [],
+  });
+
+  assert.equal(snapshot.recentEvents.length, 12);
+  assert.equal(snapshot.recentEvents[0]?.payload.text, "event-0");
+  assert.equal(snapshot.recentEvents.some((event) => event.payload.text === "event-14"), false);
+});
