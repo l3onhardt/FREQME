@@ -2,7 +2,12 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { RadioAgentRuntime } from "../../src/radio-agent/radioAgentRuntime.js";
-import type { RadioAgentEvent, RadioAgentMemory, RadioShadowDecision } from "../../src/radio-agent/types.js";
+import type {
+  RadioAgentEvent,
+  RadioAgentMemory,
+  RadioAgentProgramWindow,
+  RadioShadowDecision,
+} from "../../src/radio-agent/types.js";
 
 function runtimeStore(overrides: Record<string, unknown> = {}) {
   const events: RadioAgentEvent[] = [];
@@ -343,3 +348,151 @@ test("runtime refreshes station context and program contract from playback event
   assert.ok(stationNow?.content.includes("Good Days - SZA"));
   assert.ok(contract?.content.includes("Listener has repeated library evidence for SZA."));
 });
+
+test("runtime plans an agent-owned program window on queue low", async () => {
+  const store = runtimeStore({
+    memories: (uid: string, kind: string, limit: number) =>
+      [
+        {
+          uid,
+          key: "artist:SZA",
+          kind,
+          value: "Listener has repeated library evidence for SZA.",
+          confidence: 0.84,
+          evidenceCount: 4,
+          evidenceRefs: ["track:s1"],
+          updatedAt: "2026-06-03T01:02:03.000Z",
+        },
+      ].slice(0, limit),
+  });
+  store.saveArtifact("42", "user_profile.md", "# User Profile\nSZA", "taste-distiller/v2-compact");
+  store.saveArtifact("42", "station_now.md", "# Station Now\nlate_night", "station-context/v1");
+  store.saveArtifact("42", "program_contract.md", "# Program Contract\nlate-night R&B", "program-contract/v1");
+  const programDirector = {
+    plan: async () =>
+      programWindow({
+        candidateTasks: [{ query: "SZA Good Days", reason: "Known anchor.", style: "R&B", negativeConstraints: [] }],
+        source: "model",
+      }),
+  };
+
+  const runtime = new RadioAgentRuntime({
+    mode: "assisted",
+    store,
+    programDirector,
+    now: () => "2026-06-03T01:02:03.000Z",
+  });
+  const result = await runtime.handle({
+    type: "queue_low",
+    uid: "42",
+    sessionId: 9,
+    currentTrack: { id: "s1", name: "Good Days", artist: "SZA" },
+  });
+
+  assert.equal(result.controlsPlayback, false);
+  assert.equal(result.programWindow?.candidateTasks[0]?.query, "SZA Good Days");
+  assert.ok(store.decisions.some((decision) => decision.decisionType === "program_window"));
+});
+
+test("shadow mode records program windows but still never controls playback", async () => {
+  const store = runtimeStore();
+  const programDirector = {
+    plan: async () =>
+      programWindow({
+        source: "deterministic_fallback",
+      }),
+  };
+
+  const runtime = new RadioAgentRuntime({
+    mode: "shadow",
+    store,
+    programDirector,
+    now: () => "2026-06-03T01:02:03.000Z",
+  });
+  const result = await runtime.handle({ type: "queue_low", uid: "42", sessionId: 9 });
+
+  assert.equal(result.controlsPlayback, false);
+  assert.equal(result.programWindow?.source, "deterministic_fallback");
+  assert.ok(store.decisions.some((decision) => decision.decisionType === "program_window"));
+});
+
+test("runtime plans on completed tracks only when the ready queue is under pressure", async () => {
+  const store = runtimeStore();
+  const plannedEventTypes: string[] = [];
+  const programDirector = {
+    plan: async (snapshot: { eventType: string }) => {
+      plannedEventTypes.push(snapshot.eventType);
+      return programWindow();
+    },
+  };
+  const runtime = new RadioAgentRuntime({
+    mode: "assisted",
+    store,
+    programDirector,
+    now: () => "2026-06-03T01:02:03.000Z",
+  });
+
+  const queueLowResult = await runtime.handle({
+    type: "track_completed",
+    uid: "42",
+    sessionId: 9,
+    queueLow: true,
+    currentTrack: { id: "s1", name: "Good Days", artist: "SZA" },
+    readyQueue: [{ id: "s2", name: "Pink + White", artist: "Frank Ocean" }],
+  });
+  const emptyQueueResult = await runtime.handle({
+    type: "track_completed",
+    uid: "42",
+    sessionId: 9,
+    currentTrack: { id: "s1", name: "Good Days", artist: "SZA" },
+    readyQueue: [],
+  });
+  const healthyQueueResult = await runtime.handle({
+    type: "track_completed",
+    uid: "42",
+    sessionId: 9,
+    currentTrack: { id: "s1", name: "Good Days", artist: "SZA" },
+    readyQueue: [{ id: "s2", name: "Pink + White", artist: "Frank Ocean" }],
+  });
+
+  assert.equal(queueLowResult.programWindow?.id, "window-1");
+  assert.equal(emptyQueueResult.programWindow?.id, "window-1");
+  assert.equal(healthyQueueResult.programWindow, undefined);
+  assert.deepEqual(plannedEventTypes, ["track_completed", "track_completed"]);
+});
+
+test("runtime keeps host decisions when no program director is configured", async () => {
+  const store = runtimeStore();
+  const runtime = new RadioAgentRuntime({
+    mode: "assisted",
+    store,
+    now: () => "2026-06-03T01:02:03.000Z",
+  });
+
+  const result = await runtime.handle({ type: "queue_low", uid: "42", sessionId: 9 });
+
+  assert.equal(result.controlsPlayback, false);
+  assert.equal(result.programWindow, undefined);
+  assert.ok(result.hostDecision);
+  assert.ok(store.decisions.some((decision) => decision.decisionType === "host"));
+});
+
+function programWindow(overrides: Partial<RadioAgentProgramWindow> = {}): RadioAgentProgramWindow {
+  return {
+    id: "window-1",
+    uid: "42",
+    sessionId: 9,
+    stationBrief: "Keep late-night R&B coherent.",
+    mainDirection: "late-night R&B",
+    allowedAdjacent: ["alt-R&B"],
+    bridgeBudget: 1,
+    disallowed: ["classical chamber music"],
+    returnRequirement: "Return to vocal R&B.",
+    candidateTasks: [{ query: "SZA Good Days", reason: "Known anchor.", style: "R&B", negativeConstraints: [] }],
+    hostIntent: { shouldSpeak: false, event: "silent", reason: "ordinary continuation", text: "" },
+    traceBasis: { profile: "SZA", now: "late_night", contract: "late-night R&B", eventType: "queue_low" },
+    source: "model",
+    createdAt: "2026-06-03T01:02:03.000Z",
+    ...overrides,
+  };
+}

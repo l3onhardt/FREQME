@@ -1,10 +1,12 @@
 import type { LibraryCensus, LibraryCensusResult } from "./libraryCensus.js";
+import { buildRadioAgentContextSnapshot } from "./agentContext.js";
 import {
   buildProgramContractMarkdown,
   buildStationNowMarkdown,
   buildUserProfileMarkdown,
 } from "./contextArtifacts.js";
 import { decideHostSpeech } from "./hostPolicy.js";
+import type { RadioAgentProgramDirector } from "./programDirector.js";
 import { distillTasteFacts, type TasteEvidenceItem } from "./tasteDistiller.js";
 import {
   normalizeRadioAgentEvent,
@@ -41,6 +43,7 @@ export interface RadioAgentRuntimeDeps {
   mode: RadioAgentMode;
   store: RadioAgentRuntimeStore;
   census?: Pick<LibraryCensus, "scan">;
+  programDirector?: Pick<RadioAgentProgramDirector, "plan">;
   libraryScanFreshnessMs?: number;
   now?: () => string;
 }
@@ -74,6 +77,7 @@ export class RadioAgentRuntime {
       this.refreshStationArtifacts(persistedEvent);
     }
 
+    const programWindow = shouldPlanProgramWindow(persistedEvent) ? await this.planProgramWindow(persistedEvent) : undefined;
     const hostDecision = this.decideHost(persistedEvent);
     this.saveDecision(event, "host", { ...hostDecision });
 
@@ -81,6 +85,7 @@ export class RadioAgentRuntime {
       controlsPlayback: false,
       event: persistedEvent,
       hostDecision,
+      programWindow,
     };
   }
 
@@ -325,6 +330,39 @@ export class RadioAgentRuntime {
     });
   }
 
+  private async planProgramWindow(event: RadioAgentEvent) {
+    if (!this.deps.programDirector || !event.uid) return undefined;
+
+    try {
+      const memories = [
+        ...this.deps.store.memories(event.uid, "taste_fact", 12),
+        ...this.deps.store.memories(event.uid, "taste_hypothesis", 12),
+      ];
+      const artifacts = {
+        "user_profile.md": this.deps.store.artifact(event.uid, "user_profile.md")?.content,
+        "station_now.md": this.deps.store.artifact(event.uid, "station_now.md")?.content,
+        "program_contract.md": this.deps.store.artifact(event.uid, "program_contract.md")?.content,
+      };
+      const currentTrack = extractTrack(event.payload.currentTrack) || extractTrack(event.payload.track);
+      const readyQueue = extractReadyQueue(event.payload.readyQueue);
+      const snapshot = buildRadioAgentContextSnapshot({
+        uid: event.uid,
+        sessionId: event.sessionId ?? null,
+        eventType: event.type,
+        artifacts,
+        recentEvents: this.deps.store.recentEvents(event.uid, event.sessionId ?? null, 20),
+        memories,
+        currentTrack,
+        readyQueue,
+      });
+      const window = await this.deps.programDirector.plan(snapshot);
+      this.saveDecision(event, "program_window", { window });
+      return window;
+    } catch {
+      return undefined;
+    }
+  }
+
   private saveDecision(event: RadioAgentEvent, decisionType: string, payload: Record<string, unknown>): void {
     this.deps.store.saveShadowDecision({
       id: this.nextDecisionId(decisionType),
@@ -363,6 +401,27 @@ function extractTrack(value: unknown): Track | null {
 
 function isTrack(value: Track | null): value is Track {
   return value !== null;
+}
+
+function extractReadyQueue(value: unknown): Track[] {
+  if (!Array.isArray(value)) return [];
+  return value.map(extractTrack).filter(isTrack);
+}
+
+function shouldPlanProgramWindow(event: RadioAgentEvent): boolean {
+  if (event.type === "queue_low") return true;
+  if (event.type !== "track_completed") return false;
+  if (event.payload.queueLow === true) return true;
+
+  const readyQueueCount = readyQueueCountFromPayload(event.payload);
+  return readyQueueCount === 0;
+}
+
+function readyQueueCountFromPayload(payload: Record<string, unknown>): number | null {
+  if (Array.isArray(payload.readyQueue)) return payload.readyQueue.length;
+  if (typeof payload.readyQueueCount === "number" && Number.isFinite(payload.readyQueueCount)) return payload.readyQueueCount;
+  if (typeof payload.readyQueueSize === "number" && Number.isFinite(payload.readyQueueSize)) return payload.readyQueueSize;
+  return null;
 }
 
 function stringValue(value: unknown): string {

@@ -144,6 +144,7 @@ export interface RadioAgentHandleResult {
   controlsPlayback: boolean;
   event: RadioAgentEvent;
   hostDecision?: RadioHostDecision;
+  programWindow?: RadioAgentProgramWindow;
 }
 
 export interface RadioAgentContextSnapshot {
