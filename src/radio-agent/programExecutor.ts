@@ -128,6 +128,9 @@ function primaryEntitiesForCandidate(
 
 function looksSpecificArtistTitlePair(query: string): boolean {
   if (!query) return false;
+  const explicit = explicitTrackShapeIsSpecific(query);
+  if (explicit !== null) return explicit;
+  if (hasExplicitTrackShape(query) && !looksUtilityDirection(query)) return true;
   if (looksSceneOrGenreDirection(query)) return false;
   if (/\s[-–—:]\s/u.test(query)) return true;
   if (/\bby\b/i.test(query)) return true;
@@ -136,6 +139,32 @@ function looksSpecificArtistTitlePair(query: string): boolean {
   if (asciiTokens.length < 2) return false;
   if (isAcronymArtistToken(asciiTokens[0] || "")) return true;
   return query.includes("+") && asciiTokens.length >= 4 && asciiTokens.slice(0, 2).every((token) => /^[A-Z0-9]/u.test(token));
+}
+
+function hasExplicitTrackShape(query: string): boolean {
+  return /\s[-–—:]\s/u.test(query) || /\bby\b/i.test(query);
+}
+
+function explicitTrackShapeIsSpecific(query: string): boolean | null {
+  const dashed = query.split(/\s[-鈥撯€?]\s/u).map((part) => part.trim()).filter(Boolean);
+  if (dashed.length >= 2) {
+    const left = dashed[0] || "";
+    const right = dashed.slice(1).join(" ");
+    return !(looksSceneOrGenreDirection(left) && looksSceneOrGenreDirection(right));
+  }
+
+  const byMatch = query.match(/^(.+?)\s+by\s+(.+)$/iu);
+  if (byMatch) {
+    const title = byMatch[1]?.trim() || "";
+    const artist = byMatch[2]?.trim() || "";
+    return Boolean(artist) && !(looksSceneOrGenreDirection(title) && looksSceneOrGenreDirection(artist));
+  }
+
+  return null;
+}
+
+function looksUtilityDirection(query: string): boolean {
+  return /\b(study|focus|sleep|playlist|mix|radio)\b/i.test(query);
 }
 
 function looksSceneOrGenreDirection(query: string): boolean {

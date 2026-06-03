@@ -250,12 +250,15 @@ test("program executor treats explicit artist-title shapes as specific tracks", 
       candidateTasks: [
         { query: "Frank Ocean - Pink + White", reason: "specific song", style: "alt-R&B", negativeConstraints: [] },
         { query: "Pink + White by Frank Ocean", reason: "specific song", style: "alt-R&B", negativeConstraints: [] },
+        { query: "Radiohead - Creep", reason: "specific song", style: "alt rock", negativeConstraints: [] },
+        { query: "Piano Man by Billy Joel", reason: "specific song", style: "piano rock", negativeConstraints: [] },
+        { query: "Sleep Token - The Summoning", reason: "specific song", style: "metal", negativeConstraints: [] },
       ],
     }),
   );
 
   assert.deepEqual(
     received.map((item) => item.type),
-    ["specific_track", "specific_track"],
+    ["specific_track", "specific_track", "specific_track", "specific_track", "specific_track"],
   );
 });
