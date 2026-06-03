@@ -1,5 +1,7 @@
 import dotenv from "dotenv";
 
+import type { RadioAgentMode } from "./radio-agent/types.js";
+
 dotenv.config();
 
 function intEnv(name: string, fallback: number): number {
@@ -9,9 +11,13 @@ function intEnv(name: string, fallback: number): number {
   return Number.isFinite(value) ? value : fallback;
 }
 
-function radioAgentModeEnv(): "shadow" | "assisted" | "active" {
-  const value = (process.env.RADIO_AGENT_MODE || "shadow").toLowerCase();
+export function parseRadioAgentMode(raw: string | undefined): RadioAgentMode {
+  const value = (raw || "shadow").toLowerCase();
   return value === "assisted" || value === "active" ? value : "shadow";
+}
+
+function radioAgentModeEnv(): RadioAgentMode {
+  return parseRadioAgentMode(process.env.RADIO_AGENT_MODE);
 }
 
 export const config = {

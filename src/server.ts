@@ -39,6 +39,7 @@ import { BoundaryGuard } from "./radio/boundaryGuard.js";
 import { HostNarrationLayer } from "./radio/hostNarrationLayer.js";
 import { LibraryCensus } from "./radio-agent/libraryCensus.js";
 import { RadioAgentRuntime } from "./radio-agent/radioAgentRuntime.js";
+import { tryQueueRadioAgentAssistedTrack } from "./radio-agent/assistedQueue.js";
 import { RadioAgentProgramDirector } from "./radio-agent/programDirector.js";
 import { RadioAgentProgramExecutor } from "./radio-agent/programExecutor.js";
 import {
@@ -655,46 +656,20 @@ async function handleRadioSocket(socket: WebSocketType): Promise<void> {
     }
   };
 
-  const tryRadioAgentAssistedQueue = async (): Promise<boolean> => {
-    if (config.radioAgentMode !== "assisted" && config.radioAgentMode !== "active") return false;
-
-    try {
-      const result = await radioAgent.handle({
-        type: "queue_low",
-        uid,
-        sessionId,
-        currentTrack: currentTrack ? trackInfo(currentTrack) : null,
-        readyQueue: queue.readyItems().map((item) => trackInfo(item.track)),
-      });
-      if (!result.programWindow) {
-        logRadioAgentAssistedFallback("program_window_missing");
-        return false;
-      }
-
-      const prepared = await radioAgentProgramExecutor.prepareFirstPlayable(result.programWindow);
-      if (!prepared) {
-        logRadioAgentAssistedFallback("program_executor_no_track");
-        return false;
-      }
-
-      try {
-        traceStore.save(prepared.decisionTrace);
-      } catch {
-        logRadioAgentAssistedFallback("trace_save_failed");
-        return false;
-      }
-
-      const ttsHash = prepared.segueText ? await synthesize(prepared.segueText).catch(() => "") : "";
-      queue.addReady(prepared.track, prepared.url, prepared.selectionReason, {
-        segueText: prepared.segueText,
-        ttsHash,
-      });
-      return true;
-    } catch {
-      logRadioAgentAssistedFallback("assisted_queue_failed");
-      return false;
-    }
-  };
+  const tryRadioAgentAssistedQueue = async (): Promise<boolean> =>
+    tryQueueRadioAgentAssistedTrack({
+      mode: config.radioAgentMode,
+      uid,
+      sessionId,
+      currentTrack: currentTrack ? trackInfo(currentTrack) : null,
+      readyQueue: queue.readyItems().map((item) => trackInfo(item.track)),
+      radioAgent,
+      executor: radioAgentProgramExecutor,
+      traceStore,
+      queue,
+      synthesize,
+      logFallback: logRadioAgentAssistedFallback,
+    });
 
   const fillQueue = async (maxItems?: number, allowProgramBreak = true): Promise<void> => {
     let added = 0;

@@ -17,6 +17,7 @@ test("server wires assisted radio agent planning before legacy station director 
 
   assert.match(source, /RadioAgentProgramDirector/);
   assert.match(source, /RadioAgentProgramExecutor/);
+  assert.match(source, /tryQueueRadioAgentAssistedTrack/);
   assert.match(source, /config\.radioAgentMode/);
   assert.match(source, /tryRadioAgentAssistedQueue/);
   assert.match(source, /stationDirector\.pickNext/);
@@ -25,10 +26,14 @@ test("server wires assisted radio agent planning before legacy station director 
 
 test("server keeps assisted fallback logging best effort", () => {
   const source = fs.readFileSync("src/server.ts", "utf8");
+  const assistedQueueSource = fs.readFileSync("src/radio-agent/assistedQueue.ts", "utf8");
 
   assert.match(source, /logRadioAgentAssistedFallback/);
   assert.match(source, /try\s*{\s*store\.logPlaybackEvent\("radio_agent_assisted_fallback"/);
   assert.match(source, /catch\s*{\s*}\s*};/);
-  assert.match(source, /program_window_missing/);
-  assert.match(source, /program_executor_no_track/);
+  assert.match(source, /logFallback:\s*logRadioAgentAssistedFallback/);
+  assert.match(assistedQueueSource, /program_window_missing/);
+  assert.match(assistedQueueSource, /program_executor_no_track/);
+  assert.match(assistedQueueSource, /trace_save_failed/);
+  assert.match(assistedQueueSource, /assisted_queue_failed/);
 });

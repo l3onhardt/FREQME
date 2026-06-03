@@ -1,10 +1,13 @@
 import assert from "node:assert/strict";
-import fs from "node:fs";
 import test from "node:test";
 
-test("config exposes radio agent mode from environment", () => {
-  const source = fs.readFileSync("src/config.ts", "utf8");
+import { parseRadioAgentMode } from "../../src/config.js";
 
-  assert.match(source, /RADIO_AGENT_MODE/);
-  assert.match(source, /radioAgentMode/);
+test("config parses radio agent mode from environment safely", () => {
+  assert.equal(parseRadioAgentMode(undefined), "shadow");
+  assert.equal(parseRadioAgentMode(""), "shadow");
+  assert.equal(parseRadioAgentMode("assisted"), "assisted");
+  assert.equal(parseRadioAgentMode("ACTIVE"), "active");
+  assert.equal(parseRadioAgentMode("shadow"), "shadow");
+  assert.equal(parseRadioAgentMode("anything-else"), "shadow");
 });
