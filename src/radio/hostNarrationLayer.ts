@@ -41,17 +41,26 @@ function isVagueDirection(value: string): boolean {
   return /^(继续|延续)(保持|当前|刚才|这个)/u.test(normalized);
 }
 
+function trackLabel(track: Track): string {
+  const artist = compactText(track.artist || "", 40);
+  const name = compactText(track.name || "", 80);
+  if (artist && name) return `${artist} 的《${name}》`;
+  if (name) return `《${name}》`;
+  if (artist) return artist;
+  return "这首歌";
+}
+
 export class HostNarrationLayer {
   async forQueueItem(args: QueueNarrationArgs): Promise<QueueNarrationResult> {
     const status = args.boundaryDecision?.status;
     if (status === "accept_as_bridge") {
       const direction = listenerFacingDirection(args.stationContract);
-      const returnLine = direction ? `下一首我会往 ${direction} 收回来。` : "后面我会把频率慢慢收回来。";
+      const returnLine = direction ? `下一首我会带回 ${direction}。` : "后面我会把电台稳稳接住。";
       return {
         shouldSpeak: true,
         event: "bridge_entered",
         text: compactText(
-          `这里用 ${args.track.artist} 的《${args.track.name}》做一小段过渡，留一点夜里的空间，${returnLine}`,
+          `这里先用 ${trackLabel(args.track)}做一个短过渡，${returnLine}`,
           180,
         ),
       };
@@ -60,8 +69,8 @@ export class HostNarrationLayer {
     if (status === "accept_as_adjacent" && args.recentNarrationCount <= 0) {
       const direction = listenerFacingDirection(args.stationContract);
       const text = direction
-        ? `这首先把质感往旁边轻轻推一点，后面我会把它收回到 ${direction}。`
-        : "这首会先往旁边探一下，借一点空间感，后面我会把频率慢慢收回来。";
+        ? `这首先用 ${trackLabel(args.track)}换一下呼吸，后面我会带回 ${direction}。`
+        : `我先用 ${trackLabel(args.track)}接住这一段，让电台稳稳往前走。`;
       return {
         shouldSpeak: true,
         event: "direction_changed",

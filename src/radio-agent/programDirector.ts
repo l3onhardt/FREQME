@@ -132,7 +132,7 @@ function buildFallbackWindow(context: RadioAgentContextSnapshot, createdAt: stri
     disallowed: extractDisallowed(context.contract),
     returnRequirement: "Return to the main radio mood after one adjacent bridge.",
     candidateTasks,
-    hostIntent: silentHostIntent("fallback"),
+    hostIntent: fallbackHostIntent(context),
     traceBasis: traceBasisFromContext(context),
     source: "deterministic_fallback",
     createdAt,
@@ -201,6 +201,43 @@ function sanitizeHostText(text: string): string {
 
 function silentHostIntent(reason: string): RadioAgentHostIntent {
   return { shouldSpeak: false, event: "silent", reason, text: "" };
+}
+
+function fallbackHostIntent(context: RadioAgentContextSnapshot): RadioAgentHostIntent {
+  if (!shouldFallbackHostSpeak(context)) return silentHostIntent("fallback_low_interruption");
+
+  const anchor = fallbackHostAnchor(context);
+  const text = sanitizeHostText(
+    anchor
+      ? `我先沿着 ${anchor} 这条线索往前接一首，把电台频率稳住。`
+      : "我先接一首稳一点的，把电台频率续上。",
+  );
+  if (!text) return silentHostIntent("fallback_host_text_filtered");
+
+  return {
+    shouldSpeak: true,
+    event: "return_to_contract",
+    reason: "first queue pressure continuity handoff",
+    text,
+  };
+}
+
+function shouldFallbackHostSpeak(context: RadioAgentContextSnapshot): boolean {
+  if (context.eventType !== "queue_low" && context.eventType !== "track_completed") return false;
+  return !hasReadyAgentProgramItem(context);
+}
+
+function hasReadyAgentProgramItem(context: RadioAgentContextSnapshot): boolean {
+  return context.readyQueue.some((track) => track.selectionReason?.type === "radio_agent_program");
+}
+
+function fallbackHostAnchor(context: RadioAgentContextSnapshot): string {
+  return (
+    memoryAnchor(context.memoryFacts[0]) ||
+    context.currentTrack?.artist ||
+    context.readyQueue[0]?.artist ||
+    contractAnchor(context.contract)
+  );
 }
 
 function traceBasisFromContext(context: RadioAgentContextSnapshot): RadioAgentProgramWindow["traceBasis"] {

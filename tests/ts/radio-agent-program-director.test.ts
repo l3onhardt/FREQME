@@ -174,6 +174,66 @@ test("program director supports deterministic planning when no model is configur
   assertFallbackWindow(window);
 });
 
+test("fallback planning speaks once with a concrete continuity handoff on first queue pressure", async () => {
+  const director = new RadioAgentProgramDirector(null, () => NOW);
+
+  const window = await director.plan(contextSnapshot());
+
+  assert.equal(window.hostIntent.shouldSpeak, true);
+  assert.equal(window.hostIntent.event, "return_to_contract");
+  assert.match(window.hostIntent.text, /SZA/);
+  assert.doesNotMatch(window.hostIntent.text, listenerUnsafeProgramTerms);
+  assert.doesNotMatch(window.hostIntent.text, /旁边|质感/);
+});
+
+test("fallback planning still speaks when repeated queue pressure has not produced an agent item yet", async () => {
+  const director = new RadioAgentProgramDirector(null, () => NOW);
+
+  const window = await director.plan({
+    ...contextSnapshot(),
+    recentEvents: [
+      ...contextSnapshot().recentEvents,
+      {
+        uid: "42",
+        sessionId: 7,
+        type: "queue_low",
+        priority: "warm",
+        payload: { readyQueueSize: 0 },
+        createdAt: "2026-06-03T01:00:30.000Z",
+      },
+    ],
+    readyQueue: [],
+  });
+
+  assert.equal(window.hostIntent.shouldSpeak, true);
+  assert.equal(window.hostIntent.event, "return_to_contract");
+  assert.match(window.hostIntent.text, /SZA/);
+});
+
+test("fallback planning stays quiet once an agent-program item is already ready", async () => {
+  const director = new RadioAgentProgramDirector(null, () => NOW);
+
+  const window = await director.plan({
+    ...contextSnapshot(),
+    readyQueue: [
+      {
+        id: "agent-1",
+        name: "Breakaway",
+        artist: "Martin Garrix",
+        selectionReason: {
+          type: "radio_agent_program",
+          text: "Agent-owned program item.",
+          traceId: "trace-1",
+        },
+      },
+    ],
+  });
+
+  assert.equal(window.hostIntent.shouldSpeak, false);
+  assert.equal(window.hostIntent.event, "silent");
+  assert.equal(window.hostIntent.text, "");
+});
+
 test("fallback planning uses the current contract when no playback or memory anchors exist", async () => {
   const director = new RadioAgentProgramDirector(null, () => NOW);
 
@@ -329,9 +389,10 @@ function assertFallbackWindow(window: RadioAgentProgramWindow): void {
   }
   assert.ok(window.candidateTasks.every((task) => typeof task.style === "string"));
   assert.ok(window.candidateTasks.every((task) => !/study|sleep|playlist|timer|white noise/i.test(task.query)));
-  assert.equal(window.hostIntent.shouldSpeak, false);
-  assert.equal(window.hostIntent.event, "silent");
-  assert.equal(window.hostIntent.text, "");
+  assert.equal(window.hostIntent.shouldSpeak, true);
+  assert.equal(window.hostIntent.event, "return_to_contract");
+  assert.match(window.hostIntent.text, /SZA/);
+  assert.doesNotMatch(window.hostIntent.text, listenerUnsafeProgramTerms);
 }
 
 function traceBasisFromContext(context: RadioAgentContextSnapshot): RadioAgentProgramWindow["traceBasis"] {

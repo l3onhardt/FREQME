@@ -32,6 +32,9 @@ const vagueContinuationContract: StationContract = {
 const internalTerms =
   /profile|algorithm|model|candidate|trace|JSON|verification|boundary|contract|边界|合约|候选|画像|算法|模型|验证|轨迹/i;
 
+const awkwardNarrationTerms = /旁边|质感|空间感/;
+const awkwardChineseSpacing = /\u300b\s+[\u4e00-\u9fff]/u;
+
 test("narrates bridge entry in listener-facing language", async () => {
   const layer = new HostNarrationLayer();
   const boundary: BoundaryDecision = { status: "accept_as_bridge", reason: "Allowed bridge", contractId: contract.id };
@@ -77,6 +80,25 @@ test("narrates adjacent moves sparingly", async () => {
   assert.equal(result.event, "direction_changed");
   assert.match(result.text, /late-night R&B/i);
   assert.doesNotMatch(result.text, internalTerms);
+  assert.doesNotMatch(result.text, awkwardNarrationTerms);
+});
+
+test("narrates adjacent moves naturally when no concrete direction is available", async () => {
+  const layer = new HostNarrationLayer();
+  const result = await layer.forQueueItem({
+    stationContract: null,
+    boundaryDecision: { status: "accept_as_adjacent", reason: "nearby texture", contractId: contract.id },
+    track: { id: "adjacent-empty-direction", name: "Says", artist: "Nils Frahm" },
+    reason: "nearby texture",
+    recentNarrationCount: 0,
+  });
+
+  assert.equal(result.shouldSpeak, true);
+  assert.equal(result.event, "direction_changed");
+  assert.match(result.text, /Nils Frahm|Says/);
+  assert.doesNotMatch(result.text, internalTerms);
+  assert.doesNotMatch(result.text, awkwardNarrationTerms);
+  assert.doesNotMatch(result.text, awkwardChineseSpacing);
 });
 
 test("does not read vague continuation text aloud as the station direction", async () => {

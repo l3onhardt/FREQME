@@ -28,6 +28,7 @@ test("server wires assisted radio agent planning before legacy station director 
   assert.ok(fillQueueStart >= 0);
   assert.ok(assistedCall > fillQueueStart);
   assert.ok(legacyPickNextCall > assistedCall);
+  assert.match(source, /readyQueue:\s*queue\.readyItems\(\)\.map\(\(item\)\s*=>\s*\(\{[\s\S]*selectionReason:\s*item\.selectionReason/);
 });
 
 test("server keeps assisted fallback logging best effort", () => {

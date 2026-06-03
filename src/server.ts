@@ -662,7 +662,10 @@ async function handleRadioSocket(socket: WebSocketType): Promise<void> {
       uid,
       sessionId,
       currentTrack: currentTrack ? trackInfo(currentTrack) : null,
-      readyQueue: queue.readyItems().map((item) => trackInfo(item.track)),
+      readyQueue: queue.readyItems().map((item) => ({
+        ...trackInfo(item.track),
+        selectionReason: item.selectionReason,
+      })),
       radioAgent,
       executor: radioAgentProgramExecutor,
       traceStore,
