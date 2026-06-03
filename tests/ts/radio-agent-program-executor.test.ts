@@ -229,6 +229,38 @@ test("program executor treats scene and genre directions as non-specific music t
   );
 });
 
+test("program executor keeps typographic separator style directions non-specific", async () => {
+  const received: Array<{ query: string; type: MusicTask["type"] }> = [];
+  const verifier = {
+    verify: async (task: MusicTask): Promise<SearchVerification> => {
+      received.push({ query: task.searchGoals[0] ?? "", type: task.type });
+      return {
+        status: "not_found",
+        verification: {},
+        fallbackCandidates: [],
+        recoveryOptions: [],
+        failureReason: "classification sample",
+      };
+    },
+  };
+  const executor = new RadioAgentProgramExecutor(verifier as any, () => "trace-6");
+
+  await executor.prepareFirstPlayable(
+    programWindow({
+      candidateTasks: [
+        { query: "late-night R&B \u2013 mellow alt-R&B", reason: "style direction", style: "alt-R&B", negativeConstraints: [] },
+        { query: "late-night R&B \u2014 mellow alt-R&B", reason: "style direction", style: "alt-R&B", negativeConstraints: [] },
+        { query: "late-night R&B : mellow alt-R&B", reason: "style direction", style: "alt-R&B", negativeConstraints: [] },
+      ],
+    }),
+  );
+
+  assert.deepEqual(
+    received.map((item) => item.type),
+    ["scene_genre_direction", "scene_genre_direction", "scene_genre_direction"],
+  );
+});
+
 test("program executor treats explicit artist-title shapes as specific tracks", async () => {
   const received: Array<{ query: string; type: MusicTask["type"] }> = [];
   const verifier = {

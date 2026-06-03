@@ -9,6 +9,7 @@ export interface ProgramVerifier {
 
 const MAX_PROGRAM_CANDIDATES = 5;
 const INTERNAL_LISTENER_TERMS = /\b(model|json|candidate|trace|prompt|verification|shadow\s+mode|tool\s+call)\b/i;
+const TRACK_SEPARATOR = /\s[-\u2013\u2014:]\s/u;
 const GENERIC_REASON = "Selected for the current radio program.";
 
 export class RadioAgentProgramExecutor {
@@ -142,14 +143,14 @@ function looksSpecificArtistTitlePair(query: string): boolean {
 }
 
 function hasExplicitTrackShape(query: string): boolean {
-  return /\s[-–—:]\s/u.test(query) || /\bby\b/i.test(query);
+  return TRACK_SEPARATOR.test(query) || /\bby\b/i.test(query);
 }
 
 function explicitTrackShapeIsSpecific(query: string): boolean | null {
-  const dashed = query.split(/\s[-鈥撯€?]\s/u).map((part) => part.trim()).filter(Boolean);
-  if (dashed.length >= 2) {
-    const left = dashed[0] || "";
-    const right = dashed.slice(1).join(" ");
+  const separated = query.split(TRACK_SEPARATOR).map((part) => part.trim()).filter(Boolean);
+  if (separated.length >= 2) {
+    const left = separated[0] || "";
+    const right = separated.slice(1).join(" ");
     return !(looksSceneOrGenreDirection(left) && looksSceneOrGenreDirection(right));
   }
 
@@ -207,8 +208,8 @@ function isAcronymArtistToken(token: string): boolean {
 }
 
 function artistHintForQuery(query: string): string {
-  const dashed = query.split(/\s[-–—:]\s/u);
-  if (dashed.length >= 2) return compactText(dashed[0], 80);
+  const separated = query.split(TRACK_SEPARATOR);
+  if (separated.length >= 2) return compactText(separated[0], 80);
   const byMatch = query.match(/^(.+?)\s+by\s+(.+)$/iu);
   if (byMatch) return compactText(byMatch[2], 80);
   const tokens = query.split(/\s+/u).filter(Boolean);
@@ -216,8 +217,8 @@ function artistHintForQuery(query: string): string {
 }
 
 function workHintForQuery(query: string): string {
-  const dashed = query.split(/\s[-–—:]\s/u);
-  if (dashed.length >= 2) return compactText(dashed.slice(1).join(" "), 120);
+  const separated = query.split(TRACK_SEPARATOR);
+  if (separated.length >= 2) return compactText(separated.slice(1).join(" "), 120);
   const byMatch = query.match(/^(.+?)\s+by\s+(.+)$/iu);
   if (byMatch) return compactText(byMatch[1], 120);
   const tokens = query.split(/\s+/u).filter(Boolean);
