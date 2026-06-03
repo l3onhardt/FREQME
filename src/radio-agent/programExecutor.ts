@@ -128,12 +128,53 @@ function primaryEntitiesForCandidate(
 
 function looksSpecificArtistTitlePair(query: string): boolean {
   if (!query) return false;
+  if (looksSceneOrGenreDirection(query)) return false;
   if (/\s[-–—:]\s/u.test(query)) return true;
   if (/\bby\b/i.test(query)) return true;
   if (/\b(playlist|radio|mix|sleep|study|focus|genre|mood|vibe|direction|discovery)\b/i.test(query)) return false;
   const asciiTokens = query.match(/[A-Za-z0-9][A-Za-z0-9'.+&-]*/gu) || [];
   if (asciiTokens.length < 2) return false;
-  return /^[A-Z0-9]/u.test(asciiTokens[0] || "") && /^[A-Z0-9]/u.test(asciiTokens[1] || "");
+  if (isAcronymArtistToken(asciiTokens[0] || "")) return true;
+  return query.includes("+") && asciiTokens.length >= 4 && asciiTokens.slice(0, 2).every((token) => /^[A-Z0-9]/u.test(token));
+}
+
+function looksSceneOrGenreDirection(query: string): boolean {
+  const normalized = query.toLowerCase();
+  const directionTerms = [
+    "ambient",
+    "alt r&b",
+    "alt-r&b",
+    "city pop",
+    "classical",
+    "discovery",
+    "edm",
+    "electronic",
+    "focus music",
+    "genre",
+    "jazz",
+    "late night",
+    "late-night",
+    "mellow",
+    "mix",
+    "mood",
+    "neo soul",
+    "piano",
+    "playlist",
+    "r&b",
+    "radio",
+    "scene",
+    "sleep",
+    "soul",
+    "study",
+    "vibe",
+    "vocal",
+  ];
+  return directionTerms.some((term) => normalized.includes(term));
+}
+
+function isAcronymArtistToken(token: string): boolean {
+  const normalized = token.replace(/[^A-Za-z0-9]/g, "");
+  return normalized.length >= 2 && normalized === normalized.toUpperCase();
 }
 
 function artistHintForQuery(query: string): string {
