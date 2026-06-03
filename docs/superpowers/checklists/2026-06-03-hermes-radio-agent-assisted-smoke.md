@@ -1,0 +1,23 @@
+# Hermes Radio Agent Assisted Smoke
+
+- [ ] Start from `C:\Users\lacr1\Desktop\AI音乐\.worktrees\hermes-radio-agent-service`.
+- [ ] Use the main project data and env.
+- [ ] Set `DATA_DIR=C:\Users\lacr1\Desktop\AI音乐\data`.
+- [ ] Set `RADIO_DB_PATH=C:\Users\lacr1\Desktop\AI音乐\data\freqme.db`.
+- [ ] Set `NETEASE_COOKIE_PATH=C:\Users\lacr1\Desktop\AI音乐\data\netease-cookie.json`.
+- [ ] Set `RADIO_AGENT_MODE=assisted`.
+- [ ] Start the TypeScript backend on `http://127.0.0.1:8000/`.
+- [ ] Open the app and restore/login as the saved NetEase user.
+- [ ] Confirm first music starts quickly without waiting for long agent planning.
+- [ ] Confirm `/api/radio/agent/status?uid=<uid>` reports mode `assisted`.
+- [ ] Confirm status artifacts include durable user/profile/station context when available.
+- [ ] Let the queue drain or skip until `queue_low` is mirrored.
+- [ ] Confirm a `program_window` decision appears in recent agent decisions.
+- [ ] Confirm a queued track has selection reason type `radio_agent_program` when assisted planning succeeds.
+- [ ] Confirm playback continues through legacy fallback when assisted planning fails.
+- [ ] Confirm fallback cases log `radio_agent_assisted_fallback` with a clear reason.
+- [ ] Confirm any host line is short, natural, and contains no internal terms.
+- [ ] Ask "why this song?"
+- [ ] Confirm the answer uses the agent trace or falls back gracefully.
+- [ ] Restart the server.
+- [ ] Confirm durable profile artifacts remain available after restart.
