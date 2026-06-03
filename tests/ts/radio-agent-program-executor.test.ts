@@ -5,7 +5,8 @@ import { RadioAgentProgramExecutor } from "../../src/radio-agent/programExecutor
 import type { RadioAgentProgramWindow } from "../../src/radio-agent/types.js";
 import type { MusicTask, SearchVerification } from "../../src/types.js";
 
-const internalTerms = /candidate|trace|verification|model|JSON|prompt|tool call/i;
+const internalTerms =
+  /candidate|trace|verification|model|JSON|prompt|tool call|deterministic|radio memory|current (?:station )?contract|station contract|model-selected|model selected|listener has|library evidence|playlist titles repeatedly/i;
 
 function programWindow(overrides: Partial<RadioAgentProgramWindow> = {}): RadioAgentProgramWindow {
   return {
@@ -134,6 +135,39 @@ test("program executor leaves segue text empty when host intent should not speak
 
   assert.equal(prepared?.segueText, "");
   assert.equal(prepared?.decisionTrace.hostText, "");
+});
+
+test("program executor does not expose diagnostic fallback wording in listener-facing reasons", async () => {
+  const verifier = {
+    verify: async (): Promise<SearchVerification> => ({
+      status: "verified",
+      selectedSong: { id: "s3", name: "Breakaway", artist: "Martin Garrix" },
+      url: "/api/radio/audio/s3",
+      verification: { confidence: 0.8, versionNote: "matched" },
+      fallbackCandidates: [],
+      recoveryOptions: [],
+      usedQuery: "Martin Garrix",
+    }),
+  };
+  const executor = new RadioAgentProgramExecutor(verifier as any, () => "trace-diagnostic");
+
+  const prepared = await executor.prepareFirstPlayable(
+    programWindow({
+      stationBrief: "Listener has repeated library evidence for Anyma. Listener has repeated library evidence for Innellea.",
+      mainDirection: "Continue from Anyma while respecting the current station contract.",
+      candidateTasks: [
+        {
+          query: "Martin Garrix",
+          reason: "Deterministic anchor from radio memory or current contract.",
+          style: "melodic electronic",
+          negativeConstraints: [],
+        },
+      ],
+    }),
+  );
+
+  assert.doesNotMatch(prepared?.selectionReason.text ?? "", internalTerms);
+  assert.doesNotMatch(prepared?.decisionTrace.reason ?? "", internalTerms);
 });
 
 test("program executor tries later candidates until the first playable track verifies", async () => {

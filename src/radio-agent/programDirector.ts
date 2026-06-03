@@ -27,7 +27,9 @@ const PROGRAM_DIRECTOR_TIMEOUT_MS = 14000;
 const PROGRAM_DIRECTOR_SYSTEM =
   "You are FREQME's personal AI radio program director. Return only valid JSON. Never mention models, prompts, traces, verification, tool calls, or internal systems.";
 const DEFAULT_FALLBACK_QUERY = "warm vocal radio discovery";
-const INTERNAL_HOST_TERMS = /\b(model|json|candidate|trace|prompt|verification|shadow mode|tool call)\b/i;
+const INTERNAL_HOST_TERMS =
+  /\b(model|json|candidate|trace|prompt|verification|shadow mode|tool call|deterministic|contract)\b/i;
+const RAW_MEMORY_EVIDENCE_TERMS = /listener has|library evidence|playlist titles repeatedly/i;
 const RAW_COMMAND_QUERY = /^\s*(please\s+)?(play|put on|queue|find|search|give me|can you|could you|i want|i need)\b/i;
 const UTILITY_AUDIO_QUERY = /\b(playlist|study|studying|sleep|lofi|lo-fi|white noise|brown noise|pink noise|rain sounds|timer|meditation|focus music|ambient sounds)\b/i;
 const HOST_EVENTS: RadioAgentHostIntent["event"][] = [
@@ -128,7 +130,7 @@ function buildFallbackWindow(context: RadioAgentContextSnapshot, createdAt: stri
     allowedAdjacent: [],
     bridgeBudget: 1,
     disallowed: extractDisallowed(context.contract),
-    returnRequirement: "Return to the current station contract after one adjacent bridge.",
+    returnRequirement: "Return to the main radio mood after one adjacent bridge.",
     candidateTasks,
     hostIntent: silentHostIntent("fallback"),
     traceBasis: traceBasisFromContext(context),
@@ -151,7 +153,7 @@ function fallbackCandidateTasks(context: RadioAgentContextSnapshot): RadioAgentC
   const uniqueAnchors = Array.from(new Set(anchors));
   const tasks = uniqueAnchors.map((anchor) => ({
     query: anchor,
-    reason: "Deterministic anchor from radio memory or current contract.",
+    reason: "This stays close to known taste while keeping the current radio mood coherent.",
     style: styleFromContract(context.contract),
     negativeConstraints: extractDisallowed(context.contract),
   }));
@@ -163,7 +165,7 @@ function toCandidateTask(value: unknown): RadioAgentCandidateTask | null {
   if (!isRecord(value)) return null;
   const task: RadioAgentCandidateTask = {
     query: stringValue(valueFor(value, "query")),
-    reason: stringValue(valueFor(value, "reason")) || "Model-selected radio direction.",
+    reason: stringValue(valueFor(value, "reason")) || "This fits the current radio direction.",
     style: stringValue(valueFor(value, "style")),
     negativeConstraints: stringArray(valueFor(value, "negativeConstraints")),
   };
@@ -231,12 +233,12 @@ function toSnakeCase(value: string): string {
 
 function fallbackStationBrief(context: RadioAgentContextSnapshot): string {
   const contractGoal = firstContractLine(context.contract, "station_goal");
-  return contractGoal || "Keep the current personal radio session coherent.";
+  return listenerFacingGoal(contractGoal, context.memoryFacts) || "Keep the current personal radio session coherent.";
 }
 
 function fallbackMainDirection(context: RadioAgentContextSnapshot): string {
   const anchor = memoryAnchor(context.memoryFacts[0]) || context.currentTrack?.artist || context.currentTrack?.name;
-  return anchor ? `Continue from ${anchor} while respecting the current station contract.` : "Continue the current station contract.";
+  return anchor ? `Stay close to ${anchor} and keep the current radio mood coherent.` : "Keep the current radio mood coherent.";
 }
 
 function firstContractLine(contract: string, key: string): string {
@@ -252,11 +254,13 @@ function extractDisallowed(contract: string): string[] {
 
 function styleFromContract(contract: string): string {
   const goal = firstContractLine(contract, "station_goal");
-  return goal || "";
+  return RAW_MEMORY_EVIDENCE_TERMS.test(goal) ? "" : goal;
 }
 
 function contractAnchor(contract: string): string {
-  return firstContractLine(contract, "station_goal");
+  const goal = firstContractLine(contract, "station_goal");
+  if (!RAW_MEMORY_EVIDENCE_TERMS.test(goal)) return goal;
+  return evidenceAnchorsFromText(goal)[0] ?? "";
 }
 
 function memoryAnchor(memory: RadioAgentMemory | undefined): string {
@@ -265,6 +269,35 @@ function memoryAnchor(memory: RadioAgentMemory | undefined): string {
   if (keyed.trim()) return keyed.trim();
   const artistMatch = memory.value.match(/\bfor\s+([A-Z][A-Za-z0-9 .+'&-]+)/);
   return artistMatch?.[1]?.replace(/\.$/, "").trim() ?? "";
+}
+
+function listenerFacingGoal(goal: string, memories: RadioAgentMemory[]): string {
+  const compact = goal.replace(/\s+/g, " ").trim();
+  if (!compact) return "";
+  if (!RAW_MEMORY_EVIDENCE_TERMS.test(compact)) return compact;
+
+  const anchors = Array.from(new Set([...evidenceAnchorsFromText(compact), ...memories.map(memoryAnchor)].filter(Boolean))).slice(0, 3);
+  if (!anchors.length) return "Keep the current personal radio session coherent.";
+  return `Keep the radio close to familiar anchors like ${humanList(anchors)}.`;
+}
+
+function evidenceAnchorsFromText(text: string): string[] {
+  const anchors: string[] = [];
+  for (const match of text.matchAll(/\b(?:for|from)\s+([^.;]+)/gi)) {
+    const anchor = match[1]?.trim();
+    if (anchor) anchors.push(anchor);
+  }
+  for (const match of text.matchAll(/\b(?:mention|suggest)\s+([^.;]+)/gi)) {
+    const anchor = match[1]?.trim();
+    if (anchor) anchors.push(anchor);
+  }
+  return anchors;
+}
+
+function humanList(items: string[]): string {
+  const unique = Array.from(new Set(items.map((item) => item.trim()).filter(Boolean)));
+  if (unique.length <= 2) return unique.join(" and ");
+  return `${unique.slice(0, -1).join(", ")} and ${unique[unique.length - 1]}`;
 }
 
 function formatMemory(memory: RadioAgentMemory): string {

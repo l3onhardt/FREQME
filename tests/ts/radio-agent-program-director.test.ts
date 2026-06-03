@@ -5,6 +5,8 @@ import { RadioAgentProgramDirector, type ProgramPlanningModel } from "../../src/
 import type { RadioAgentContextSnapshot, RadioAgentMemory, RadioAgentProgramWindow } from "../../src/radio-agent/types.js";
 
 const NOW = "2026-06-03T01:02:03.000Z";
+const listenerUnsafeProgramTerms =
+  /deterministic|radio memory|current (?:station )?contract|station contract|model-selected|model selected|candidate|trace|verification|prompt|tool call|listener has|library evidence|playlist titles repeatedly/i;
 
 test("model JSON planning creates an agent-owned radio window from compact context", async () => {
   const prompts: string[] = [];
@@ -190,6 +192,34 @@ test("fallback planning uses the current contract when no playback or memory anc
   assert.ok(window.candidateTasks.every((task) => typeof task.style === "string"));
 });
 
+test("fallback planning rewrites raw memory-evidence station goals into listener-facing language", async () => {
+  const director = new RadioAgentProgramDirector(null, () => NOW);
+
+  const window = await director.plan({
+    ...contextSnapshot(),
+    contract: "# Program Contract\nstation_goal: Listener has repeated library evidence for Anyma. Listener has repeated library evidence for Innellea.",
+    memoryFacts: [
+      {
+        uid: "42",
+        key: "artist:Anyma",
+        kind: "taste_fact",
+        value: "Listener has repeated library evidence for Anyma.",
+        confidence: 0.91,
+        evidenceCount: 6,
+        evidenceRefs: ["track:anyma-1"],
+        updatedAt: "2026-06-03T01:00:00.000Z",
+      },
+    ],
+  });
+
+  assert.match(window.stationBrief, /Anyma/i);
+  assert.doesNotMatch(window.stationBrief, listenerUnsafeProgramTerms);
+  assert.doesNotMatch(window.mainDirection, listenerUnsafeProgramTerms);
+  for (const task of window.candidateTasks) {
+    assert.doesNotMatch(task.reason, listenerUnsafeProgramTerms);
+  }
+});
+
 test("fallback planning still produces a safe candidate when all anchors are missing", async () => {
   const director = new RadioAgentProgramDirector(null, () => NOW);
 
@@ -292,6 +322,11 @@ function assertFallbackWindow(window: RadioAgentProgramWindow): void {
   assert.match(window.candidateTasks[0]?.query ?? "", /SZA/i);
   assert.match(window.candidateTasks[1]?.query ?? "", /Frank Ocean/i);
   assert.ok(window.candidateTasks.every((task) => task.reason.length > 0));
+  assert.doesNotMatch(window.mainDirection, listenerUnsafeProgramTerms);
+  assert.doesNotMatch(window.returnRequirement, listenerUnsafeProgramTerms);
+  for (const task of window.candidateTasks) {
+    assert.doesNotMatch(task.reason, listenerUnsafeProgramTerms);
+  }
   assert.ok(window.candidateTasks.every((task) => typeof task.style === "string"));
   assert.ok(window.candidateTasks.every((task) => !/study|sleep|playlist|timer|white noise/i.test(task.query)));
   assert.equal(window.hostIntent.shouldSpeak, false);

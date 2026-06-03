@@ -8,7 +8,8 @@ export interface ProgramVerifier {
 }
 
 const MAX_PROGRAM_CANDIDATES = 5;
-const INTERNAL_LISTENER_TERMS = /\b(model|json|candidate|trace|prompt|verification|shadow\s+mode|tool\s+call)\b/i;
+const INTERNAL_LISTENER_TERMS =
+  /\b(model|json|candidate|trace|prompt|verification|shadow\s+mode|tool\s+call|deterministic|contract)\b|radio memory|listener has|library evidence|playlist titles repeatedly/i;
 const TRACK_SEPARATOR = /\s[-\u2013\u2014:]\s/u;
 const GENERIC_REASON = "Selected for the current radio program.";
 

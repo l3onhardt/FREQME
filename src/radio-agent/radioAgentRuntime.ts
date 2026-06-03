@@ -436,14 +436,43 @@ function listenerStateForEvent(event: RadioAgentEvent): string {
 }
 
 function stationGoalFromMemory(facts: RadioAgentMemory[], localTimeBlock: string): string {
-  if (!facts.length) return `Build a coherent ${localTimeBlock || "current"} radio session while profile confidence warms.`;
-  return facts
-    .slice(0, 3)
-    .map((fact) => fact.value)
-    .join(" ");
+  const anchors = facts.slice(0, 3).map(memoryLabel).filter(Boolean);
+  if (!anchors.length) return `Build a coherent ${localTimeBlock || "current"} radio session while profile confidence warms.`;
+  return `Keep the radio close to familiar anchors like ${humanList(anchors)} while shaping a coherent ${
+    localTimeBlock || "current"
+  } session.`;
 }
 
 function allowedMovesFromMemory(facts: RadioAgentMemory[], hypotheses: RadioAgentMemory[]): string[] {
-  const moves = [...facts.slice(0, 3), ...hypotheses.slice(0, 2)].map((item) => item.value);
+  const moves = [...facts.slice(0, 3), ...hypotheses.slice(0, 2)].map(listenerFacingMoveFromMemory).filter(Boolean);
   return moves.length ? moves : ["Stay close to the current track until stronger profile evidence is available."];
+}
+
+function listenerFacingMoveFromMemory(memory: RadioAgentMemory): string {
+  const label = memoryLabel(memory);
+  if (!label) return "";
+  if (memory.key.startsWith("artist:")) return `Use ${label} as a familiar artist anchor when it fits the moment.`;
+  if (memory.key.startsWith("album:")) return `Use ${label} as a familiar album texture when it fits the moment.`;
+  if (memory.key.startsWith("theme:")) return `Treat ${label} as a tentative listening theme and verify it against the current session.`;
+  return `Keep ${label} available as a soft programming clue.`;
+}
+
+function memoryLabel(memory: RadioAgentMemory): string {
+  const keyed = memory.key.includes(":") ? memory.key.split(":").slice(1).join(":") : "";
+  if (keyed.trim()) return keyed.replace(/-/g, " ").trim();
+
+  const value = memory.value.trim();
+  const forMatch = value.match(/\bfor\s+([^.;]+)/i);
+  if (forMatch?.[1]) return forMatch[1].trim();
+  const fromMatch = value.match(/\bfrom\s+([^.;]+)/i);
+  if (fromMatch?.[1]) return fromMatch[1].trim();
+  const mentionMatch = value.match(/\b(?:mention|suggest)\s+([^.;]+)/i);
+  if (mentionMatch?.[1]) return mentionMatch[1].trim();
+  return value.replace(/\bListener has\b/gi, "").replace(/\blibrary evidence\b/gi, "").trim();
+}
+
+function humanList(items: string[]): string {
+  const unique = Array.from(new Set(items.map((item) => item.trim()).filter(Boolean)));
+  if (unique.length <= 2) return unique.join(" and ");
+  return `${unique.slice(0, -1).join(", ")} and ${unique[unique.length - 1]}`;
 }

@@ -346,7 +346,8 @@ test("runtime refreshes station context and program contract from playback event
   const contract = store.artifact("42", "program_contract.md");
   assert.ok(stationNow?.content.includes("Asia/Hong_Kong"));
   assert.ok(stationNow?.content.includes("Good Days - SZA"));
-  assert.ok(contract?.content.includes("Listener has repeated library evidence for SZA."));
+  assert.ok(contract?.content.includes("SZA"));
+  assert.doesNotMatch(contract?.content ?? "", /Listener has|library evidence|Playlist titles repeatedly/i);
 });
 
 test("runtime plans an agent-owned program window on queue low", async () => {
