@@ -21,7 +21,13 @@ test("server wires assisted radio agent planning before legacy station director 
   assert.match(source, /config\.radioAgentMode/);
   assert.match(source, /tryRadioAgentAssistedQueue/);
   assert.match(source, /stationDirector\.pickNext/);
-  assert.ok(source.indexOf("tryRadioAgentAssistedQueue") < source.indexOf("stationDirector.pickNext"));
+  const fillQueueStart = source.indexOf("const fillQueue =");
+  const assistedCall = source.indexOf("await tryRadioAgentAssistedQueue()", fillQueueStart);
+  const legacyPickNextCall = source.indexOf("stationDirector.pickNext", fillQueueStart);
+
+  assert.ok(fillQueueStart >= 0);
+  assert.ok(assistedCall > fillQueueStart);
+  assert.ok(legacyPickNextCall > assistedCall);
 });
 
 test("server keeps assisted fallback logging best effort", () => {
