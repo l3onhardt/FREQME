@@ -1,7 +1,8 @@
 import { compactText } from "../utils/text.js";
 import type { DecisionTrace, ListeningIntentDecision } from "./radioBrainTypes.js";
 
-const INTERNAL_LISTENER_TERMS = /\b(model|json|candidate|trace|prompt|verification|shadow\s+mode|tool\s+call)\b/i;
+const INTERNAL_LISTENER_TERMS =
+  /\b(models?|json|candidates?|traces?|prompts?|verifications?|shadow\s+modes?|tool\s+calls?)\b/i;
 
 function describeTrack(artistValue: string, nameValue: string): string {
   const artist = compactText(artistValue, 120);

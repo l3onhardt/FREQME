@@ -42,3 +42,24 @@ test("agent-owned traces explain the selected track without internal terms", () 
   assert.match(text, /Good Days|SZA|late-night R&B/i);
   assert.doesNotMatch(text, /candidate|trace|verification|model|JSON|prompt|tool call/i);
 });
+
+test("agent-owned explanations filter plural internal terms", () => {
+  const responder = new HostResponder();
+
+  const examples = [
+    "candidates narrowed this for the mood",
+    "tool calls found the best fit",
+    "models selected this from prompts",
+  ];
+
+  for (const reason of examples) {
+    const text = responder.explainCurrentTrack(explanationIntent, {
+      ...agentTrace,
+      reason,
+      hostText: "Known taste anchor inside the current late-night R&B program.",
+    });
+
+    assert.match(text, /Good Days|SZA|late-night R&B/i);
+    assert.doesNotMatch(text, /candidates?|traces?|verifications?|models?|JSON|prompts?|tool calls?/i);
+  }
+});
