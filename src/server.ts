@@ -666,10 +666,16 @@ async function handleRadioSocket(socket: WebSocketType): Promise<void> {
         currentTrack: currentTrack ? trackInfo(currentTrack) : null,
         readyQueue: queue.readyItems().map((item) => trackInfo(item.track)),
       });
-      if (!result.programWindow) return false;
+      if (!result.programWindow) {
+        logRadioAgentAssistedFallback("program_window_missing");
+        return false;
+      }
 
       const prepared = await radioAgentProgramExecutor.prepareFirstPlayable(result.programWindow);
-      if (!prepared) return false;
+      if (!prepared) {
+        logRadioAgentAssistedFallback("program_executor_no_track");
+        return false;
+      }
 
       try {
         traceStore.save(prepared.decisionTrace);

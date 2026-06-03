@@ -29,4 +29,6 @@ test("server keeps assisted fallback logging best effort", () => {
   assert.match(source, /logRadioAgentAssistedFallback/);
   assert.match(source, /try\s*{\s*store\.logPlaybackEvent\("radio_agent_assisted_fallback"/);
   assert.match(source, /catch\s*{\s*}\s*};/);
+  assert.match(source, /program_window_missing/);
+  assert.match(source, /program_executor_no_track/);
 });
