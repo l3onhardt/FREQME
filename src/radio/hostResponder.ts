@@ -1,8 +1,16 @@
 import { compactText } from "../utils/text.js";
 import type { DecisionTrace, ListeningIntentDecision } from "./radioBrainTypes.js";
 
-const INTERNAL_LISTENER_TERMS =
-  /\b(models?|json|candidates?|traces?|prompts?|verifications?|shadow\s+modes?|tool\s+calls?)\b/i;
+const INTERNAL_LISTENER_PATTERNS = [
+  /\bjson\b/i,
+  /\bcandidates?\b/i,
+  /\bverifications?\b/i,
+  /\btool[\s_-]+calls?\b/i,
+  /\bshadow[\s_-]+modes?\b/i,
+  /\btraces?\b(?!\s+of\b)/i,
+  /\bmodels?\b(?=\s+(?:selected|selects|chose|chooses|picked|picks|ranked|ranks|planned|plans|returned|returns|generated|generates|suggested|suggests|decided|decides|scored|scores|called|calls|used|uses|found|finds)\b)/i,
+  /\bprompts?\b(?=\s+(?:selected|selects|chose|chooses|picked|picks|ranked|ranks|planned|plans|returned|returns|generated|generates|suggested|suggests|decided|decides|produced|produces|called|calls|used|uses|found|finds)\b)/i,
+];
 
 function describeTrack(artistValue: string, nameValue: string): string {
   const artist = compactText(artistValue, 120);
@@ -15,7 +23,7 @@ function describeTrack(artistValue: string, nameValue: string): string {
 
 function listenerFacingTraceText(value: unknown, maxLength: number): string {
   const text = compactText(value, maxLength);
-  if (!text || INTERNAL_LISTENER_TERMS.test(text)) return "";
+  if (!text || INTERNAL_LISTENER_PATTERNS.some((pattern) => pattern.test(text))) return "";
   return text;
 }
 

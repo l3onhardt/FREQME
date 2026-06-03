@@ -39,7 +39,8 @@ test("agent-owned traces explain the selected track without internal terms", () 
   const responder = new HostResponder();
   const text = responder.explainCurrentTrack(explanationIntent, agentTrace);
 
-  assert.match(text, /Good Days|SZA|late-night R&B/i);
+  assert.match(text, /Known taste anchor/i);
+  assert.match(text, /late-night R&B/i);
   assert.doesNotMatch(text, /candidate|trace|verification|model|JSON|prompt|tool call/i);
 });
 
@@ -59,7 +60,51 @@ test("agent-owned explanations filter plural internal terms", () => {
       hostText: "Known taste anchor inside the current late-night R&B program.",
     });
 
-    assert.match(text, /Good Days|SZA|late-night R&B/i);
+    assert.match(text, /Known taste anchor/i);
+    assert.match(text, /late-night R&B/i);
     assert.doesNotMatch(text, /candidates?|traces?|verifications?|models?|JSON|prompts?|tool calls?/i);
+  }
+});
+
+test("agent-owned explanations filter separator variants of internal terms", () => {
+  const responder = new HostResponder();
+
+  const examples = [
+    "tool-call chose this track",
+    "tool_call chose this track",
+    "shadow-mode selected this",
+    "shadow_mode selected this",
+  ];
+
+  for (const reason of examples) {
+    const text = responder.explainCurrentTrack(explanationIntent, {
+      ...agentTrace,
+      reason,
+      hostText: "Known taste anchor inside the current late-night R&B program.",
+    });
+
+    assert.match(text, /Known taste anchor/i);
+    assert.match(text, /late-night R&B/i);
+    assert.doesNotMatch(text, /tool[-_\s]calls?|shadow[-_\s]modes?/i);
+  }
+});
+
+test("agent-owned explanations keep natural music language that resembles internal words", () => {
+  const responder = new HostResponder();
+
+  const safeReasons = [
+    "It has traces of jazz in a soft late-night R&B shape.",
+    "It prompts a late-night mood without breaking the vocal lane.",
+  ];
+
+  for (const reason of safeReasons) {
+    const text = responder.explainCurrentTrack(explanationIntent, {
+      ...agentTrace,
+      reason,
+      hostText: "Known taste anchor inside the current late-night R&B program.",
+    });
+
+    assert.match(text, /traces of jazz|prompts a late-night mood/i);
+    assert.doesNotMatch(text, /Known taste anchor/i);
   }
 });
