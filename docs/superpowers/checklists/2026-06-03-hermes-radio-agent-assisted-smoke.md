@@ -41,7 +41,24 @@ $status.recentDecisions | Select-Object -First 5 decisionType, createdAt
 - [ ] After assisted planning has queued a track, confirm the saved trace shows an agent-owned selection reason. This evidence is stored internally because frontend `trackInfo` intentionally strips `selectionReason`.
 
 ```powershell
-node --input-type=module -e "import { DatabaseSync } from 'node:sqlite'; const db = new DatabaseSync(process.env.RADIO_DB_PATH); const rows = db.prepare(`SELECT trace_json FROM decision_trace ORDER BY created_at DESC LIMIT 10`).all(); console.log(rows.map((row) => { const trace = JSON.parse(row.trace_json); return { id: trace.id, track: trace.selectedTrack?.name, reasonType: trace.selectedTrack?.selectionReason?.type, traceId: trace.selectedTrack?.selectionReason?.traceId }; }));"
+$dbPath = 'C:\Users\lacr1\Desktop\AI音乐\data\freqme.db'
+$scriptPath = Join-Path $env:TEMP 'freqme-trace-check.mjs'
+@'
+import { DatabaseSync } from "node:sqlite";
+const db = new DatabaseSync(process.argv[2]);
+const rows = db.prepare("SELECT trace_json FROM decision_trace ORDER BY created_at DESC LIMIT 10").all();
+console.log(rows.map((row) => {
+  const trace = JSON.parse(row.trace_json);
+  return {
+    id: trace.id,
+    track: trace.selectedTrack?.name,
+    reasonType: trace.selectedTrack?.selectionReason?.type,
+    traceId: trace.selectedTrack?.selectionReason?.traceId,
+  };
+}));
+'@ | Set-Content -LiteralPath $scriptPath -Encoding UTF8
+node $scriptPath $dbPath
+Remove-Item -LiteralPath $scriptPath
 ```
 
 - [ ] Confirm at least one recent row has `reasonType` equal to `radio_agent_program`.
@@ -55,7 +72,15 @@ node --input-type=module -e "import { DatabaseSync } from 'node:sqlite'; const d
 - [ ] If assisted fallback occurs naturally, confirm it is logged in `playback_event`.
 
 ```powershell
-node --input-type=module -e "import { DatabaseSync } from 'node:sqlite'; const db = new DatabaseSync(process.env.RADIO_DB_PATH); console.log(db.prepare(`SELECT event_type, reason, created_at FROM playback_event WHERE event_type = 'radio_agent_assisted_fallback' ORDER BY id DESC LIMIT 10`).all());"
+$dbPath = 'C:\Users\lacr1\Desktop\AI音乐\data\freqme.db'
+$scriptPath = Join-Path $env:TEMP 'freqme-fallback-check.mjs'
+@'
+import { DatabaseSync } from "node:sqlite";
+const db = new DatabaseSync(process.argv[2]);
+console.log(db.prepare("SELECT event_type, reason, created_at FROM playback_event WHERE event_type = 'radio_agent_assisted_fallback' ORDER BY id DESC LIMIT 10").all());
+'@ | Set-Content -LiteralPath $scriptPath -Encoding UTF8
+node $scriptPath $dbPath
+Remove-Item -LiteralPath $scriptPath
 ```
 
 - [ ] To force a fallback run, restart the backend in a separate smoke attempt with the same command but set `$env:LLM_API_KEY = 'invalid-for-assisted-fallback-smoke'` before starting the server.
