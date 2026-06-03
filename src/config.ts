@@ -9,12 +9,18 @@ function intEnv(name: string, fallback: number): number {
   return Number.isFinite(value) ? value : fallback;
 }
 
+function radioAgentModeEnv(): "shadow" | "assisted" | "active" {
+  const value = (process.env.RADIO_AGENT_MODE || "shadow").toLowerCase();
+  return value === "assisted" || value === "active" ? value : "shadow";
+}
+
 export const config = {
   host: process.env.HOST || "127.0.0.1",
   port: intEnv("PORT", 8000),
   dataDir: process.env.DATA_DIR || "./data",
   dbPath: process.env.RADIO_DB_PATH || "./data/freqme.db",
   neteaseCookiePath: process.env.NETEASE_COOKIE_PATH || "./data/netease-cookie.json",
+  radioAgentMode: radioAgentModeEnv(),
 
   mimoApiKey: process.env.MIMO_API_KEY || "",
   mimoApiBase: process.env.MIMO_API_BASE || "https://api.xiaomimimo.com/v1",

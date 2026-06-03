@@ -39,6 +39,8 @@ import { BoundaryGuard } from "./radio/boundaryGuard.js";
 import { HostNarrationLayer } from "./radio/hostNarrationLayer.js";
 import { LibraryCensus } from "./radio-agent/libraryCensus.js";
 import { RadioAgentRuntime } from "./radio-agent/radioAgentRuntime.js";
+import { RadioAgentProgramDirector } from "./radio-agent/programDirector.js";
+import { RadioAgentProgramExecutor } from "./radio-agent/programExecutor.js";
 import {
   CONTINUATION_BRAIN_READY_TIMEOUT_MS,
   USER_REQUEST_BRAIN_READY_TIMEOUT_MS,
@@ -68,11 +70,6 @@ const store = new MemoryStore(database);
 const netease = new NeteaseService();
 const radioAgentStore = new RadioAgentStore(database);
 const libraryCensus = new LibraryCensus(netease, radioAgentStore);
-const radioAgent = new RadioAgentRuntime({
-  mode: "shadow",
-  store: radioAgentStore,
-  census: libraryCensus,
-});
 const llm = new LLMRouter(store);
 const tts = new TTSService(store);
 const audioResolver = new AudioResolver(netease, store);
@@ -81,6 +78,14 @@ const profileEngine = new ProfileEngine(netease, llm, store);
 const djMemory = new DJMemoryManager(store);
 const djRequestAgent = new DJRequestAgent(llm);
 const searchVerifyAgent = new SearchVerifyAgent(llm, netease, audioResolver);
+const radioAgentProgramDirector = new RadioAgentProgramDirector(llm);
+const radioAgentProgramExecutor = new RadioAgentProgramExecutor(searchVerifyAgent);
+const radioAgent = new RadioAgentRuntime({
+  mode: config.radioAgentMode,
+  store: radioAgentStore,
+  census: libraryCensus,
+  programDirector: radioAgentProgramDirector,
+});
 const stationDirector = new AIStationDirector(llm, djRequestAgent, searchVerifyAgent, djMemory);
 const scheduler = new StreamScheduler(netease, store, audioResolver);
 const djEngine = new DJEngine(llm);
@@ -639,6 +644,52 @@ async function handleRadioSocket(socket: WebSocketType): Promise<void> {
     rememberCurrentTrack(track);
   };
 
+  const logRadioAgentAssistedFallback = (reason: string): void => {
+    try {
+      store.logPlaybackEvent("radio_agent_assisted_fallback", {
+        uid,
+        songId: currentSongId,
+        reason,
+      });
+    } catch {
+    }
+  };
+
+  const tryRadioAgentAssistedQueue = async (): Promise<boolean> => {
+    if (config.radioAgentMode !== "assisted" && config.radioAgentMode !== "active") return false;
+
+    try {
+      const result = await radioAgent.handle({
+        type: "queue_low",
+        uid,
+        sessionId,
+        currentTrack: currentTrack ? trackInfo(currentTrack) : null,
+        readyQueue: queue.readyItems().map((item) => trackInfo(item.track)),
+      });
+      if (!result.programWindow) return false;
+
+      const prepared = await radioAgentProgramExecutor.prepareFirstPlayable(result.programWindow);
+      if (!prepared) return false;
+
+      try {
+        traceStore.save(prepared.decisionTrace);
+      } catch {
+        logRadioAgentAssistedFallback("trace_save_failed");
+        return false;
+      }
+
+      const ttsHash = prepared.segueText ? await synthesize(prepared.segueText).catch(() => "") : "";
+      queue.addReady(prepared.track, prepared.url, prepared.selectionReason, {
+        segueText: prepared.segueText,
+        ttsHash,
+      });
+      return true;
+    } catch {
+      logRadioAgentAssistedFallback("assisted_queue_failed");
+      return false;
+    }
+  };
+
   const fillQueue = async (maxItems?: number, allowProgramBreak = true): Promise<void> => {
     let added = 0;
     let attempts = 0;
@@ -650,6 +701,10 @@ async function handleRadioSocket(socket: WebSocketType): Promise<void> {
         break;
       }
       attempts += 1;
+      if (await tryRadioAgentAssistedQueue()) {
+        added += 1;
+        continue;
+      }
       const directed = await stationDirector.pickNext({
         state: stationState,
         uid,
