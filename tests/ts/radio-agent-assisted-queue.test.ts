@@ -166,9 +166,20 @@ test("assisted queue logs and falls back before queueing when trace save fails",
   assert.deepEqual(fallbackReasons, ["trace_save_failed"]);
 });
 
-test("assisted queue logs and falls back when runtime or executor throws", async () => {
+test("assisted queue logs and falls back when runtime throws", async () => {
   const { deps, fallbackReasons } = assistedDeps({
     radioAgent: { handle: async () => { throw new Error("runtime down"); } },
+  });
+
+  const queued = await tryQueueRadioAgentAssistedTrack(deps as any);
+
+  assert.equal(queued, false);
+  assert.deepEqual(fallbackReasons, ["assisted_queue_failed"]);
+});
+
+test("assisted queue logs and falls back when executor throws", async () => {
+  const { deps, fallbackReasons } = assistedDeps({
+    executor: { prepareFirstPlayable: async () => { throw new Error("executor down"); } },
   });
 
   const queued = await tryQueueRadioAgentAssistedTrack(deps as any);
