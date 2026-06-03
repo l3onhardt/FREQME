@@ -350,6 +350,63 @@ test("runtime refreshes station context and program contract from playback event
   assert.doesNotMatch(contract?.content ?? "", /Listener has|library evidence|Playlist titles repeatedly/i);
 });
 
+test("runtime folds completed listening back into durable agent profile context", async () => {
+  const store = runtimeStore();
+  const runtime = new RadioAgentRuntime({ mode: "assisted", store, now: () => "2026-06-03T01:02:03.000Z" });
+
+  await runtime.handle({
+    type: "session_restored",
+    uid: "42",
+    sessionId: 9,
+    payload: { timezoneName: "Asia/Hong_Kong", localTimeBlock: "daytime" },
+  });
+  await runtime.handle({
+    type: "track_completed",
+    uid: "42",
+    sessionId: 9,
+    track: { id: "anyma-1", name: "Pictures Of You", artist: "Anyma" },
+    readyQueue: [{ id: "next-1", name: "Queued", artist: "Queued Artist" }],
+  });
+  await runtime.handle({
+    type: "track_completed",
+    uid: "42",
+    sessionId: 9,
+    currentTrack: { id: "anyma-2", name: "Eternity", artist: "Anyma" },
+    readyQueue: [{ id: "next-2", name: "Queued Again", artist: "Queued Artist" }],
+  });
+
+  const memory = store.memoryRows.find((item) => item.key === "session_artist:Anyma");
+  assert.ok(memory);
+  assert.equal(memory?.kind, "taste_hypothesis");
+  assert.equal(memory?.evidenceCount, 2);
+  assert.equal(memory?.evidenceRefs.length, 2);
+  assert.ok(memory?.evidenceRefs.every((ref) => /^event:\d+$/.test(ref)));
+
+  const profile = store.artifact("42", "user_profile.md");
+  const contract = store.artifact("42", "program_contract.md");
+  assert.match(profile?.content ?? "", /Anyma/);
+  assert.match(contract?.content ?? "", /Anyma/);
+  assert.match(profile?.sourceVersion ?? "", /sessionEvidence=0/);
+});
+
+test("runtime records explicit listener text in the profile without promoting it to a stable fact", async () => {
+  const store = runtimeStore();
+  const runtime = new RadioAgentRuntime({ mode: "assisted", store, now: () => "2026-06-03T01:02:03.000Z" });
+
+  await runtime.handle({
+    type: "user_text",
+    uid: "42",
+    sessionId: 9,
+    text: "more Anyma and less classical tonight",
+  });
+
+  const profile = store.artifact("42", "user_profile.md");
+  assert.match(profile?.content ?? "", /Recent Session Evidence/);
+  assert.match(profile?.content ?? "", /more Anyma and less classical tonight/);
+  assert.equal(store.memoryRows.some((memory) => memory.kind === "taste_fact" && /Anyma|classical/i.test(memory.value)), false);
+  assert.ok(store.memoryRows.some((memory) => memory.kind === "session_evidence" && memory.key === "explicit:user_text"));
+});
+
 test("runtime plans an agent-owned program window on queue low", async () => {
   const store = runtimeStore({
     memories: (uid: string, kind: string, limit: number) =>

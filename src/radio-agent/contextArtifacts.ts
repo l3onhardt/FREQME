@@ -2,6 +2,7 @@ import type { Track } from "../types.js";
 
 const USER_PROFILE_FACT_LIMIT = 24;
 const USER_PROFILE_HYPOTHESIS_LIMIT = 12;
+const USER_PROFILE_SESSION_EVIDENCE_LIMIT = 10;
 
 export interface ProfileEvidenceForMarkdown {
   key: string;
@@ -14,6 +15,7 @@ export interface BuildUserProfileMarkdownArgs {
   uid: string;
   facts: ProfileEvidenceForMarkdown[];
   hypotheses: ProfileEvidenceForMarkdown[];
+  sessionEvidence?: ProfileEvidenceForMarkdown[];
   updatedAt: string;
 }
 
@@ -46,9 +48,13 @@ export function buildUserProfileMarkdown(args: BuildUserProfileMarkdownArgs): st
     "## Hypotheses",
     ...evidenceLines(args.hypotheses, USER_PROFILE_HYPOTHESIS_LIMIT, "hypotheses"),
     "",
+    "## Recent Session Evidence",
+    ...evidenceLines(args.sessionEvidence || [], USER_PROFILE_SESSION_EVIDENCE_LIMIT, "session evidence"),
+    "",
     "## Operating Notes",
     "- Treat hypotheses as tentative until repeated behavior confirms them.",
     "- Do not turn a single skip into a permanent dislike.",
+    "- Use recent session evidence for this session, but keep it weaker than stable facts.",
     "",
   ].join("\n");
 }

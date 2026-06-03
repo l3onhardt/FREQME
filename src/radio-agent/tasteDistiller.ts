@@ -68,6 +68,10 @@ export function distillTasteFacts(args: TasteDistillationArgs): TasteDistillatio
     hypotheses.push(item);
   }
 
+  for (const item of completedListeningHypotheses(args.recentEvents)) {
+    hypotheses.push(item);
+  }
+
   for (const event of args.recentEvents) {
     if (event.type === "track_skipped") {
       const trackId = extractTrackId(event.payload.track);
@@ -147,6 +151,33 @@ function playlistThemeHypotheses(playlists: RadioLibraryPlaylist[]): TasteEviden
   return result;
 }
 
+function completedListeningHypotheses(events: RadioAgentEvent[]): TasteEvidenceItem[] {
+  const artistEvidence = new Map<string, { count: number; refs: string[] }>();
+  for (const event of events) {
+    if (event.type !== "track_completed") continue;
+    const track = extractTrack(event.payload.track) || extractTrack(event.payload.currentTrack);
+    if (!track || !track.artist) continue;
+    const current = artistEvidence.get(track.artist) || { count: 0, refs: [] };
+    current.count += 1;
+    current.refs.push(event.id ? `event:${event.id}` : `event:${event.createdAt}`);
+    artistEvidence.set(track.artist, current);
+  }
+
+  const result: TasteEvidenceItem[] = [];
+  for (const [artist, evidence] of artistEvidence.entries()) {
+    if (evidence.count < 2) continue;
+    result.push({
+      key: `session_artist:${artist}`,
+      kind: "taste_hypothesis",
+      value: `Recent completed listening repeatedly returned to ${artist}; treat this as a session preference signal until it repeats across sessions.`,
+      confidence: Math.min(0.78, 0.46 + evidence.count * 0.09),
+      evidenceCount: evidence.count,
+      evidenceRefs: evidence.refs.slice(0, 12),
+    });
+  }
+  return result;
+}
+
 function groupedBy<T>(items: T[], keyFn: (item: T) => string): Map<string, T[]> {
   const result = new Map<string, T[]>();
   for (const item of items) {
@@ -178,6 +209,15 @@ function repeatedPhrase(names: string[]): string {
 function extractTrackId(track: unknown): string {
   if (!isRecord(track)) return "";
   return stringValue(track.id || track.songId);
+}
+
+function extractTrack(value: unknown): { id: string; name: string; artist: string } | null {
+  if (!isRecord(value)) return null;
+  return {
+    id: stringValue(value.id || value.songId),
+    name: stringValue(value.name || value.songName),
+    artist: stringValue(value.artist),
+  };
 }
 
 function looksLikePreferenceText(text: string): boolean {

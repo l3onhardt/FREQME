@@ -73,6 +73,10 @@ export class RadioAgentRuntime {
       this.saveSessionEvidence(event, "skip", "Single skip recorded as session evidence, not a permanent dislike.");
     }
 
+    if (shouldRefreshProfileFromBehavior(persistedEvent)) {
+      this.refreshProfileArtifacts(persistedEvent);
+    }
+
     if (event.type === "session_restored" || event.type === "playback_started" || event.type === "track_completed") {
       this.refreshStationArtifacts(persistedEvent);
     }
@@ -209,16 +213,17 @@ export class RadioAgentRuntime {
 
     const playlists = this.deps.store.playlists(event.uid, 500);
     const libraryTracks = this.deps.store.libraryTracks(event.uid, 10000);
-    if (!playlists.length && !libraryTracks.length) return;
-
+    const recentEvents = this.profileEvidenceEvents(event);
     const result = distillTasteFacts({
       uid: event.uid,
       libraryTracks,
       playlists,
-      recentEvents: this.deps.store.recentEvents(event.uid, null, 200),
+      recentEvents,
     });
     const updatedAt = this.now();
     const evidenceItems = [...result.facts, ...result.hypotheses, ...result.sessionEvidence];
+    if (!evidenceItems.length) return;
+
     for (const item of evidenceItems) {
       this.deps.store.upsertMemory({
         uid: event.uid,
@@ -239,9 +244,10 @@ export class RadioAgentRuntime {
         uid: event.uid,
         facts: result.facts,
         hypotheses: result.hypotheses,
+        sessionEvidence: result.sessionEvidence,
         updatedAt,
       }),
-      `${COMPACT_PROFILE_SOURCE_VERSION} tracks=${libraryTracks.length} playlists=${playlists.length} facts=${result.facts.length} hypotheses=${result.hypotheses.length}`,
+      `${COMPACT_PROFILE_SOURCE_VERSION} tracks=${libraryTracks.length} playlists=${playlists.length} facts=${result.facts.length} hypotheses=${result.hypotheses.length} sessionEvidence=${result.sessionEvidence.length}`,
     );
     this.deps.store.appendEvent({
       uid: event.uid,
@@ -257,6 +263,23 @@ export class RadioAgentRuntime {
       },
       createdAt: updatedAt,
     });
+  }
+
+  private profileEvidenceEvents(event: RadioAgentEvent): RadioAgentEvent[] {
+    if (!event.uid) return [];
+    const sessionEvents = this.deps.store.recentEvents(event.uid, event.sessionId ?? null, 200);
+    if (event.sessionId == null) return sessionEvents;
+
+    const globalEvents = this.deps.store.recentEvents(event.uid, null, 100);
+    const seen = new Set<string>();
+    const merged: RadioAgentEvent[] = [];
+    for (const item of [...sessionEvents, ...globalEvents]) {
+      const key = item.id == null ? `${item.type}:${item.createdAt}` : `id:${item.id}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      merged.push(item);
+    }
+    return merged;
   }
 
   private refreshStationArtifacts(event: RadioAgentEvent): void {
@@ -406,6 +429,10 @@ function isTrack(value: Track | null): value is Track {
 function extractReadyQueue(value: unknown): Track[] {
   if (!Array.isArray(value)) return [];
   return value.map(extractTrack).filter(isTrack);
+}
+
+function shouldRefreshProfileFromBehavior(event: RadioAgentEvent): boolean {
+  return event.type === "track_completed" || event.type === "track_skipped" || event.type === "user_text";
 }
 
 function shouldPlanProgramWindow(event: RadioAgentEvent): boolean {

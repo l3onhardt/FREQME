@@ -22,6 +22,49 @@ test("taste distiller turns repeated artists and playlist themes into facts", ()
   assert.ok(result.hypotheses.some((hypothesis) => /late night/i.test(hypothesis.value)));
 });
 
+test("taste distiller turns repeated completed listening into a session taste hypothesis", () => {
+  const result = distillTasteFacts({
+    uid: "42",
+    libraryTracks: [],
+    playlists: [],
+    recentEvents: [
+      {
+        id: 10,
+        uid: "42",
+        sessionId: 7,
+        type: "track_completed",
+        priority: "warm",
+        payload: { track: { id: "anyma-1", name: "Pictures Of You", artist: "Anyma" } },
+        createdAt: "2026-06-03T01:00:00.000Z",
+      },
+      {
+        id: 11,
+        uid: "42",
+        sessionId: 7,
+        type: "track_completed",
+        priority: "warm",
+        payload: { currentTrack: { id: "anyma-2", name: "Eternity", artist: "Anyma" } },
+        createdAt: "2026-06-03T01:05:00.000Z",
+      },
+      {
+        id: 12,
+        uid: "42",
+        sessionId: 7,
+        type: "playback_started",
+        priority: "warm",
+        payload: { track: { id: "s1", name: "Started Only", artist: "SZA" } },
+        createdAt: "2026-06-03T01:07:00.000Z",
+      },
+    ],
+  });
+
+  const hypothesis = result.hypotheses.find((item) => item.key === "session_artist:Anyma");
+  assert.ok(hypothesis);
+  assert.equal(hypothesis?.evidenceCount, 2);
+  assert.match(hypothesis?.value || "", /Anyma/);
+  assert.equal(result.hypotheses.some((item) => item.key === "session_artist:SZA"), false);
+});
+
 test("taste distiller treats one skip as session evidence only", () => {
   const result = distillTasteFacts({
     uid: "42",
