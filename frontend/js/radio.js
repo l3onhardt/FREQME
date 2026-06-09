@@ -14,6 +14,8 @@ let pendingTrackAfterIntro = null;
 let introFallbackTimer = null;
 let activeSegueId = '';
 let pendingSegueTimer = null;
+let nextTrackRetryTimer = null;
+let nextTrackRetryCount = 0;
 let userVolume = 0.8;
 let isDucked = false;
 let mainVolumeFadeTimer = null;
@@ -45,6 +47,8 @@ const IDLE_BREATH_FRAME_MS = 260;
 const HIDDEN_BREATH_FRAME_MS = 3000;
 const AMBIENT_FRAME_MS = 1600;
 const PROGRESS_FRAME_MS = 1000;
+const NEXT_TRACK_RETRY_MS = 12000;
+const MAX_NEXT_TRACK_RETRIES = 3;
 const LOCAL_DJ_GREETING = '晚上好，这里是今晚的私人电台。我先把第一首歌轻轻放进来，你不用急，跟着这一点光慢慢听。';
 
 const VOICE_CONFIG = {
@@ -700,6 +704,37 @@ function resetSegueGate() {
   clearSegueFallbackTimer();
 }
 
+function clearNextTrackRetryTimer() {
+  if (nextTrackRetryTimer) {
+    clearTimeout(nextTrackRetryTimer);
+    nextTrackRetryTimer = null;
+  }
+}
+
+function requestNextTrackAgain() {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  ws.send(JSON.stringify({ type: 'track_ended' }));
+}
+
+function beginNextTrackWait() {
+  clearNextTrackRetryTimer();
+  nextTrackRetryCount = 0;
+  const retry = () => {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    nextTrackRetryCount += 1;
+    if (nextTrackRetryCount > MAX_NEXT_TRACK_RETRIES) return;
+    requestNextTrackAgain();
+    document.getElementById('dj-text').textContent = '下一首还在接，我再帮你敲一次。';
+    nextTrackRetryTimer = setTimeout(retry, NEXT_TRACK_RETRY_MS);
+  };
+  nextTrackRetryTimer = setTimeout(retry, NEXT_TRACK_RETRY_MS);
+}
+
+function finishNextTrackWait() {
+  clearNextTrackRetryTimer();
+  nextTrackRetryCount = 0;
+}
+
 function mainAudioMatchesUrl(url) {
   if (!url || !audioMain.src) return false;
   return audioMain.src === url || audioMain.src.endsWith(url);
@@ -714,6 +749,7 @@ function playSegueTrack(track, url) {
 
 function resetIntroGate() {
   resetSegueGate();
+  finishNextTrackWait();
   pendingTrackAfterIntro = null;
   introPending = false;
   introPlaying = false;
@@ -1316,6 +1352,7 @@ async function handleMessage(msg) {
     }
 
     case 'play_track': {
+      finishNextTrackWait();
       resetSegueGate();
       audioTTS._hasIntro = false;
       playTrack(msg.track, msg.url);
@@ -1324,6 +1361,7 @@ async function handleMessage(msg) {
     }
 
     case 'segue': {
+      finishNextTrackWait();
       if (msg.tts_ready && msg.segue_id && pendingSegueTimer && activeSegueId && msg.segue_id !== activeSegueId) {
         break;
       }
@@ -1412,6 +1450,7 @@ function inferRegionHint() {
 audioMain.addEventListener('ended', () => {
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify({ type: 'track_ended' }));
+    beginNextTrackWait();
   }
   stopBreathLoop();
   setBreathLevel(0.18);
@@ -1425,6 +1464,7 @@ audioMain.addEventListener('error', () => {
   retryTimer = setTimeout(() => {
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({ type: 'track_ended' }));
+      beginNextTrackWait();
     }
   }, 3000);
 });

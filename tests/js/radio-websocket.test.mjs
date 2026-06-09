@@ -718,6 +718,48 @@ test('first track starts immediately even if intro never arrives', async () => {
   assert.equal(elements.get('track-name').textContent, 'First');
 });
 
+test('ended playback retries next-track request when the server does not answer', async () => {
+  const { elements, sockets, advanceTimersBy } = loadRadio();
+  const startButton = elements.get('start-radio-btn');
+  const audioMain = elements.get('audio-main');
+
+  await startButton.click();
+  sockets[0].readyState = sockets[0].constructor.OPEN;
+  audioMain.src = '/api/radio/audio/1';
+  audioMain.paused = false;
+
+  audioMain.dispatch('ended');
+  assert.deepEqual(sockets[0].sent.map((raw) => JSON.parse(raw).type), ['track_ended']);
+
+  advanceTimersBy(12000);
+
+  assert.deepEqual(sockets[0].sent.map((raw) => JSON.parse(raw).type), ['track_ended', 'track_ended']);
+  assert.equal(elements.get('dj-text').textContent, '下一首还在接，我再帮你敲一次。');
+});
+
+test('next-track retry is cancelled once playback resumes', async () => {
+  const { context, elements, sockets, advanceTimersBy } = loadRadio();
+  const startButton = elements.get('start-radio-btn');
+  const audioMain = elements.get('audio-main');
+
+  await startButton.click();
+  sockets[0].readyState = sockets[0].constructor.OPEN;
+  audioMain.src = '/api/radio/audio/1';
+  audioMain.paused = false;
+
+  audioMain.dispatch('ended');
+  await context.handleMessage({
+    type: 'play_track',
+    track: { name: 'Next', artist: 'Artist' },
+    url: '/api/radio/audio/2',
+  });
+  advanceTimersBy(12000);
+
+  assert.deepEqual(sockets[0].sent.map((raw) => JSON.parse(raw).type), ['track_ended']);
+  assert.equal(audioMain.src, '/api/radio/audio/2');
+  assert.equal(elements.get('track-name').textContent, 'Next');
+});
+
 test('play track fetches lyrics and syncs the visible lyric with audio time', async () => {
   const requests = [];
   const { context, elements } = loadRadio({
