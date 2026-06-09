@@ -143,6 +143,49 @@ test("program director includes session reflection and memory hypotheses in the 
   assert.match(prompts[0] ?? "", /Recent completed listening repeatedly returned to Frank Ocean/);
 });
 
+test("fallback planning turns session reflection into executable anchors and temporary avoids", async () => {
+  const director = new RadioAgentProgramDirector(null, () => NOW);
+
+  const window = await director.plan({
+    ...contextSnapshot(),
+    contract: "# Program Contract\nstation_goal: mellow personal radio\navoid: high-energy EDM",
+    profile: "",
+    memoryFacts: [],
+    memoryHypotheses: [],
+    currentTrack: null,
+    readyQueue: [],
+    reflection:
+      "# Session Reflection\n\n## Session Signals\n- session_artist:Frank Ocean: Recent completed listening repeatedly returned to Frank Ocean.\n\n## Temporary Avoids\n- bad-track-1\n- generic electronic\n\n## Long-Term Candidates\n- session_artist:Frank Ocean\n",
+  });
+
+  assert.equal(window.source, "deterministic_fallback");
+  assert.match(window.candidateTasks[0]?.query ?? "", /Frank Ocean/i);
+  assert.ok(window.candidateTasks.every((task) => task.negativeConstraints.includes("generic electronic")));
+  assert.ok(window.candidateTasks.every((task) => task.negativeConstraints.includes("bad-track-1")));
+  assert.match(window.mainDirection, /Frank Ocean/i);
+  assert.match(window.hostIntent.text, /Frank Ocean/i);
+  assert.doesNotMatch(window.hostIntent.text, /鎴|銆|鐨|涓|杩|俙|旁边|质感/);
+});
+
+test("fallback planning does not use temporary avoids as positive anchors", async () => {
+  const director = new RadioAgentProgramDirector(null, () => NOW);
+
+  const window = await director.plan({
+    ...contextSnapshot(),
+    contract: "# Program Contract\nstation_goal: mellow personal radio",
+    profile: "",
+    memoryFacts: [],
+    memoryHypotheses: [],
+    currentTrack: null,
+    readyQueue: [],
+    reflection:
+      "# Session Reflection\n\n## Skipped Tracks\n- Too Much - A (bad-1)\n\n## Temporary Avoids\n- A\n- Too Much\n- generic electronic\n",
+  });
+
+  assert.ok(window.candidateTasks.every((task) => !/^A$|Too Much|generic electronic/i.test(task.query)));
+  assert.ok(window.candidateTasks.every((task) => task.negativeConstraints.includes("generic electronic")));
+});
+
 test("program director preserves spec-compliant host events and sanitizes internal host text", async () => {
   const events = [
     "station_open",

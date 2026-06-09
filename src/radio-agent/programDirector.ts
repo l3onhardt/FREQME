@@ -146,6 +146,7 @@ function buildFallbackWindow(context: RadioAgentContextSnapshot, createdAt: stri
 function fallbackCandidateTasks(context: RadioAgentContextSnapshot): RadioAgentCandidateTask[] {
   const contract = contractAnchor(context.contract);
   const anchors = [
+    ...reflectionPositiveAnchors(context.reflection),
     ...context.memoryFacts.map(memoryAnchor),
     context.currentTrack?.artist,
     ...context.readyQueue.map((track) => track.artist),
@@ -161,7 +162,7 @@ function fallbackCandidateTasks(context: RadioAgentContextSnapshot): RadioAgentC
     query: anchor,
     reason: "This stays close to known taste while keeping the current radio mood coherent.",
     style: styleFromContract(context.contract),
-    negativeConstraints: extractDisallowed(context.contract),
+    negativeConstraints: fallbackNegativeConstraints(context),
   }));
 
   return tasks.filter(isAllowedCandidateTask).filter((task) => taskFitsContract(context, task)).slice(0, MAX_CANDIDATE_TASKS);
@@ -226,8 +227,8 @@ function fallbackHostIntent(context: RadioAgentContextSnapshot): RadioAgentHostI
   const anchor = fallbackHostAnchor(context);
   const text = sanitizeHostText(
     anchor
-      ? `我先沿着 ${anchor} 这条线索往前接一首，把电台频率稳住。`
-      : "我先接一首稳一点的，把电台频率续上。",
+      ? `我先顺着 ${anchor} 的方向接一首，把电台稳住。`
+      : "我先接一首稳一点的，把电台续上。",
   );
   if (!text) return silentHostIntent("fallback_host_text_filtered");
 
@@ -251,6 +252,7 @@ function hasReadyAgentProgramItem(context: RadioAgentContextSnapshot): boolean {
 function fallbackHostAnchor(context: RadioAgentContextSnapshot): string {
   const contract = contractAnchor(context.contract);
   const anchor =
+    reflectionPositiveAnchors(context.reflection)[0] ||
     memoryAnchor(context.memoryFacts[0]) ||
     context.currentTrack?.artist ||
     context.readyQueue[0]?.artist ||
@@ -297,7 +299,11 @@ function fallbackStationBrief(context: RadioAgentContextSnapshot): string {
 
 function fallbackMainDirection(context: RadioAgentContextSnapshot): string {
   const contract = contractAnchor(context.contract);
-  const anchor = memoryAnchor(context.memoryFacts[0]) || context.currentTrack?.artist || context.currentTrack?.name;
+  const anchor =
+    reflectionPositiveAnchors(context.reflection)[0] ||
+    memoryAnchor(context.memoryFacts[0]) ||
+    context.currentTrack?.artist ||
+    context.currentTrack?.name;
   if (contract && (!anchor || !anchorFitsContract(contract, anchor))) return contract;
   return anchor ? `Stay close to ${anchor} and keep the current radio mood coherent.` : "Keep the current radio mood coherent.";
 }
@@ -311,6 +317,66 @@ function extractDisallowed(contract: string): string[] {
   const avoid = firstContractLine(contract, "avoid");
   if (!avoid) return [];
   return avoid.split(",").map((item) => item.trim()).filter(Boolean);
+}
+
+function fallbackNegativeConstraints(context: RadioAgentContextSnapshot): string[] {
+  return uniqueStrings([...extractDisallowed(context.contract), ...reflectionTemporaryAvoids(context.reflection)]);
+}
+
+function reflectionPositiveAnchors(reflection: string): string[] {
+  const anchors: string[] = [];
+  for (const candidate of reflectionSectionLines(reflection, "Session Signals")) {
+    const anchor = reflectionAnchorFromLine(candidate);
+    if (anchor) anchors.push(anchor);
+  }
+  for (const candidate of reflectionSectionLines(reflection, "Long-Term Candidates")) {
+    const anchor = reflectionAnchorFromLine(candidate);
+    if (anchor) anchors.push(anchor);
+  }
+  return uniqueStrings(anchors).filter((anchor) => !reflectionAvoidLooksLikeOnlyConstraint(anchor)).slice(0, 4);
+}
+
+function reflectionTemporaryAvoids(reflection: string): string[] {
+  return reflectionSectionLines(reflection, "Temporary Avoids").filter(Boolean).slice(0, 8);
+}
+
+function reflectionSectionLines(markdown: string, heading: string): string[] {
+  const lines = markdown.split(/\r?\n/u);
+  const result: string[] = [];
+  let inSection = false;
+  for (const line of lines) {
+    if (/^##\s+/u.test(line)) {
+      inSection = line.replace(/^##\s+/u, "").trim().toLowerCase() === heading.toLowerCase();
+      continue;
+    }
+    if (!inSection) continue;
+    const item = line.replace(/^\s*-\s*/u, "").trim();
+    if (item && item.toLowerCase() !== "none") result.push(item);
+  }
+  return result;
+}
+
+function reflectionAnchorFromLine(line: string): string {
+  const key = line.split(":")[0]?.trim() || "";
+  if (/^(session_)?artist:/i.test(line)) {
+    const afterPrefix = line.replace(/^(?:session_)?artist:/i, "").split(":")[0]?.trim();
+    if (afterPrefix) return afterPrefix;
+  }
+  if (/^(session_)?artist$/i.test(key)) {
+    const firstValue = line.split(":").slice(1).join(":").split(/[.;]/u)[0]?.trim();
+    if (firstValue) return firstValue;
+  }
+  const repeatedArtist = line.match(/\brepeatedly returned to\s+([^.;]+)/i)?.[1]?.trim();
+  if (repeatedArtist) return repeatedArtist;
+  return "";
+}
+
+function reflectionAvoidLooksLikeOnlyConstraint(value: string): boolean {
+  return /generic|electronic|edm|classical|ambient|piano|bad-track|skip/i.test(value);
+}
+
+function uniqueStrings(items: string[]): string[] {
+  return Array.from(new Set(items.map((item) => item.trim()).filter(Boolean)));
 }
 
 function styleFromContract(contract: string): string {
