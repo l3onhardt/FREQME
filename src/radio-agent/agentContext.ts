@@ -32,6 +32,7 @@ export function buildRadioAgentContextSnapshot(
     now: compactArtifact(args.artifacts["station_now.md"]),
     contract: compactArtifact(args.artifacts["program_contract.md"]),
     session: compactArtifact(args.artifacts["listener_session.md"]),
+    reflection: compactArtifact(args.artifacts["session_reflection.md"]),
     memoryFacts: args.memories.filter((memory) => memory.kind === "taste_fact"),
     memoryHypotheses: args.memories.filter((memory) => memory.kind === "taste_hypothesis"),
     recentEvents: args.recentEvents.slice(0, 12).map(sanitizeEvent),

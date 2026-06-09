@@ -3,6 +3,7 @@ import { buildRadioAgentContextSnapshot } from "./agentContext.js";
 import {
   buildListenerSessionMarkdown,
   buildProgramContractMarkdown,
+  buildSessionReflectionMarkdown,
   buildStationNowMarkdown,
   buildUserProfileMarkdown,
 } from "./contextArtifacts.js";
@@ -27,6 +28,7 @@ import type { Track } from "../types.js";
 const DEFAULT_LIBRARY_SCAN_FRESHNESS_MS = 6 * 60 * 60 * 1000;
 const COMPACT_PROFILE_SOURCE_VERSION = "taste-distiller/v2-compact";
 const LISTENER_SESSION_SOURCE_VERSION = "listener-session/v1";
+const SESSION_REFLECTION_SOURCE_VERSION = "session-reflection/v1";
 
 interface RadioAgentRuntimeStore {
   appendEvent(event: RadioAgentEvent): number;
@@ -79,7 +81,13 @@ export class RadioAgentRuntime {
       this.refreshProfileArtifacts(persistedEvent);
     }
 
-    if (event.type === "session_restored" || event.type === "playback_started" || event.type === "track_completed" || event.type === "user_text") {
+    if (
+      event.type === "session_restored" ||
+      event.type === "playback_started" ||
+      event.type === "track_completed" ||
+      event.type === "track_skipped" ||
+      event.type === "user_text"
+    ) {
       this.refreshStationArtifacts(persistedEvent);
     }
 
@@ -98,7 +106,7 @@ export class RadioAgentRuntime {
   status(uid: string | null, sessionId: number | null = null): RadioAgentStatus {
     const artifacts: RadioAgentStatus["artifacts"] = {};
     if (uid) {
-      for (const key of ["user_profile.md", "station_now.md", "program_contract.md", "listener_session.md"]) {
+      for (const key of ["user_profile.md", "station_now.md", "program_contract.md", "listener_session.md", "session_reflection.md"]) {
         const artifact = this.deps.store.artifact(uid, key);
         if (artifact) {
           artifacts[key] = {
@@ -319,6 +327,14 @@ export class RadioAgentRuntime {
       `${LISTENER_SESSION_SOURCE_VERSION} session=${event.sessionId ?? "none"}`,
     );
 
+    const reflectionSummary = sessionReflectionFromEvents(recentEvents);
+    this.deps.store.saveArtifact(
+      event.uid,
+      "session_reflection.md",
+      buildSessionReflectionMarkdown({ ...reflectionSummary, updatedAt: this.now() }),
+      `${SESSION_REFLECTION_SOURCE_VERSION} session=${event.sessionId ?? "none"}`,
+    );
+
     const tasteFacts = this.deps.store.memories(event.uid, "taste_fact", 5);
     const tasteHypotheses = this.deps.store.memories(event.uid, "taste_hypothesis", 5);
     this.deps.store.saveArtifact(
@@ -378,6 +394,7 @@ export class RadioAgentRuntime {
         "station_now.md": this.deps.store.artifact(event.uid, "station_now.md")?.content,
         "program_contract.md": this.deps.store.artifact(event.uid, "program_contract.md")?.content,
         "listener_session.md": this.deps.store.artifact(event.uid, "listener_session.md")?.content,
+        "session_reflection.md": this.deps.store.artifact(event.uid, "session_reflection.md")?.content,
       };
       const currentTrack = extractTrack(event.payload.currentTrack) || extractTrack(event.payload.track);
       const readyQueue = extractReadyQueue(event.payload.readyQueue);
@@ -555,12 +572,58 @@ function listenerSessionFromEvents(
   };
 }
 
+function sessionReflectionFromEvents(events: RadioAgentEvent[]): Omit<Parameters<typeof buildSessionReflectionMarkdown>[0], "updatedAt"> {
+  const completedTracks = events
+    .filter((event) => event.type === "track_completed")
+    .map((event) => extractTrack(event.payload.track) || extractTrack(event.payload.currentTrack))
+    .filter(isTrack)
+    .slice(0, 8);
+  const skippedTracks = events
+    .filter((event) => event.type === "track_skipped")
+    .map((event) => extractTrack(event.payload.track) || extractTrack(event.payload.currentTrack))
+    .filter(isTrack)
+    .slice(0, 8);
+  const correctionTexts = events
+    .filter((event) => event.type === "user_text")
+    .map((event) => stringValue(event.payload.text))
+    .filter((text) => looksReflectiveCorrection(text))
+    .slice(0, 6);
+  const distilled = distillTasteFacts({
+    uid: events.find((event) => event.uid)?.uid || "",
+    libraryTracks: [],
+    playlists: [],
+    recentEvents: events,
+  });
+
+  return {
+    completedTracks,
+    skippedTracks,
+    correctionTexts,
+    sessionSignals: dedupeStrings([
+      ...distilled.hypotheses.map((item) => `${item.key}: ${item.value}`),
+      ...distilled.sessionEvidence.map((item) => `${item.key}: ${item.value}`),
+    ]).slice(0, 12),
+    temporaryAvoids: dedupeStrings([
+      ...skippedTracks.map((track) => track.id).filter(Boolean),
+      ...correctionTexts.flatMap(rejectedMovesFromText),
+    ]).slice(0, 12),
+    longTermCandidates: distilled.hypotheses
+      .filter((item) => item.evidenceCount >= 2)
+      .map((item) => item.key)
+      .slice(0, 8),
+  };
+}
+
 function rejectedMovesFromText(text: string): string[] {
   const moves: string[] = [];
   if (/电子|electronic|edm|techno|trance|ambient/i.test(text)) moves.push("generic electronic");
   if (/古典|classical|chamber|concerto|sonata|quartet/i.test(text)) moves.push("classical chamber music");
   if (/氛围|ambient|piano/i.test(text)) moves.push("ambient piano");
   return dedupeStrings(moves);
+}
+
+function looksReflectiveCorrection(text: string): boolean {
+  return /不要|别|不想|更喜欢|喜欢|想听|avoid|less|more|skip|prefer/i.test(text);
 }
 
 function dedupeStrings(values: string[]): string[] {

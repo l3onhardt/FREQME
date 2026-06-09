@@ -108,6 +108,41 @@ test("program director includes listener session working memory in the planning 
   assert.match(prompts[0] ?? "", /Stay in R&B until the listener asks to move elsewhere/);
 });
 
+test("program director includes session reflection and memory hypotheses in the planning prompt", async () => {
+  const prompts: string[] = [];
+  const model: ProgramPlanningModel = {
+    chat: async (prompt) => {
+      prompts.push(prompt);
+      return JSON.stringify({
+        candidate_tasks: [{ query: "Frank Ocean Pink + White", reason: "Reflects recent accepted R&B listening.", style: "alt-R&B" }],
+      });
+    },
+  };
+  const director = new RadioAgentProgramDirector(model, () => NOW);
+
+  await director.plan({
+    ...contextSnapshot(),
+    reflection: "# Session Reflection\n## Session Signals\n- session_artist:Frank Ocean",
+    memoryHypotheses: [
+      {
+        uid: "42",
+        key: "session_artist:Frank Ocean",
+        kind: "taste_hypothesis",
+        value: "Recent completed listening repeatedly returned to Frank Ocean.",
+        confidence: 0.7,
+        evidenceCount: 2,
+        evidenceRefs: ["event:1", "event:2"],
+        updatedAt: NOW,
+      },
+    ],
+  });
+
+  assert.match(prompts[0] ?? "", /Session Reflection/);
+  assert.match(prompts[0] ?? "", /session_artist:Frank Ocean/);
+  assert.match(prompts[0] ?? "", /Memory Hypotheses/);
+  assert.match(prompts[0] ?? "", /Recent completed listening repeatedly returned to Frank Ocean/);
+});
+
 test("program director preserves spec-compliant host events and sanitizes internal host text", async () => {
   const events = [
     "station_open",
@@ -448,6 +483,7 @@ function contextSnapshot(): RadioAgentContextSnapshot {
     now: "# Station Now\nlocal_time_block: late_night\ncurrent_track: Good Days - SZA (s1)",
     contract: "# Program Contract\nstation_goal: keep late-night R&B coherent\navoid: sleep sounds, study beats",
     session: "",
+    reflection: "",
     memoryFacts,
     memoryHypotheses: [],
     recentEvents: [
@@ -471,6 +507,7 @@ function assertPromptIncludesCompactContext(prompt: string): void {
   assert.match(prompt, /Station Now/);
   assert.match(prompt, /Program Contract/);
   assert.match(prompt, /Listener Session/);
+  assert.match(prompt, /Session Reflection/);
   assert.match(prompt, /Listener has repeated library evidence for SZA/);
   assert.match(prompt, /queue_low/);
   assert.match(prompt, /Good Days/);
@@ -509,6 +546,7 @@ function traceBasisFromContext(context: RadioAgentContextSnapshot): RadioAgentPr
     now: context.now,
     contract: context.contract,
     session: context.session,
+    reflection: context.reflection,
     eventType: context.eventType,
   };
 }

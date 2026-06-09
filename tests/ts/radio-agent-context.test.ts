@@ -37,6 +37,7 @@ test("agent context compacts profile, now, contract, memory, and current playbac
       "station_now.md": "# Station Now\n\nlocal_time_block: late_night\ncurrent_track: Good Days - SZA (s1)",
       "program_contract.md": "# Program Contract\n\nstation_goal: keep late-night R&B coherent",
       "listener_session.md": "# Listener Session\n\nactive_request: R&B\nnext_promise: stay inside R&B",
+      "session_reflection.md": "# Session Reflection\n\n## Session Signals\n- repeated completed listening returned to SZA",
     },
     recentEvents: events,
     memories,
@@ -51,6 +52,7 @@ test("agent context compacts profile, now, contract, memory, and current playbac
   assert.match(snapshot.now, /late_night/);
   assert.match(snapshot.contract, /late-night R&B/);
   assert.match(snapshot.session, /active_request: R&B/);
+  assert.match(snapshot.reflection, /repeated completed listening returned to SZA/);
   assert.equal(snapshot.memoryFacts[0]?.key, "artist:SZA");
 });
 

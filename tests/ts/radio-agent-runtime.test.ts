@@ -389,6 +389,40 @@ test("runtime folds completed listening back into durable agent profile context"
   assert.match(profile?.sourceVersion ?? "", /sessionEvidence=0/);
 });
 
+test("runtime writes session reflection artifact from completed and skipped playback", async () => {
+  const store = runtimeStore();
+  const runtime = new RadioAgentRuntime({ mode: "assisted", store, now: () => "2026-06-03T01:02:03.000Z" });
+
+  await runtime.handle({
+    type: "track_completed",
+    uid: "42",
+    sessionId: 9,
+    track: { id: "anyma-1", name: "Pictures Of You", artist: "Anyma" },
+    readyQueue: [{ id: "next-1", name: "Queued", artist: "Queued Artist" }],
+  });
+  await runtime.handle({
+    type: "track_completed",
+    uid: "42",
+    sessionId: 9,
+    track: { id: "anyma-2", name: "Eternity", artist: "Anyma" },
+    readyQueue: [{ id: "next-2", name: "Queued Again", artist: "Queued Artist" }],
+  });
+  await runtime.handle({
+    type: "track_skipped",
+    uid: "42",
+    sessionId: 9,
+    track: { id: "bad-1", name: "Too Much", artist: "A" },
+  });
+
+  const reflection = store.artifact("42", "session_reflection.md");
+  assert.match(reflection?.content ?? "", /# Session Reflection/);
+  assert.match(reflection?.content ?? "", /Pictures Of You - Anyma/);
+  assert.match(reflection?.content ?? "", /Eternity - Anyma/);
+  assert.match(reflection?.content ?? "", /Too Much - A/);
+  assert.match(reflection?.content ?? "", /session_artist:Anyma/);
+  assert.match(reflection?.content ?? "", /single skip/i);
+});
+
 test("runtime records explicit listener text in the profile without promoting it to a stable fact", async () => {
   const store = runtimeStore();
   const runtime = new RadioAgentRuntime({ mode: "assisted", store, now: () => "2026-06-03T01:02:03.000Z" });
@@ -510,6 +544,7 @@ test("runtime plans an agent-owned program window on queue low", async () => {
   store.saveArtifact("42", "station_now.md", "# Station Now\nlate_night", "station-context/v1");
   store.saveArtifact("42", "program_contract.md", "# Program Contract\nlate-night R&B", "program-contract/v1");
   store.saveArtifact("42", "listener_session.md", "# Listener Session\nactive_request: R&B\nnext_promise: stay inside R&B", "listener-session/v1");
+  store.saveArtifact("42", "session_reflection.md", "# Session Reflection\n## Session Signals\n- session_artist:SZA", "session-reflection/v1");
   let receivedSnapshot: Record<string, unknown> | null = null;
   const programDirector = {
     plan: async (snapshot: Record<string, unknown>) => {
@@ -549,6 +584,7 @@ test("runtime plans an agent-owned program window on queue low", async () => {
   assert.match(String(receivedSnapshot?.now), /late_night/);
   assert.match(String(receivedSnapshot?.contract), /late-night R&B/);
   assert.match(String(receivedSnapshot?.session), /active_request: R&B/);
+  assert.match(String(receivedSnapshot?.reflection), /session_artist:SZA/);
   assert.equal((receivedSnapshot?.memoryFacts as RadioAgentMemory[] | undefined)?.[0]?.key, "artist:SZA");
   assert.equal((receivedSnapshot?.currentTrack as Record<string, unknown> | null)?.name, "Good Days");
   assert.equal((receivedSnapshot?.currentTrack as Record<string, unknown> | null)?.raw, undefined);

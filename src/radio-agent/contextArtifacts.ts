@@ -46,6 +46,16 @@ export interface BuildListenerSessionMarkdownArgs {
   hostGuidance: string;
 }
 
+export interface BuildSessionReflectionMarkdownArgs {
+  updatedAt: string;
+  completedTracks: Track[];
+  skippedTracks: Track[];
+  correctionTexts: string[];
+  sessionSignals: string[];
+  temporaryAvoids: string[];
+  longTermCandidates: string[];
+}
+
 export function buildUserProfileMarkdown(args: BuildUserProfileMarkdownArgs): string {
   return [
     "# User Profile",
@@ -132,6 +142,38 @@ export function buildListenerSessionMarkdown(args: BuildListenerSessionMarkdownA
     "- Treat session requests as active operating constraints, not permanent taste facts.",
     "- Do not promote one skip or one correction into a durable dislike without repeated evidence.",
     "- Do not read internal planning, model, trace, or artifact terms aloud.",
+    "",
+  ].join("\n");
+}
+
+export function buildSessionReflectionMarkdown(args: BuildSessionReflectionMarkdownArgs): string {
+  return [
+    "# Session Reflection",
+    "",
+    `updated: ${args.updatedAt}`,
+    "",
+    "## Completed Tracks",
+    ...trackLines(args.completedTracks),
+    "",
+    "## Skipped Tracks",
+    ...trackLines(args.skippedTracks),
+    "",
+    "## Corrections",
+    ...listLines(args.correctionTexts),
+    "",
+    "## Session Signals",
+    ...listLines(args.sessionSignals),
+    "",
+    "## Temporary Avoids",
+    ...listLines(args.temporaryAvoids),
+    "",
+    "## Long-Term Candidates",
+    ...listLines(args.longTermCandidates),
+    "",
+    "## Reflection Rules",
+    "- Completed tracks are positive session evidence, especially when repeated.",
+    "- Do not turn a single skip into a permanent dislike.",
+    "- Promote a long-term preference only after repeated evidence across requests or sessions.",
     "",
   ].join("\n");
 }

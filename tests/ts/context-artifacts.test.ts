@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   buildListenerSessionMarkdown,
   buildProgramContractMarkdown,
+  buildSessionReflectionMarkdown,
   buildStationNowMarkdown,
   buildUserProfileMarkdown,
 } from "../../src/radio-agent/contextArtifacts.js";
@@ -92,4 +93,26 @@ test("listener session markdown records the active request, boundaries, and DJ p
   assert.match(markdown, /classical chamber music/);
   assert.match(markdown, /Stay in R&B until the listener asks to move elsewhere/);
   assert.match(markdown, /do not treat this as a permanent dislike/i);
+});
+
+test("session reflection markdown summarizes outcomes without over-promoting skips", () => {
+  const markdown = buildSessionReflectionMarkdown({
+    updatedAt: "2026-06-03T01:02:03.000Z",
+    completedTracks: [
+      { id: "a1", name: "Pictures Of You", artist: "Anyma" },
+      { id: "a2", name: "Eternity", artist: "Anyma" },
+    ],
+    skippedTracks: [{ id: "bad-1", name: "Too Much", artist: "A" }],
+    correctionTexts: ["不要电子，回到 R&B"],
+    sessionSignals: ["Repeated completed listening returned to Anyma."],
+    temporaryAvoids: ["bad-1", "generic electronic"],
+    longTermCandidates: ["artist:Anyma"],
+  });
+
+  assert.match(markdown, /# Session Reflection/);
+  assert.match(markdown, /Pictures Of You - Anyma/);
+  assert.match(markdown, /Too Much - A/);
+  assert.match(markdown, /不要电子，回到 R&B/);
+  assert.match(markdown, /Repeated completed listening returned to Anyma/);
+  assert.match(markdown, /Do not turn a single skip into a permanent dislike/i);
 });

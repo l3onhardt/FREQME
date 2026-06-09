@@ -84,7 +84,9 @@ function buildPrompt(context: RadioAgentContextSnapshot, createdAt: string): str
     section("Station Now", context.now),
     section("Program Contract", context.contract),
     section("Listener Session", context.session),
+    section("Session Reflection", context.reflection),
     section("Memory Facts", context.memoryFacts.map(formatMemory).join("\n")),
+    section("Memory Hypotheses", context.memoryHypotheses.map(formatMemory).join("\n")),
     section("Recent Events", JSON.stringify(context.recentEvents)),
     section("Current Track", JSON.stringify(context.currentTrack)),
     section("Ready Queue", JSON.stringify(context.readyQueue)),
@@ -264,6 +266,7 @@ function traceBasisFromContext(context: RadioAgentContextSnapshot): RadioAgentPr
     now: context.now,
     contract: context.contract,
     session: context.session,
+    reflection: context.reflection,
     eventType: context.eventType,
   };
 }
