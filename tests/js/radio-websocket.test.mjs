@@ -25,6 +25,7 @@ function createElement(id = '') {
     dataset: {},
     disabled: false,
     ended: true,
+    hidden: false,
     paused: true,
     playCount: 0,
     src: '',
@@ -98,6 +99,10 @@ function loadRadio({ fetchImpl, spectrumBarCount = 0 } = {}) {
     'audio-tts',
     'account-list',
     'add-account-btn',
+    'agent-status-action',
+    'agent-status-observation',
+    'agent-status-panel',
+    'agent-status-repair',
     'btn-play',
     'btn-skip',
     'display-name-input',
@@ -1019,6 +1024,55 @@ test('request status tells listener whether the requested direction is queued', 
   });
 
   assert.equal(elements.get('dj-text').textContent, '没找到特别准的，我先往这个情绪靠。');
+});
+
+test('radio agent status is shown as safe listener-facing context', async () => {
+  const requests = [];
+  const { context, elements } = loadRadio({
+    fetchImpl: async (url) => {
+      requests.push(String(url));
+      if (String(url).startsWith('/api/radio/agent/status')) {
+        return {
+          ok: true,
+          json: async () => ({
+            explainability: {
+              journal: {
+                observation: 'Queue is low after the listener asked for R&B.',
+                interpretation: 'prompt JSON trace should never be shown.',
+                action: 'Next attempt is a verified neo soul bridge after Nick Drake is skipped.',
+                nextCheck: 'Confirm the next track stays inside R&B.',
+              },
+              repair: {
+                issue: 'A previous fallback drifted outside the R&B contract.',
+                correction: 'Blocked classical and ambient fallback anchors.',
+                nextAttempt: 'Use guardrails before the next queue fill.',
+              },
+            },
+          }),
+        };
+      }
+      return { ok: true, json: async () => ({}) };
+    },
+  });
+
+  await context.handleMessage({
+    type: 'play_track',
+    track: { name: 'Warm R&B', artist: 'Singer' },
+    url: '/api/radio/audio/1',
+  });
+  await flushAsyncWork();
+
+  assert.equal(elements.get('agent-status-panel').hidden, false);
+  assert.match(elements.get('agent-status-observation').textContent, /Queue is low/);
+  assert.match(elements.get('agent-status-action').textContent, /Nick Drake/);
+  assert.match(elements.get('agent-status-repair').textContent, /guardrails/);
+  const visibleStatus = [
+    elements.get('agent-status-observation').textContent,
+    elements.get('agent-status-action').textContent,
+    elements.get('agent-status-repair').textContent,
+  ].join(' ');
+  assert.doesNotMatch(visibleStatus, /prompt|JSON trace/i);
+  assert.ok(requests.some((url) => url === '/api/radio/agent/status'));
 });
 
 test('planning request status speaks visually without changing current playback', async () => {

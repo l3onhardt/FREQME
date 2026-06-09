@@ -82,6 +82,10 @@ const progressTrack = document.querySelector('.progress-track');
 const lyricsPanel = document.getElementById('lyrics-panel');
 const lyricsCurrent = document.getElementById('lyrics-current');
 const lyricsNext = document.getElementById('lyrics-next');
+const agentStatusPanel = document.getElementById('agent-status-panel');
+const agentStatusObservation = document.getElementById('agent-status-observation');
+const agentStatusAction = document.getElementById('agent-status-action');
+const agentStatusRepair = document.getElementById('agent-status-repair');
 const RADIO_STATE_KEY = 'freqme.radioState.v1';
 
 let currentLyrics = [];
@@ -584,6 +588,55 @@ async function playTrack(track, url) {
   isPlaying = true;
   document.getElementById('btn-play').textContent = '⏸';
   startProgressLoop();
+}
+
+function safeAgentStatusText(value) {
+  const text = String(value || '').replace(/\s+/g, ' ').trim();
+  if (!text) return '';
+  if (/\b(model|prompt|json|tool call|shadow decision|decision trace|trace basis|verification)\b/i.test(text)) {
+    return '';
+  }
+  return text.slice(0, 180).trim();
+}
+
+function setAgentStatusLine(element, prefix, value) {
+  if (!element) return false;
+  const text = safeAgentStatusText(value);
+  element.textContent = text ? `${prefix}${text}` : '';
+  element.hidden = !text;
+  return Boolean(text);
+}
+
+function clearAgentStatus() {
+  if (agentStatusObservation) agentStatusObservation.textContent = '';
+  if (agentStatusAction) agentStatusAction.textContent = '';
+  if (agentStatusRepair) agentStatusRepair.textContent = '';
+  if (agentStatusPanel) agentStatusPanel.hidden = true;
+}
+
+function renderAgentStatus(explainability) {
+  if (!agentStatusPanel) return;
+  const journal = explainability?.journal || {};
+  const repair = explainability?.repair || {};
+  const shown = [
+    setAgentStatusLine(agentStatusObservation, '观察：', journal.observation),
+    setAgentStatusLine(agentStatusAction, '下一步：', journal.action || journal.nextCheck),
+    setAgentStatusLine(agentStatusRepair, '修正：', repair.nextAttempt || repair.correction || repair.issue),
+  ];
+  agentStatusPanel.hidden = !shown.some(Boolean);
+}
+
+async function refreshAgentStatus() {
+  if (!agentStatusPanel) return;
+  const query = uid ? `?uid=${encodeURIComponent(uid)}` : '';
+  try {
+    const resp = await fetch(`/api/radio/agent/status${query}`);
+    if (!resp.ok) return;
+    const data = await resp.json();
+    renderAgentStatus(data.explainability);
+  } catch {
+    clearAgentStatus();
+  }
 }
 
 function clearIntroFallbackTimer() {
@@ -1234,6 +1287,7 @@ async function handleMessage(msg) {
   switch (msg.type) {
     case 'session_start': {
       resetSegueGate();
+      void refreshAgentStatus();
       const sl = document.getElementById('scene-label');
       const sceneMap = { '深夜': 'FREQME 深夜', '清晨': 'FREQME 清晨', '午后': 'FREQME 午后' };
       sl.textContent = sceneMap[msg.scene] || 'FREQME';
@@ -1265,6 +1319,7 @@ async function handleMessage(msg) {
       resetSegueGate();
       audioTTS._hasIntro = false;
       playTrack(msg.track, msg.url);
+      void refreshAgentStatus();
       break;
     }
 
@@ -1305,6 +1360,7 @@ async function handleMessage(msg) {
     }
 
     case 'dj_message': {
+      void refreshAgentStatus();
       if (msg.text) {
         if (msg.tts_ready && msg.tts_hash) {
           playTTS(msg.tts_hash, msg.text);
@@ -1319,6 +1375,7 @@ async function handleMessage(msg) {
     }
 
     case 'request_status': {
+      void refreshAgentStatus();
       if (msg.text) {
         document.getElementById('dj-text').textContent = msg.text;
         if (msg.status === 'planning') {
