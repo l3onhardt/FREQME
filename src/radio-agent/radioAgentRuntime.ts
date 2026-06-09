@@ -1,6 +1,7 @@
 import type { LibraryCensus, LibraryCensusResult } from "./libraryCensus.js";
 import { buildRadioAgentContextSnapshot } from "./agentContext.js";
 import {
+  buildListenerSessionMarkdown,
   buildProgramContractMarkdown,
   buildStationNowMarkdown,
   buildUserProfileMarkdown,
@@ -25,6 +26,7 @@ import type { Track } from "../types.js";
 
 const DEFAULT_LIBRARY_SCAN_FRESHNESS_MS = 6 * 60 * 60 * 1000;
 const COMPACT_PROFILE_SOURCE_VERSION = "taste-distiller/v2-compact";
+const LISTENER_SESSION_SOURCE_VERSION = "listener-session/v1";
 
 interface RadioAgentRuntimeStore {
   appendEvent(event: RadioAgentEvent): number;
@@ -96,7 +98,7 @@ export class RadioAgentRuntime {
   status(uid: string | null, sessionId: number | null = null): RadioAgentStatus {
     const artifacts: RadioAgentStatus["artifacts"] = {};
     if (uid) {
-      for (const key of ["user_profile.md", "station_now.md", "program_contract.md"]) {
+      for (const key of ["user_profile.md", "station_now.md", "program_contract.md", "listener_session.md"]) {
         const artifact = this.deps.store.artifact(uid, key);
         if (artifact) {
           artifacts[key] = {
@@ -293,6 +295,7 @@ export class RadioAgentRuntime {
     const timezoneName = stringValue(event.payload.timezoneName) || stringValue(sessionEvent?.payload.timezoneName);
     const localTimeBlock = stringValue(event.payload.localTimeBlock) || stringValue(sessionEvent?.payload.localTimeBlock);
     const listenerStateHypothesis = listenerStateForEvent(event);
+    const activeDirection = currentSessionDirection(recentEvents);
 
     this.deps.store.saveArtifact(
       event.uid,
@@ -308,9 +311,16 @@ export class RadioAgentRuntime {
       `station-context/v1 session=${event.sessionId ?? "none"}`,
     );
 
+    const sessionSummary = listenerSessionFromEvents(recentEvents, activeDirection, this.now());
+    this.deps.store.saveArtifact(
+      event.uid,
+      "listener_session.md",
+      buildListenerSessionMarkdown(sessionSummary),
+      `${LISTENER_SESSION_SOURCE_VERSION} session=${event.sessionId ?? "none"}`,
+    );
+
     const tasteFacts = this.deps.store.memories(event.uid, "taste_fact", 5);
     const tasteHypotheses = this.deps.store.memories(event.uid, "taste_hypothesis", 5);
-    const activeDirection = currentSessionDirection(recentEvents);
     this.deps.store.saveArtifact(
       event.uid,
       "program_contract.md",
@@ -367,6 +377,7 @@ export class RadioAgentRuntime {
         "user_profile.md": this.deps.store.artifact(event.uid, "user_profile.md")?.content,
         "station_now.md": this.deps.store.artifact(event.uid, "station_now.md")?.content,
         "program_contract.md": this.deps.store.artifact(event.uid, "program_contract.md")?.content,
+        "listener_session.md": this.deps.store.artifact(event.uid, "listener_session.md")?.content,
       };
       const currentTrack = extractTrack(event.payload.currentTrack) || extractTrack(event.payload.track);
       const readyQueue = extractReadyQueue(event.payload.readyQueue);
@@ -482,6 +493,78 @@ function currentSessionDirection(events: RadioAgentEvent[]): { stationGoal: stri
       "Do not fall back to EDM, classical, ambient piano, or old profile anchors unless they clearly support the R&B request.",
     ],
   };
+}
+
+function listenerSessionFromEvents(
+  events: RadioAgentEvent[],
+  activeDirection: { stationGoal: string; allowedMoves: string[]; blockedMoves: string[] } | null,
+  updatedAt: string,
+): Parameters<typeof buildListenerSessionMarkdown>[0] {
+  const explicitUserText = events.find((event) => event.type === "user_text" && isRnbRequest(stringValue(event.payload.text)));
+  const explicitText = stringValue(explicitUserText?.payload.text);
+  const rejectedMoves = explicitText ? rejectedMovesFromText(explicitText) : [];
+  const skipCorrections = events
+    .filter((event) => event.type === "track_skipped")
+    .map((event) => {
+      const track = extractTrack(event.payload.track) || extractTrack(event.payload.currentTrack);
+      return track ? `Skipped ${track.name || "unknown track"} - ${track.artist || "unknown artist"} as session evidence only.` : "";
+    })
+    .filter(Boolean)
+    .slice(0, 4);
+  const userCorrections = events
+    .filter((event) => event.type === "user_text")
+    .map((event) => stringValue(event.payload.text))
+    .filter(Boolean)
+    .slice(0, 4)
+    .map((text) => `User said: ${text}`);
+
+  if (activeDirection) {
+    return {
+      updatedAt,
+      activeRequest: "R&B",
+      acceptedDirection: "Keep the current session centered on R&B vocals, groove, and closely related soul textures.",
+      rejectedMoves: dedupeStrings([
+        ...rejectedMoves,
+        "generic electronic",
+        "EDM",
+        "classical chamber music",
+        "ambient piano",
+        "old electronic/classical profile anchors unless they clearly support R&B",
+      ]),
+      recentCorrections: [...userCorrections, ...skipCorrections].slice(0, 6),
+      openHypotheses: [
+        "The listener wants the current session to stay in R&B; this is an active session constraint.",
+        "Do not treat this request as a permanent dislike of electronic, classical, or ambient music.",
+      ],
+      nextPromise: "Stay in R&B until the listener asks to move elsewhere.",
+      hostGuidance: "Acknowledge the R&B lane naturally; keep vocals and groove forward, and avoid vague filler.",
+    };
+  }
+
+  return {
+    updatedAt,
+    activeRequest: explicitText || "none",
+    acceptedDirection: "Keep the station coherent while stronger listener intent emerges.",
+    rejectedMoves,
+    recentCorrections: [...userCorrections, ...skipCorrections].slice(0, 6),
+    openHypotheses: [
+      "Use recent behavior as session evidence until repeated patterns justify long-term memory updates.",
+    ],
+    nextPromise: "Keep the current direction stable unless the listener corrects it.",
+    hostGuidance: "Prefer a short concrete handoff over generic atmosphere talk; stay silent when there is nothing useful to add.",
+  };
+}
+
+function rejectedMovesFromText(text: string): string[] {
+  const moves: string[] = [];
+  if (/电子|electronic|edm|techno|trance|ambient/i.test(text)) moves.push("generic electronic");
+  if (/古典|classical|chamber|concerto|sonata|quartet/i.test(text)) moves.push("classical chamber music");
+  if (/氛围|ambient|piano/i.test(text)) moves.push("ambient piano");
+  return dedupeStrings(moves);
+}
+
+function dedupeStrings(values: string[]): string[] {
+  return Array.from(new Set(values.map((value) => value.trim()).filter(Boolean)));
 }
 
 function isRnbRequest(text: string): boolean {

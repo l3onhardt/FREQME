@@ -35,6 +35,17 @@ export interface BuildProgramContractMarkdownArgs {
   hostStyle: string;
 }
 
+export interface BuildListenerSessionMarkdownArgs {
+  updatedAt: string;
+  activeRequest: string;
+  acceptedDirection: string;
+  rejectedMoves: string[];
+  recentCorrections: string[];
+  openHypotheses: string[];
+  nextPromise: string;
+  hostGuidance: string;
+}
+
 export function buildUserProfileMarkdown(args: BuildUserProfileMarkdownArgs): string {
   return [
     "# User Profile",
@@ -94,6 +105,33 @@ export function buildProgramContractMarkdown(args: BuildProgramContractMarkdownA
     `- ${args.hostStyle}`,
     "- Keep internal planning terms out of listener-facing speech.",
     "- Prefer silence over filler when there is nothing useful to say.",
+    "",
+  ].join("\n");
+}
+
+export function buildListenerSessionMarkdown(args: BuildListenerSessionMarkdownArgs): string {
+  return [
+    "# Listener Session",
+    "",
+    `updated: ${args.updatedAt}`,
+    `active_request: ${args.activeRequest || "unknown"}`,
+    `accepted_direction: ${args.acceptedDirection || "unknown"}`,
+    `next_promise: ${args.nextPromise || "Keep the current direction until the listener changes it."}`,
+    "",
+    "## Rejected Moves",
+    ...listLines(args.rejectedMoves),
+    "",
+    "## Recent Corrections",
+    ...listLines(args.recentCorrections),
+    "",
+    "## Open Hypotheses",
+    ...listLines(args.openHypotheses),
+    "",
+    "## DJ Stance",
+    `- ${args.hostGuidance || "Speak only when it helps the listener understand the next move."}`,
+    "- Treat session requests as active operating constraints, not permanent taste facts.",
+    "- Do not promote one skip or one correction into a durable dislike without repeated evidence.",
+    "- Do not read internal planning, model, trace, or artifact terms aloud.",
     "",
   ].join("\n");
 }

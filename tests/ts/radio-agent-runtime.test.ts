@@ -451,6 +451,45 @@ test("runtime keeps an explicit R&B request in the program contract across later
   assert.doesNotMatch(contract?.content ?? "", /Use adjacent electronic or ambient/i);
 });
 
+test("runtime writes current listener session memory for explicit R&B boundaries", async () => {
+  const store = runtimeStore({
+    memories: (uid: string, kind: string, limit: number) =>
+      [
+        {
+          uid,
+          key: "artist:Anyma",
+          kind,
+          value: "Listener has repeated library evidence for Anyma.",
+          confidence: 0.91,
+          evidenceCount: 6,
+          evidenceRefs: ["track:anyma-1"],
+          updatedAt: "2026-06-03T01:00:00.000Z",
+        },
+      ].slice(0, limit),
+  });
+  const runtime = new RadioAgentRuntime({ mode: "assisted", store, now: () => "2026-06-03T01:02:03.000Z" });
+
+  await runtime.handle({
+    type: "user_text",
+    uid: "42",
+    sessionId: 9,
+    text: "放点 rnb，不要电子，不要古典",
+  });
+  await runtime.handle({
+    type: "playback_started",
+    uid: "42",
+    sessionId: 9,
+    track: { id: "old-1", name: "Says", artist: "Nils Frahm" },
+  });
+
+  const session = store.artifact("42", "listener_session.md");
+  assert.match(session?.content ?? "", /active_request: R&B/i);
+  assert.match(session?.content ?? "", /electronic|电子/i);
+  assert.match(session?.content ?? "", /classical|古典/i);
+  assert.match(session?.content ?? "", /Stay in R&B until the listener asks to move elsewhere/i);
+  assert.doesNotMatch(session?.content ?? "", /active_request:.*Anyma/i);
+});
+
 test("runtime plans an agent-owned program window on queue low", async () => {
   const store = runtimeStore({
     memories: (uid: string, kind: string, limit: number) =>
@@ -470,6 +509,7 @@ test("runtime plans an agent-owned program window on queue low", async () => {
   store.saveArtifact("42", "user_profile.md", "# User Profile\nSZA", "taste-distiller/v2-compact");
   store.saveArtifact("42", "station_now.md", "# Station Now\nlate_night", "station-context/v1");
   store.saveArtifact("42", "program_contract.md", "# Program Contract\nlate-night R&B", "program-contract/v1");
+  store.saveArtifact("42", "listener_session.md", "# Listener Session\nactive_request: R&B\nnext_promise: stay inside R&B", "listener-session/v1");
   let receivedSnapshot: Record<string, unknown> | null = null;
   const programDirector = {
     plan: async (snapshot: Record<string, unknown>) => {
@@ -508,6 +548,7 @@ test("runtime plans an agent-owned program window on queue low", async () => {
   assert.match(String(receivedSnapshot?.profile), /SZA/);
   assert.match(String(receivedSnapshot?.now), /late_night/);
   assert.match(String(receivedSnapshot?.contract), /late-night R&B/);
+  assert.match(String(receivedSnapshot?.session), /active_request: R&B/);
   assert.equal((receivedSnapshot?.memoryFacts as RadioAgentMemory[] | undefined)?.[0]?.key, "artist:SZA");
   assert.equal((receivedSnapshot?.currentTrack as Record<string, unknown> | null)?.name, "Good Days");
   assert.equal((receivedSnapshot?.currentTrack as Record<string, unknown> | null)?.raw, undefined);

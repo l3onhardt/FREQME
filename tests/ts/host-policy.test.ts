@@ -3,6 +3,9 @@ import test from "node:test";
 
 import { decideHostSpeech } from "../../src/radio-agent/hostPolicy.js";
 
+const mojibakeTerms = /鎴|銆|鐨|涓|浣|绾|俙|紝/;
+const awkwardTerms = /继续保持这个感觉|旁边|质感|主线还是|当前电台方向/;
+
 test("host speaks for first station handoff", () => {
   const decision = decideHostSpeech({
     eventType: "login_completed",
@@ -13,6 +16,7 @@ test("host speaks for first station handoff", () => {
 
   assert.equal(decision.shouldSpeak, true);
   assert.equal(decision.event, "station_open");
+  assert.doesNotMatch(decision.text || "", mojibakeTerms);
 });
 
 test("host opening line changes after profile is ready", () => {
@@ -25,7 +29,8 @@ test("host opening line changes after profile is ready", () => {
 
   assert.equal(decision.shouldSpeak, true);
   assert.equal(decision.event, "station_open");
-  assert.doesNotMatch(decision.text || "", /后台|整理/);
+  assert.doesNotMatch(decision.text || "", /后台|整理|profile|model|trace/i);
+  assert.doesNotMatch(decision.text || "", mojibakeTerms);
   assert.match(decision.text || "", /熟悉|接上|习惯/);
 });
 
@@ -53,6 +58,24 @@ test("host speaks for direct user text", () => {
 
   assert.equal(decision.shouldSpeak, true);
   assert.equal(decision.event, "user_ack");
+  assert.doesNotMatch(decision.text || "", mojibakeTerms);
+});
+
+test("host acknowledges explicit R&B boundaries in human language", () => {
+  const decision = decideHostSpeech({
+    eventType: "user_text",
+    recentHostLines: [],
+    profileReady: true,
+    lowInterruption: false,
+    userText: "放点 rnb，不要电子，不要古典",
+  });
+
+  assert.equal(decision.shouldSpeak, true);
+  assert.equal(decision.event, "user_ack");
+  assert.match(decision.text || "", /R&B|rnb/i);
+  assert.match(decision.text || "", /电子|古典|避开/);
+  assert.doesNotMatch(decision.text || "", awkwardTerms);
+  assert.doesNotMatch(decision.text || "", mojibakeTerms);
 });
 
 test("host text never exposes internal planning terms", () => {
@@ -65,4 +88,5 @@ test("host text never exposes internal planning terms", () => {
   });
 
   assert.equal(/shadow decision|low-interruption|bridge/i.test(decision.text || ""), false);
+  assert.doesNotMatch(decision.text || "", mojibakeTerms);
 });

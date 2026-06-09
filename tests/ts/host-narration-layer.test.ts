@@ -7,7 +7,7 @@ import type { BoundaryDecision, StationContract } from "../../src/radio/radioBra
 const contract: StationContract = {
   id: "contract-1",
   mainDirection: "late-night R&B",
-  rawUserText: "放点深夜听的rnb",
+  rawUserText: "放点深夜听的 rnb",
   allowedAdjacent: ["alt-R&B"],
   softBridge: ["ambient electronic"],
   disallowed: ["classical chamber music"],
@@ -31,8 +31,8 @@ const vagueContinuationContract: StationContract = {
 
 const internalTerms =
   /profile|algorithm|model|candidate|trace|JSON|verification|boundary|contract|边界|合约|候选|画像|算法|模型|验证|轨迹/i;
-
-const awkwardNarrationTerms = /旁边|质感|空间感/;
+const awkwardNarrationTerms = /旁边|质感|空间感|贴近|主线还是|继续保持这个感觉|当前电台方向/;
+const mojibakeTerms = /鎴|杩|銆|鐨|鍚|涓|浣|绾|俙|紝/;
 const awkwardChineseSpacing = /\u300b\s+[\u4e00-\u9fff]/u;
 
 test("narrates bridge entry in listener-facing language", async () => {
@@ -50,6 +50,8 @@ test("narrates bridge entry in listener-facing language", async () => {
   assert.equal(result.event, "bridge_entered");
   assert.match(result.text, /过渡|拉回|R&B/i);
   assert.doesNotMatch(result.text, internalTerms);
+  assert.doesNotMatch(result.text, awkwardNarrationTerms);
+  assert.doesNotMatch(result.text, mojibakeTerms);
 });
 
 test("suppresses ordinary on-contract continuations", async () => {
@@ -81,6 +83,7 @@ test("narrates adjacent moves sparingly", async () => {
   assert.match(result.text, /late-night R&B/i);
   assert.doesNotMatch(result.text, internalTerms);
   assert.doesNotMatch(result.text, awkwardNarrationTerms);
+  assert.doesNotMatch(result.text, mojibakeTerms);
 });
 
 test("narrates adjacent moves naturally when no concrete direction is available", async () => {
@@ -98,6 +101,7 @@ test("narrates adjacent moves naturally when no concrete direction is available"
   assert.match(result.text, /Nils Frahm|Says/);
   assert.doesNotMatch(result.text, internalTerms);
   assert.doesNotMatch(result.text, awkwardNarrationTerms);
+  assert.doesNotMatch(result.text, mojibakeTerms);
   assert.doesNotMatch(result.text, awkwardChineseSpacing);
 });
 
@@ -115,6 +119,7 @@ test("does not read vague continuation text aloud as the station direction", asy
   assert.equal(result.event, "direction_changed");
   assert.doesNotMatch(result.text, /继续保持这个感觉|主线还是|当前电台方向/);
   assert.doesNotMatch(result.text, internalTerms);
+  assert.doesNotMatch(result.text, mojibakeTerms);
 });
 
 test("acknowledges station direction without internal terms", () => {
@@ -122,6 +127,9 @@ test("acknowledges station direction without internal terms", () => {
   const text = layer.requestAck(contract);
 
   assert.match(text, /late-night R&B/i);
+  assert.match(text, /守住|避开|人声|律动/);
   assert.doesNotMatch(text, internalTerms);
+  assert.doesNotMatch(text, awkwardNarrationTerms);
+  assert.doesNotMatch(text, mojibakeTerms);
   assert.ok(text.length <= 120);
 });

@@ -55,22 +55,19 @@ export class HostNarrationLayer {
     const status = args.boundaryDecision?.status;
     if (status === "accept_as_bridge") {
       const direction = listenerFacingDirection(args.stationContract);
-      const returnLine = direction ? `下一首我会带回 ${direction}。` : "后面我会把电台稳稳接住。";
+      const returnLine = direction ? `下一首我会拉回 ${direction}。` : "下一首我会把电台重新稳住。";
       return {
         shouldSpeak: true,
         event: "bridge_entered",
-        text: compactText(
-          `这里先用 ${trackLabel(args.track)}做一个短过渡，${returnLine}`,
-          180,
-        ),
+        text: compactText(`这里先用 ${trackLabel(args.track)} 做一首短过渡，${returnLine}`, 180),
       };
     }
 
     if (status === "accept_as_adjacent" && args.recentNarrationCount <= 0) {
       const direction = listenerFacingDirection(args.stationContract);
       const text = direction
-        ? `这首先用 ${trackLabel(args.track)}换一下呼吸，后面我会带回 ${direction}。`
-        : `我先用 ${trackLabel(args.track)}接住这一段，让电台稳稳往前走。`;
+        ? `这首稍微放宽一点，但后面会回到 ${direction}。`
+        : `先用${trackLabel(args.track)}接住这一段，电台不会乱跳。`;
       return {
         shouldSpeak: true,
         event: "direction_changed",
@@ -85,8 +82,8 @@ export class HostNarrationLayer {
     const direction = listenerFacingDirection(contract);
     return compactText(
       direction
-        ? `收到，接下来我会守住 ${direction} 这条线，轻一点，不乱跳。`
-        : "收到，接下来我会守住刚才舒服的气口，轻一点，不乱跳。",
+        ? `收到，接下来我会守住 ${direction}，人声和律动靠前，明显不合适的方向先避开。`
+        : "收到，接下来我会守住刚才舒服的气口，不乱跳。",
       120,
     );
   }

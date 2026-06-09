@@ -116,6 +116,7 @@ export interface RadioAgentProgramWindow {
     profile: string;
     now: string;
     contract: string;
+    session?: string;
     eventType: RadioAgentEventType;
   };
   source: "model" | "deterministic_fallback";
@@ -163,6 +164,7 @@ export interface RadioAgentContextSnapshot {
   profile: string;
   now: string;
   contract: string;
+  session: string;
   memoryFacts: RadioAgentMemory[];
   memoryHypotheses: RadioAgentMemory[];
   recentEvents: RadioAgentEvent[];
