@@ -152,6 +152,7 @@ function fallbackCandidateTasks(context: RadioAgentContextSnapshot): RadioAgentC
     ...reflectionCompletedArtists(context.reflection),
     ...reflectionPositiveAnchors(context.reflection),
     ...context.memoryFacts.map(memoryAnchor),
+    ...profileAnchors(context.profile),
     context.currentTrack?.artist,
     ...context.readyQueue.map((track) => track.artist),
     contract,
@@ -264,6 +265,7 @@ function fallbackHostAnchor(context: RadioAgentContextSnapshot): string {
     reflectionCompletedArtists(context.reflection)[0] ||
     reflectionPositiveAnchors(context.reflection)[0] ||
     memoryAnchor(context.memoryFacts[0]) ||
+    profileAnchors(context.profile)[0] ||
     context.currentTrack?.artist ||
     context.readyQueue[0]?.artist ||
     "";
@@ -352,7 +354,11 @@ function toSnakeCase(value: string): string {
 
 function fallbackStationBrief(context: RadioAgentContextSnapshot): string {
   const contractGoal = firstContractLine(context.contract, "station_goal");
-  return listenerFacingGoal(contractGoal, context.memoryFacts) || "Keep the current personal radio session coherent.";
+  const profileGoal = listenerFacingProfileGoal(context.profile);
+  if (contractGoal && profileGoal && isGenericContractGoal(contractGoal)) {
+    return `${contractGoal}; keep it close to ${profileGoal}.`;
+  }
+  return listenerFacingGoal(contractGoal, context.memoryFacts) || profileGoal || "Keep the current personal radio session coherent.";
 }
 
 function fallbackMainDirection(context: RadioAgentContextSnapshot): string {
@@ -361,6 +367,7 @@ function fallbackMainDirection(context: RadioAgentContextSnapshot): string {
     reflectionCompletedArtists(context.reflection)[0] ||
     reflectionPositiveAnchors(context.reflection)[0] ||
     memoryAnchor(context.memoryFacts[0]) ||
+    profileAnchors(context.profile)[0] ||
     context.currentTrack?.artist ||
     context.currentTrack?.name;
   if (contract && (!anchor || !anchorFitsContract(contract, anchor))) return contract;
@@ -519,6 +526,51 @@ function memoryAnchor(memory: RadioAgentMemory | undefined): string {
   return artistMatch?.[1]?.replace(/\.$/, "").trim() ?? "";
 }
 
+function profileAnchors(profile: string): string[] {
+  const anchors: string[] = [];
+  for (const line of profileSectionLines(profile, "Stable Taste Facts")) {
+    const anchor = profileAnchorFromLine(line);
+    if (anchor) anchors.push(anchor);
+  }
+  for (const line of profileSectionLines(profile, "Hypotheses")) {
+    const anchor = profileAnchorFromLine(line);
+    if (anchor) anchors.push(anchor);
+  }
+  return uniqueStrings(anchors).slice(0, 6);
+}
+
+function profileSectionLines(markdown: string, heading: string): string[] {
+  const lines = markdown.split(/\r?\n/u);
+  const result: string[] = [];
+  let inSection = false;
+  for (const line of lines) {
+    if (/^##\s+/u.test(line)) {
+      inSection = line.replace(/^##\s+/u, "").trim().toLowerCase() === heading.toLowerCase();
+      continue;
+    }
+    if (!inSection) continue;
+    const item = line.replace(/^\s*-\s*/u, "").trim();
+    if (item && item.toLowerCase() !== "none") result.push(item);
+  }
+  return result;
+}
+
+function profileAnchorFromLine(line: string): string {
+  const keyMatch = line.match(/^(artist|album|theme):([^:]+):/i);
+  if (keyMatch?.[2]?.trim()) return keyMatch[2].trim();
+
+  const evidenceMatch = line.match(/\brepeated (?:library )?evidence for\s+([^.(;]+)/i)?.[1]?.trim();
+  if (evidenceMatch) return evidenceMatch;
+
+  const returnsMatch = line.match(/\breturns? to\s+([^.(;]+?)\s+for\b/i)?.[1]?.trim();
+  if (returnsMatch) return returnsMatch;
+
+  const suggestMatch = line.match(/\b(?:mention|suggest)\s+([^.(;]+)/i)?.[1]?.trim();
+  if (suggestMatch) return suggestMatch;
+
+  return "";
+}
+
 function listenerFacingGoal(goal: string, memories: RadioAgentMemory[]): string {
   const compact = goal.replace(/\s+/g, " ").trim();
   if (!compact) return "";
@@ -527,6 +579,16 @@ function listenerFacingGoal(goal: string, memories: RadioAgentMemory[]): string 
   const anchors = Array.from(new Set([...evidenceAnchorsFromText(compact), ...memories.map(memoryAnchor)].filter(Boolean))).slice(0, 3);
   if (!anchors.length) return "Keep the current personal radio session coherent.";
   return `Keep the radio close to familiar anchors like ${humanList(anchors)}.`;
+}
+
+function listenerFacingProfileGoal(profile: string): string {
+  const anchors = profileAnchors(profile).slice(0, 3);
+  if (!anchors.length) return "";
+  return `familiar anchors like ${humanList(anchors)}`;
+}
+
+function isGenericContractGoal(goal: string): boolean {
+  return /\b(personal radio|mellow|coherent|current radio mood|radio session)\b/i.test(goal);
 }
 
 function evidenceAnchorsFromText(text: string): string[] {

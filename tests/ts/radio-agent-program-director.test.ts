@@ -401,6 +401,39 @@ test("fallback planning uses the current contract when no playback or memory anc
   assert.ok(window.candidateTasks.every((task) => typeof task.style === "string"));
 });
 
+test("fallback planning uses durable user profile anchors when memory rows are temporarily empty", async () => {
+  const director = new RadioAgentProgramDirector(null, () => NOW);
+
+  const window = await director.plan({
+    ...contextSnapshot(),
+    profile: [
+      "# User Profile",
+      "",
+      "## Stable Taste Facts",
+      "- artist:FKA twigs: Listener has repeated library evidence for FKA twigs. (confidence: 0.92, evidence: 6)",
+      "- artist:James Blake: Listener returns to James Blake for late-night vocal electronics. (confidence: 0.86, evidence: 4)",
+      "",
+      "## Hypotheses",
+      "- theme:late-night: Playlist titles repeatedly suggest late night; keep this as a hypothesis until behavior confirms it. (confidence: 0.58, evidence: 2)",
+    ].join("\n"),
+    memoryFacts: [],
+    memoryHypotheses: [],
+    currentTrack: null,
+    readyQueue: [],
+    contract: "# Program Contract\nstation_goal: mellow personal radio\navoid: high-energy EDM",
+  });
+
+  assert.equal(window.source, "deterministic_fallback");
+  assert.deepEqual(
+    window.candidateTasks.slice(0, 2).map((task) => task.query),
+    ["FKA twigs", "James Blake"],
+  );
+  assert.match(window.mainDirection, /FKA twigs/i);
+  assert.match(window.stationBrief, /FKA twigs|James Blake/i);
+  assert.match(window.hostIntent.text, /FKA twigs/i);
+  assert.doesNotMatch(window.hostIntent.text, listenerUnsafeProgramTerms);
+});
+
 test("fallback planning prioritizes an explicit contract over stale taste anchors", async () => {
   const director = new RadioAgentProgramDirector(null, () => NOW);
 
