@@ -389,6 +389,33 @@ test("runtime folds completed listening back into durable agent profile context"
   assert.match(profile?.sourceVersion ?? "", /sessionEvidence=0/);
 });
 
+test("runtime treats duplicate completed events for the same track as one listening signal", async () => {
+  const store = runtimeStore();
+  const runtime = new RadioAgentRuntime({ mode: "assisted", store, now: () => "2026-06-03T01:02:03.000Z" });
+
+  await runtime.handle({
+    type: "track_completed",
+    uid: "42",
+    sessionId: 9,
+    track: { id: "sza-1", name: "Good Days", artist: "SZA" },
+    readyQueue: [],
+  });
+  await runtime.handle({
+    type: "track_completed",
+    uid: "42",
+    sessionId: 9,
+    track: { id: "sza-1", name: "Good Days", artist: "SZA" },
+    readyQueue: [],
+  });
+
+  assert.equal(store.events.filter((event) => event.type === "track_completed").length, 2);
+  assert.equal(store.memoryRows.some((item) => item.key === "session_artist:SZA"), false);
+
+  const reflection = store.artifact("42", "session_reflection.md");
+  assert.equal((reflection?.content.match(/Good Days - SZA/g) || []).length, 1);
+  assert.doesNotMatch(reflection?.content ?? "", /session_artist:SZA/);
+});
+
 test("runtime merges existing session hypotheses with new confirmations into durable taste facts", async () => {
   const store = runtimeStore();
   store.memoryRows.push({

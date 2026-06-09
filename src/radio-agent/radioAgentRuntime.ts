@@ -246,7 +246,7 @@ export class RadioAgentRuntime {
 
     const playlists = this.deps.store.playlists(event.uid, 500);
     const libraryTracks = this.deps.store.libraryTracks(event.uid, 10000);
-    const recentEvents = this.profileEvidenceEvents(event);
+    const recentEvents = dedupeCompletedListeningEvents(this.profileEvidenceEvents(event));
     const existingMemories = [
       ...this.deps.store.memories(event.uid, "taste_fact", 24),
       ...this.deps.store.memories(event.uid, "taste_hypothesis", 24),
@@ -1003,7 +1003,8 @@ function listenerSessionFromEvents(
 }
 
 function sessionReflectionFromEvents(events: RadioAgentEvent[]): Omit<Parameters<typeof buildSessionReflectionMarkdown>[0], "updatedAt"> {
-  const completedTracks = events
+  const behaviorEvents = dedupeCompletedListeningEvents(events);
+  const completedTracks = behaviorEvents
     .filter((event) => event.type === "track_completed")
     .map((event) => extractTrack(event.payload.track) || extractTrack(event.payload.currentTrack))
     .filter(isTrack)
@@ -1022,7 +1023,7 @@ function sessionReflectionFromEvents(events: RadioAgentEvent[]): Omit<Parameters
     uid: events.find((event) => event.uid)?.uid || "",
     libraryTracks: [],
     playlists: [],
-    recentEvents: events,
+    recentEvents: behaviorEvents,
   });
 
   return {
@@ -1042,6 +1043,52 @@ function sessionReflectionFromEvents(events: RadioAgentEvent[]): Omit<Parameters
       .map((item) => item.key)
       .slice(0, 8),
   };
+}
+
+function dedupeCompletedListeningEvents(events: RadioAgentEvent[]): RadioAgentEvent[] {
+  const keep = new Set<RadioAgentEvent>();
+  const lastCompletedBySession = new Map<string, string>();
+
+  for (const event of [...events].reverse()) {
+    if (event.type === "playback_started") {
+      lastCompletedBySession.delete(completedListeningScopeKey(event));
+      keep.add(event);
+      continue;
+    }
+
+    if (event.type !== "track_completed") {
+      keep.add(event);
+      continue;
+    }
+
+    const track = extractTrack(event.payload.track) || extractTrack(event.payload.currentTrack);
+    const trackKey = completedListeningTrackKey(track);
+    if (!trackKey) {
+      keep.add(event);
+      continue;
+    }
+
+    const scopeKey = completedListeningScopeKey(event);
+    if (lastCompletedBySession.get(scopeKey) === trackKey) continue;
+    lastCompletedBySession.set(scopeKey, trackKey);
+    keep.add(event);
+  }
+
+  return events.filter((event) => keep.has(event));
+}
+
+function completedListeningScopeKey(event: RadioAgentEvent): string {
+  return `${event.uid || "anonymous"}:${event.sessionId ?? "sessionless"}`;
+}
+
+function completedListeningTrackKey(track: Track | null): string {
+  if (!track) return "";
+  if (track.id) return `id:${track.id}`;
+  return `text:${normalizeListeningKey(track.name)}|${normalizeListeningKey(track.artist)}`;
+}
+
+function normalizeListeningKey(value: string): string {
+  return value.toLowerCase().replace(/\s+/g, " ").trim();
 }
 
 function rejectedMovesFromText(text: string): string[] {
