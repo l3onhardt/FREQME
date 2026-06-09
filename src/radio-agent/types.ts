@@ -168,6 +168,7 @@ export interface RadioAgentContextSnapshot {
   contract: string;
   session: string;
   reflection: string;
+  repair: string;
   memoryFacts: RadioAgentMemory[];
   memoryHypotheses: RadioAgentMemory[];
   recentEvents: RadioAgentEvent[];

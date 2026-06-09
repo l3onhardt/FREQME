@@ -85,6 +85,7 @@ function buildPrompt(context: RadioAgentContextSnapshot, createdAt: string): str
     section("Program Contract", context.contract),
     section("Listener Session", context.session),
     section("Session Reflection", context.reflection),
+    section("Agent Repair", context.repair),
     section("Memory Facts", context.memoryFacts.map(formatMemory).join("\n")),
     section("Memory Hypotheses", context.memoryHypotheses.map(formatMemory).join("\n")),
     section("Recent Events", JSON.stringify(context.recentEvents)),
@@ -145,6 +146,7 @@ function buildFallbackWindow(context: RadioAgentContextSnapshot, createdAt: stri
 
 function fallbackCandidateTasks(context: RadioAgentContextSnapshot): RadioAgentCandidateTask[] {
   const contract = contractAnchor(context.contract);
+  const failedQueries = repairFailedQueries(context.repair);
   const anchors = [
     ...reflectionPositiveAnchors(context.reflection),
     ...context.memoryFacts.map(memoryAnchor),
@@ -165,7 +167,11 @@ function fallbackCandidateTasks(context: RadioAgentContextSnapshot): RadioAgentC
     negativeConstraints: fallbackNegativeConstraints(context),
   }));
 
-  return tasks.filter(isAllowedCandidateTask).filter((task) => taskFitsContract(context, task)).slice(0, MAX_CANDIDATE_TASKS);
+  return tasks
+    .filter(isAllowedCandidateTask)
+    .filter((task) => !queryWasRecentlyFailed(task.query, failedQueries))
+    .filter((task) => taskFitsContract(context, task))
+    .slice(0, MAX_CANDIDATE_TASKS);
 }
 
 function toCandidateTask(value: unknown): RadioAgentCandidateTask | null {
@@ -271,6 +277,45 @@ function traceBasisFromContext(context: RadioAgentContextSnapshot): RadioAgentPr
     reflection: context.reflection,
     eventType: context.eventType,
   };
+}
+
+function repairFailedQueries(repair: string): string[] {
+  return [
+    ...repairSectionLines(repair, "Evidence"),
+    ...repairSectionLines(repair, "Failed Queries"),
+  ]
+    .map((line) => line.replace(/\s+\([^)]*\)\s*$/u, "").trim())
+    .filter(Boolean)
+    .slice(0, 12);
+}
+
+function repairSectionLines(markdown: string, heading: string): string[] {
+  const lines = markdown.split(/\r?\n/u);
+  const result: string[] = [];
+  let inSection = false;
+  for (const line of lines) {
+    if (/^##\s+/u.test(line)) {
+      inSection = line.replace(/^##\s+/u, "").trim().toLowerCase() === heading.toLowerCase();
+      continue;
+    }
+    if (!inSection) continue;
+    const item = line.replace(/^\s*-\s*/u, "").trim();
+    if (item && item.toLowerCase() !== "none") result.push(item);
+  }
+  return result;
+}
+
+function queryWasRecentlyFailed(query: string, failedQueries: string[]): boolean {
+  const normalizedQuery = normalizeQueryForRepair(query);
+  if (!normalizedQuery) return false;
+  return failedQueries.some((failed) => {
+    const normalizedFailed = normalizeQueryForRepair(failed);
+    return normalizedFailed === normalizedQuery;
+  });
+}
+
+function normalizeQueryForRepair(query: string): string {
+  return query.toLowerCase().replace(/[^a-z0-9&.+ ]/g, " ").replace(/\s+/g, " ").trim();
 }
 
 function parseJsonObject(raw: string): Record<string, unknown> {

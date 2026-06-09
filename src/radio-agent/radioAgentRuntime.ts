@@ -417,6 +417,7 @@ export class RadioAgentRuntime {
         "program_contract.md": this.deps.store.artifact(event.uid, "program_contract.md")?.content,
         "listener_session.md": this.deps.store.artifact(event.uid, "listener_session.md")?.content,
         "session_reflection.md": this.deps.store.artifact(event.uid, "session_reflection.md")?.content,
+        "agent_repair.md": this.deps.store.artifact(event.uid, "agent_repair.md")?.content,
       };
       const currentTrack = extractTrack(event.payload.currentTrack) || extractTrack(event.payload.track);
       const readyQueue = extractReadyQueue(event.payload.readyQueue);

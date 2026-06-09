@@ -788,6 +788,33 @@ test("runtime records executor failure feedback as an agent repair", async () =>
   assert.match(repair?.sourceVersion ?? "", /agent-repair\/v1/);
 });
 
+test("runtime includes latest agent repair artifact in the next planning snapshot", async () => {
+  const store = runtimeStore();
+  store.saveArtifact(
+    "42",
+    "agent_repair.md",
+    "# Agent Repair\n\n## Evidence\n- SZA Good Days\n- Frank Ocean Pink + White\n\n## Next Attempt\n- Replan with safer concrete R&B songs.",
+    "agent-repair/v1",
+  );
+  let receivedSnapshot: Record<string, unknown> | null = null;
+  const runtime = new RadioAgentRuntime({
+    mode: "assisted",
+    store,
+    programDirector: {
+      plan: async (snapshot: Record<string, unknown>) => {
+        receivedSnapshot = snapshot;
+        return programWindow();
+      },
+    },
+    now: () => "2026-06-03T01:02:03.000Z",
+  });
+
+  await runtime.handle({ type: "queue_low", uid: "42", sessionId: 9 });
+
+  assert.match(String(receivedSnapshot?.repair), /SZA Good Days/);
+  assert.match(String(receivedSnapshot?.repair), /Frank Ocean Pink \+ White/);
+});
+
 test("shadow mode records program windows but still never controls playback", async () => {
   const store = runtimeStore();
   const programDirector = {

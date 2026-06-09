@@ -494,6 +494,20 @@ test("empty model tasks fall back to deterministic memory anchors", async () => 
   assertFallbackWindow(window);
 });
 
+test("fallback planning avoids queries that just failed execution", async () => {
+  const director = new RadioAgentProgramDirector(null, () => NOW);
+
+  const window = await director.plan({
+    ...contextSnapshot(),
+    repair:
+      "# Agent Repair\n\n## Evidence\n- SZA\n- Frank Ocean\n\n## Next Attempt\n- Replan with safer concrete R&B songs.",
+  });
+
+  assert.ok(window.candidateTasks.length > 0);
+  assert.ok(window.candidateTasks.every((task) => !/^SZA$|^Frank Ocean$/i.test(task.query)));
+  assert.ok(window.candidateTasks.some((task) => /Daniel Caesar|H\.E\.R\.|Brent Faiyaz/i.test(task.query)));
+});
+
 function contextSnapshot(): RadioAgentContextSnapshot {
   const memoryFacts: RadioAgentMemory[] = [
     {
@@ -527,6 +541,7 @@ function contextSnapshot(): RadioAgentContextSnapshot {
     contract: "# Program Contract\nstation_goal: keep late-night R&B coherent\navoid: sleep sounds, study beats",
     session: "",
     reflection: "",
+    repair: "",
     memoryFacts,
     memoryHypotheses: [],
     recentEvents: [
