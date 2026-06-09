@@ -114,6 +114,7 @@ export class RadioAgentRuntime {
 
   status(uid: string | null, sessionId: number | null = null): RadioAgentStatus {
     const artifacts: RadioAgentStatus["artifacts"] = {};
+    let explainability: RadioAgentStatus["explainability"] | undefined;
     if (uid) {
       for (const key of [
         "user_profile.md",
@@ -132,6 +133,10 @@ export class RadioAgentRuntime {
           };
         }
       }
+      explainability = agentExplainabilityStatus(
+        this.deps.store.artifact(uid, "agent_journal.md")?.content,
+        this.deps.store.artifact(uid, "agent_repair.md")?.content,
+      );
     }
 
     return {
@@ -142,6 +147,7 @@ export class RadioAgentRuntime {
       recentEvents: this.deps.store.recentEvents(uid, sessionId, 20),
       recentDecisions: this.deps.store.latestShadowDecisions(uid, sessionId, 20),
       artifacts,
+      explainability,
     };
   }
 
@@ -824,6 +830,57 @@ function executionRepairGuardrails(programWindow: unknown): string[] {
     ...disallowed,
     ...candidateConstraints,
   ]).slice(0, 8);
+}
+
+function agentExplainabilityStatus(
+  journalMarkdown: string | undefined,
+  repairMarkdown: string | undefined,
+): RadioAgentStatus["explainability"] | undefined {
+  const journal = journalMarkdown
+    ? {
+        observation: markdownSectionFirstItem(journalMarkdown, "Observation"),
+        interpretation: markdownSectionFirstItem(journalMarkdown, "Interpretation"),
+        action: markdownSectionFirstItem(journalMarkdown, "Action"),
+        nextCheck: markdownSectionFirstItem(journalMarkdown, "Next Check"),
+      }
+    : undefined;
+  const repair = repairMarkdown
+    ? {
+        issue: markdownSectionFirstItem(repairMarkdown, "Issue"),
+        correction: markdownSectionFirstItem(repairMarkdown, "Correction"),
+        nextAttempt: markdownSectionFirstItem(repairMarkdown, "Next Attempt"),
+      }
+    : undefined;
+
+  if (!journal && !repair) return undefined;
+  return {
+    ...(journal && Object.values(journal).some(Boolean) ? { journal } : {}),
+    ...(repair && Object.values(repair).some(Boolean) ? { repair } : {}),
+  };
+}
+
+function markdownSectionFirstItem(markdown: string, heading: string): string {
+  const lines = markdown.split(/\r?\n/u);
+  let inSection = false;
+  for (const line of lines) {
+    if (/^##\s+/u.test(line)) {
+      inSection = line.replace(/^##\s+/u, "").trim().toLowerCase() === heading.toLowerCase();
+      continue;
+    }
+    if (!inSection) continue;
+    const item = safeExplainabilityLine(line.replace(/^\s*-\s*/u, ""));
+    if (item && item.toLowerCase() !== "none") return item;
+  }
+  return "";
+}
+
+function safeExplainabilityLine(value: string): string {
+  const compact = value.replace(/\s+/g, " ").trim();
+  if (!compact) return "";
+  if (/\b(model|prompt|json|tool call|shadow decision|decision trace|trace basis|verification)\b/i.test(compact)) {
+    return "";
+  }
+  return compact.slice(0, 220).trim();
 }
 
 function shouldRefreshProfileFromBehavior(event: RadioAgentEvent): boolean {

@@ -151,6 +151,19 @@ export interface RadioAgentStatus {
   recentEvents: RadioAgentEvent[];
   recentDecisions: RadioShadowDecision[];
   artifacts: Record<string, { updatedAt: string; sourceVersion: string }>;
+  explainability?: {
+    journal?: {
+      observation: string;
+      interpretation: string;
+      action: string;
+      nextCheck: string;
+    };
+    repair?: {
+      issue: string;
+      correction: string;
+      nextAttempt: string;
+    };
+  };
 }
 
 export interface RadioAgentHandleResult {

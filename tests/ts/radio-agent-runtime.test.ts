@@ -698,6 +698,76 @@ test("runtime writes an agent journal after planning a program window", async ()
   assert.ok(runtime.status("42", 9).artifacts["agent_journal.md"]);
 });
 
+test("runtime status exposes safe agent journal and repair summaries", () => {
+  const store = runtimeStore();
+  store.saveArtifact(
+    "42",
+    "agent_journal.md",
+    [
+      "# Agent Journal",
+      "",
+      "updated: 2026-06-03T01:02:03.000Z",
+      "event: queue_low",
+      "",
+      "## Observation",
+      "- Queue is low while Nick Drake is playing.",
+      "",
+      "## Interpretation",
+      "- Keep the room intimate and acoustic.",
+      "",
+      "## Action",
+      "- Next search direction: Nick Drake Pink Moon. Keep it acoustic.",
+      "",
+      "## Guardrails",
+      "- avoid high-energy EDM",
+      "- do not expose prompt or JSON trace",
+      "",
+      "## Next Check",
+      "- Watch the next skip or completion.",
+    ].join("\n"),
+    "agent-journal/v1",
+  );
+  store.saveArtifact(
+    "42",
+    "agent_repair.md",
+    [
+      "# Agent Repair",
+      "",
+      "updated: 2026-06-03T01:02:03.000Z",
+      "event: queue_low",
+      "",
+      "## Issue",
+      "- Planned search violated the active station guardrails.",
+      "",
+      "## Evidence",
+      "- Martin Garrix festival drops",
+      "",
+      "## Correction",
+      "- Remove candidates that touch high-energy EDM.",
+      "",
+      "## Guardrails",
+      "- avoid high-energy EDM",
+      "",
+      "## Next Attempt",
+      "- Nick Drake Pink Moon",
+    ].join("\n"),
+    "agent-repair/v1",
+  );
+  const runtime = new RadioAgentRuntime({
+    mode: "assisted",
+    store,
+    now: () => "2026-06-03T01:02:03.000Z",
+  });
+
+  const status = runtime.status("42", 9);
+
+  assert.match(status.explainability?.journal?.observation ?? "", /Queue is low/);
+  assert.match(status.explainability?.journal?.action ?? "", /Nick Drake Pink Moon/);
+  assert.match(status.explainability?.repair?.issue ?? "", /guardrails/);
+  assert.match(status.explainability?.repair?.nextAttempt ?? "", /Nick Drake Pink Moon/);
+  assert.doesNotMatch(JSON.stringify(status.explainability), /prompt|JSON trace/i);
+});
+
 test("runtime self-repairs off-contract program windows before assisted execution", async () => {
   const store = runtimeStore();
   store.saveArtifact("42", "program_contract.md", "# Program Contract\nstation_goal: late-night R&B\navoid: generic electronic, classical chamber music", "program-contract/v1");
