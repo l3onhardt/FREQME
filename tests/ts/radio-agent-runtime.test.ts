@@ -698,6 +698,62 @@ test("runtime writes an agent journal after planning a program window", async ()
   assert.ok(runtime.status("42", 9).artifacts["agent_journal.md"]);
 });
 
+test("runtime self-repairs off-contract program windows before assisted execution", async () => {
+  const store = runtimeStore();
+  store.saveArtifact("42", "program_contract.md", "# Program Contract\nstation_goal: late-night R&B\navoid: generic electronic, classical chamber music", "program-contract/v1");
+  store.saveArtifact(
+    "42",
+    "session_reflection.md",
+    "# Session Reflection\n\n## Session Signals\n- session_artist:Frank Ocean: Recent completed listening repeatedly returned to Frank Ocean.\n\n## Temporary Avoids\n- generic electronic\n- classical chamber music",
+    "session-reflection/v1",
+  );
+  const runtime = new RadioAgentRuntime({
+    mode: "assisted",
+    store,
+    programDirector: {
+      plan: async () =>
+        programWindow({
+          stationBrief: "late-night R&B",
+          mainDirection: "Keep late-night R&B coherent.",
+          candidateTasks: [
+            {
+              query: "Nils Frahm Says",
+              reason: "Ambient piano bridge.",
+              style: "ambient piano",
+              negativeConstraints: [],
+            },
+            {
+              query: "Debussy String Quartet",
+              reason: "Classical chamber texture.",
+              style: "classical",
+              negativeConstraints: [],
+            },
+          ],
+          disallowed: ["generic electronic", "classical chamber music"],
+        }),
+    },
+    now: () => "2026-06-03T01:02:03.000Z",
+  });
+
+  const result = await runtime.handle({
+    type: "queue_low",
+    uid: "42",
+    sessionId: 9,
+    currentTrack: { id: "frank-1", name: "Nights", artist: "Frank Ocean" },
+    readyQueue: [],
+  });
+
+  assert.match(result.programWindow?.candidateTasks[0]?.query ?? "", /Frank Ocean|SZA|Daniel Caesar|H\.E\.R\.|Brent Faiyaz/i);
+  assert.doesNotMatch(result.programWindow?.candidateTasks.map((task) => task.query).join(" ") ?? "", /Nils Frahm|Debussy/i);
+  assert.ok(store.decisions.some((decision) => decision.decisionType === "program_repair"));
+  const repair = store.artifact("42", "agent_repair.md");
+  assert.match(repair?.content ?? "", /# Agent Repair/);
+  assert.match(repair?.content ?? "", /Nils Frahm/);
+  assert.match(repair?.content ?? "", /late-night R&B|Frank Ocean|SZA/i);
+  assert.match(repair?.sourceVersion ?? "", /agent-repair\/v1/);
+  assert.ok(runtime.status("42", 9).artifacts["agent_repair.md"]);
+});
+
 test("shadow mode records program windows but still never controls playback", async () => {
   const store = runtimeStore();
   const programDirector = {

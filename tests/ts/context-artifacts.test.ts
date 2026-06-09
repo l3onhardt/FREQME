@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   buildListenerSessionMarkdown,
   buildAgentJournalMarkdown,
+  buildAgentRepairMarkdown,
   buildProgramContractMarkdown,
   buildSessionReflectionMarkdown,
   buildStationNowMarkdown,
@@ -134,4 +135,23 @@ test("agent journal markdown explains the latest decision without internal terms
   assert.match(markdown, /Frank Ocean/);
   assert.match(markdown, /avoid generic electronic/);
   assert.doesNotMatch(markdown, /model trace|prompt|JSON|tool call|shadow decision/i);
+});
+
+test("agent repair markdown records a self-correction without internal terms", () => {
+  const markdown = buildAgentRepairMarkdown({
+    updatedAt: "2026-06-03T01:02:03.000Z",
+    eventType: "queue_low",
+    issue: "Planned search moved outside the active R&B lane.",
+    evidence: ["Nils Frahm Says", "ambient piano"],
+    correction: "Replace the next attempt with Frank Ocean or nearby late-night R&B.",
+    guardrails: ["avoid generic electronic", "avoid classical chamber music"],
+    nextAttempt: "Frank Ocean Pink + White",
+  });
+
+  assert.match(markdown, /# Agent Repair/);
+  assert.match(markdown, /outside the active R&B lane/);
+  assert.match(markdown, /Nils Frahm/);
+  assert.match(markdown, /Frank Ocean/);
+  assert.match(markdown, /avoid generic electronic/);
+  assert.doesNotMatch(markdown, /model|prompt|JSON|tool call|shadow decision|trace|verification|contract/i);
 });

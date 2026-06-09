@@ -2,6 +2,7 @@ import type { LibraryCensus, LibraryCensusResult } from "./libraryCensus.js";
 import { buildRadioAgentContextSnapshot } from "./agentContext.js";
 import {
   buildAgentJournalMarkdown,
+  buildAgentRepairMarkdown,
   buildListenerSessionMarkdown,
   buildProgramContractMarkdown,
   buildSessionReflectionMarkdown,
@@ -32,6 +33,7 @@ const COMPACT_PROFILE_SOURCE_VERSION = "taste-distiller/v3-memory-merge";
 const LISTENER_SESSION_SOURCE_VERSION = "listener-session/v1";
 const SESSION_REFLECTION_SOURCE_VERSION = "session-reflection/v1";
 const AGENT_JOURNAL_SOURCE_VERSION = "agent-journal/v1";
+const AGENT_REPAIR_SOURCE_VERSION = "agent-repair/v1";
 
 interface RadioAgentRuntimeStore {
   appendEvent(event: RadioAgentEvent): number;
@@ -116,6 +118,7 @@ export class RadioAgentRuntime {
         "listener_session.md",
         "session_reflection.md",
         "agent_journal.md",
+        "agent_repair.md",
       ]) {
         const artifact = this.deps.store.artifact(uid, key);
         if (artifact) {
@@ -423,7 +426,8 @@ export class RadioAgentRuntime {
         currentTrack,
         readyQueue,
       });
-      const window = await this.deps.programDirector.plan(snapshot);
+      const plannedWindow = await this.deps.programDirector.plan(snapshot);
+      const window = this.selfRepairProgramWindow(event, plannedWindow);
       this.saveDecision(event, "program_window", { window });
       this.saveAgentJournal(event, window);
       return window;
@@ -472,6 +476,49 @@ export class RadioAgentRuntime {
       }),
       `${AGENT_JOURNAL_SOURCE_VERSION} session=${event.sessionId ?? "none"} source=${window.source}`,
     );
+  }
+
+  private selfRepairProgramWindow(event: RadioAgentEvent, window: RadioAgentProgramWindow): RadioAgentProgramWindow {
+    if (!event.uid) return window;
+    const repair = planProgramRepair(window);
+    if (!repair) return window;
+
+    const repairedWindow: RadioAgentProgramWindow = {
+      ...window,
+      candidateTasks: repair.replacementTasks,
+      disallowed: dedupeStrings([...window.disallowed, ...repair.guardrails]),
+      returnRequirement: repair.correction,
+      hostIntent: window.hostIntent.shouldSpeak
+        ? window.hostIntent
+        : {
+            shouldSpeak: true,
+            event: "return_to_contract",
+            reason: "self repair",
+            text: "我先把方向拉回 R&B，下一首会更贴近人声和律动。",
+          },
+    };
+
+    this.saveDecision(event, "program_repair", {
+      issue: repair.issue,
+      evidence: repair.evidence,
+      correction: repair.correction,
+      nextAttempt: repair.replacementTasks[0]?.query || "",
+    });
+    this.deps.store.saveArtifact(
+      event.uid,
+      "agent_repair.md",
+      buildAgentRepairMarkdown({
+        updatedAt: this.now(),
+        eventType: event.type,
+        issue: repair.issue,
+        evidence: repair.evidence,
+        correction: repair.correction,
+        guardrails: repair.guardrails,
+        nextAttempt: repair.replacementTasks[0]?.query || "",
+      }),
+      `${AGENT_REPAIR_SOURCE_VERSION} session=${event.sessionId ?? "none"} source=${window.source}`,
+    );
+    return repairedWindow;
   }
 }
 
@@ -526,6 +573,130 @@ function journalNextCheck(event: RadioAgentEvent): string {
     return "Check whether the next played track satisfies the listener request.";
   }
   return "Check the next listener action before promoting any new memory.";
+}
+
+interface ProgramRepairPlan {
+  issue: string;
+  evidence: string[];
+  correction: string;
+  guardrails: string[];
+  replacementTasks: RadioAgentProgramWindow["candidateTasks"];
+}
+
+function planProgramRepair(window: RadioAgentProgramWindow): ProgramRepairPlan | null {
+  if (!isActiveRnbWindow(window)) return null;
+  const offContractTasks = window.candidateTasks.filter((task) => taskClearlyBreaksRnb(task));
+  if (!offContractTasks.length) return null;
+  const survivingTasks = window.candidateTasks.filter((task) => !taskClearlyBreaksRnb(task) && taskLooksRnbSafe(task));
+  const replacementTasks = dedupeCandidateTasks([...survivingTasks, ...rnbRepairTasks(window)]).slice(0, 5);
+  if (!replacementTasks.length) return null;
+
+  return {
+    issue: "Planned search moved outside the active R&B lane.",
+    evidence: offContractTasks.map((task) => `${task.query}${task.style ? ` (${task.style})` : ""}`).slice(0, 5),
+    correction: "Return the next attempt to late-night R&B before exploring adjacent styles again.",
+    guardrails: dedupeStrings([
+      "avoid generic electronic",
+      "avoid classical chamber music",
+      "avoid ambient piano",
+      ...window.disallowed,
+      ...offContractTasks.flatMap((task) => task.negativeConstraints),
+    ]).slice(0, 8),
+    replacementTasks,
+  };
+}
+
+function isActiveRnbWindow(window: RadioAgentProgramWindow): boolean {
+  return isRnbTextForRepair(
+    [
+      window.stationBrief,
+      window.mainDirection,
+      window.returnRequirement,
+      window.traceBasis.contract,
+      window.traceBasis.session || "",
+      window.traceBasis.reflection || "",
+    ].join(" "),
+  );
+}
+
+function taskClearlyBreaksRnb(task: RadioAgentProgramWindow["candidateTasks"][number]): boolean {
+  const text = [task.query, task.style, task.reason].join(" ");
+  if (isRnbTextForRepair(text)) return false;
+  return /\b(nils frahm|max richter|debussy|bach|mozart|beethoven|chopin|sonata|concerto|string quartet|quartet|classical|ambient|piano|edm|techno|trance|festival|house|dubstep)\b/i.test(
+    text,
+  );
+}
+
+function taskLooksRnbSafe(task: RadioAgentProgramWindow["candidateTasks"][number]): boolean {
+  const text = [task.query, task.style, task.reason].join(" ");
+  return isRnbTextForRepair(text);
+}
+
+function rnbRepairTasks(window: RadioAgentProgramWindow): RadioAgentProgramWindow["candidateTasks"] {
+  const anchor = rnbAnchorFromWindow(window);
+  const negativeConstraints = dedupeStrings(["generic electronic", "classical chamber music", "ambient piano", ...window.disallowed]);
+  const anchorTasks = anchor
+    ? [
+        {
+          query: `${anchor} R&B`,
+          reason: `Return to the listener's active R&B direction using ${anchor} as the anchor.`,
+          style: "late-night R&B",
+          negativeConstraints,
+        },
+      ]
+    : [];
+  return [
+    ...anchorTasks,
+    {
+      query: "Frank Ocean Pink + White",
+      reason: "Conservative late-night R&B repair candidate.",
+      style: "late-night R&B",
+      negativeConstraints,
+    },
+    {
+      query: "SZA Broken Clocks",
+      reason: "Keeps the station in vocal R&B after a drift risk.",
+      style: "late-night R&B",
+      negativeConstraints,
+    },
+    {
+      query: "Daniel Caesar Japanese Denim",
+      reason: "Warm R&B fallback for station recovery.",
+      style: "late-night R&B",
+      negativeConstraints,
+    },
+  ];
+}
+
+function rnbAnchorFromWindow(window: RadioAgentProgramWindow): string {
+  const text = [window.traceBasis.reflection || "", window.traceBasis.profile || "", window.mainDirection].join("\n");
+  for (const pattern of [
+    /(?:session_)?artist:([^:\n.;]+)/i,
+    /\brepeatedly returned to\s+([^.;\n]+)/i,
+    /\b(Frank Ocean|SZA|Daniel Caesar|H\.?E\.?R\.?|Brent Faiyaz|Jorja Smith|Kelela|Ravyn Lenae|Snoh Aalegra|Giveon|Summer Walker)\b/i,
+  ]) {
+    const match = text.match(pattern)?.[1]?.trim();
+    if (match && isRnbTextForRepair(match)) return match;
+  }
+  return "";
+}
+
+function dedupeCandidateTasks(tasks: RadioAgentProgramWindow["candidateTasks"]): RadioAgentProgramWindow["candidateTasks"] {
+  const seen = new Set<string>();
+  const result: RadioAgentProgramWindow["candidateTasks"] = [];
+  for (const task of tasks) {
+    const key = task.query.trim().toLowerCase();
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    result.push(task);
+  }
+  return result;
+}
+
+function isRnbTextForRepair(text: string): boolean {
+  return /\br\s*&?\s*b\b|\brnb\b|alt[-\s]?r\s*&?\s*b|neo[-\s]?soul|slow jam|frank ocean|sza|daniel caesar|h\.?e\.?r\.?|brent faiyaz|jorja smith|kelela|ravyn lenae|snoh aalegra|giveon|summer walker|the weeknd|partynextdoor/i.test(
+    text,
+  );
 }
 
 function shouldRefreshProfileFromBehavior(event: RadioAgentEvent): boolean {

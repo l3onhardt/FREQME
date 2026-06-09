@@ -66,6 +66,16 @@ export interface BuildAgentJournalMarkdownArgs {
   nextCheck: string;
 }
 
+export interface BuildAgentRepairMarkdownArgs {
+  updatedAt: string;
+  eventType: string;
+  issue: string;
+  evidence: string[];
+  correction: string;
+  guardrails: string[];
+  nextAttempt: string;
+}
+
 export function buildUserProfileMarkdown(args: BuildUserProfileMarkdownArgs): string {
   return [
     "# User Profile",
@@ -213,6 +223,31 @@ export function buildAgentJournalMarkdown(args: BuildAgentJournalMarkdownArgs): 
   ].join("\n");
 }
 
+export function buildAgentRepairMarkdown(args: BuildAgentRepairMarkdownArgs): string {
+  return [
+    "# Agent Repair",
+    "",
+    `updated: ${args.updatedAt}`,
+    `event: ${cleanAgentNoteLine(args.eventType) || "unknown"}`,
+    "",
+    "## Issue",
+    `- ${cleanAgentNoteLine(args.issue) || "The planned move needed correction before playback."}`,
+    "",
+    "## Evidence",
+    ...listLines(args.evidence.map(cleanAgentNoteLine).filter(Boolean)),
+    "",
+    "## Correction",
+    `- ${cleanAgentNoteLine(args.correction) || "Return to the current station direction."}`,
+    "",
+    "## Guardrails",
+    ...listLines(args.guardrails.map(cleanAgentNoteLine).filter(Boolean)),
+    "",
+    "## Next Attempt",
+    `- ${cleanAgentNoteLine(args.nextAttempt) || "Choose a conservative station-safe track."}`,
+    "",
+  ].join("\n");
+}
+
 function evidenceLines(items: ProfileEvidenceForMarkdown[], limit: number, label: string): string[] {
   if (!items.length) return ["- none"];
   const shown = items
@@ -240,8 +275,12 @@ function formatConfidence(value: number): string {
 }
 
 function cleanJournalLine(value: string): string {
+  return cleanAgentNoteLine(value);
+}
+
+function cleanAgentNoteLine(value: string): string {
   return value
-    .replace(/\b(model|prompt|JSON|tool call|shadow decision|decision trace|trace basis|trace|verification)\b/gi, "")
+    .replace(/\b(model|prompt|JSON|tool call|shadow decision|decision trace|trace basis|trace|verification|contract)\b/gi, "")
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, 180);
