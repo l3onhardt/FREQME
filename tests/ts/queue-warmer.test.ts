@@ -432,7 +432,7 @@ test("queue warmer stores accepted boundary decisions in traces", async () => {
   assert.equal((traceStore.traces[0] as any)?.boundaryDecision, boundaryDecision);
 });
 
-test("queue warmer consumes bridge budget when bridge candidates are queued", async () => {
+test("queue warmer rejects pure piano bridge candidates inside an explicit R&B contract", async () => {
   const queue = new PlaybackQueue(3);
   const verifier = new FakeVerifier();
   const traceStore = new FakeTraceStore();
@@ -445,11 +445,11 @@ test("queue warmer consumes bridge budget when bridge candidates are queued", as
     stationContract: contract,
   });
 
-  assert.equal(added, 1);
-  assert.equal(queue.readyDepth(), 1);
-  assert.equal(contract.bridgeCount, 1);
-  assert.equal(contract.mustReturnToContract, true);
-  assert.equal((traceStore.traces[0] as any)?.boundaryDecision.status, "accept_as_bridge");
+  assert.equal(added, 0);
+  assert.equal(queue.readyDepth(), 0);
+  assert.equal(contract.bridgeCount, 0);
+  assert.equal(contract.mustReturnToContract, false);
+  assert.equal(traceStore.traces.length, 0);
 });
 
 test("queue warmer clears return state when an on-contract candidate is queued", async () => {

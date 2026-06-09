@@ -550,6 +550,45 @@ test('stale late segue TTS is ignored after a newer segue starts', async () => {
   assert.equal(elements.get('dj-text').textContent, 'New narration.');
 });
 
+test('new TTS-ready segue is accepted after the previous segue already started playback', async () => {
+  const { context, elements } = loadRadio({
+    fetchImpl: async (url) => {
+      if (url === '/api/radio/tts/oldhash' || url === '/api/radio/tts/newhash') {
+        return { ok: true, blob: async () => ({}) };
+      }
+      return { ok: true, json: async () => ({}) };
+    },
+  });
+  const audioMain = elements.get('audio-main');
+
+  await context.handleMessage({
+    type: 'segue',
+    segue_id: 'segue-old',
+    text: 'Old narration.',
+    tts_ready: true,
+    tts_hash: 'oldhash',
+    next_track: { name: 'Old', artist: 'Artist' },
+    url: '/api/radio/audio/old',
+  });
+  await flushAsyncWork();
+
+  assert.equal(audioMain.src, '/api/radio/audio/old');
+
+  await context.handleMessage({
+    type: 'segue',
+    segue_id: 'segue-new',
+    text: 'New narration.',
+    tts_ready: true,
+    tts_hash: 'newhash',
+    next_track: { name: 'New', artist: 'Artist' },
+    url: '/api/radio/audio/new',
+  });
+  await flushAsyncWork();
+
+  assert.equal(audioMain.src, '/api/radio/audio/new');
+  assert.equal(elements.get('track-name').textContent, 'New');
+});
+
 test('session start shows an immediate local DJ greeting while preparing audio', async () => {
   const { context, elements } = loadRadio();
 

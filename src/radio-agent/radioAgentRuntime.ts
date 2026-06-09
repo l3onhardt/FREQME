@@ -77,7 +77,7 @@ export class RadioAgentRuntime {
       this.refreshProfileArtifacts(persistedEvent);
     }
 
-    if (event.type === "session_restored" || event.type === "playback_started" || event.type === "track_completed") {
+    if (event.type === "session_restored" || event.type === "playback_started" || event.type === "track_completed" || event.type === "user_text") {
       this.refreshStationArtifacts(persistedEvent);
     }
 
@@ -310,15 +310,17 @@ export class RadioAgentRuntime {
 
     const tasteFacts = this.deps.store.memories(event.uid, "taste_fact", 5);
     const tasteHypotheses = this.deps.store.memories(event.uid, "taste_hypothesis", 5);
+    const activeDirection = currentSessionDirection(recentEvents);
     this.deps.store.saveArtifact(
       event.uid,
       "program_contract.md",
       buildProgramContractMarkdown({
-        stationGoal: stationGoalFromMemory(tasteFacts, localTimeBlock),
-        allowedMoves: allowedMovesFromMemory(tasteFacts, tasteHypotheses),
+        stationGoal: activeDirection?.stationGoal || stationGoalFromMemory(tasteFacts, localTimeBlock),
+        allowedMoves: activeDirection?.allowedMoves || allowedMovesFromMemory(tasteFacts, tasteHypotheses),
         blockedMoves: [
           "Do not drift without a deliberate bridge.",
           "Do not treat one skip as permanent long-term dislike.",
+          ...(activeDirection?.blockedMoves || []),
         ],
         hostStyle: "short, warm, low-interruption, and grounded in real listening evidence",
       }),
@@ -460,6 +462,30 @@ function listenerStateForEvent(event: RadioAgentEvent): string {
   if (event.type === "track_completed") return "ordinary continuation; speak only for a deliberate bridge or recovery";
   if (event.type === "session_restored") return "fresh or restored session; profile and context should warm in the background";
   return "unknown";
+}
+
+function currentSessionDirection(events: RadioAgentEvent[]): { stationGoal: string; allowedMoves: string[]; blockedMoves: string[] } | null {
+  const explicit = events.find((event) => {
+    if (event.type !== "user_text") return false;
+    const text = stringValue(event.payload.text);
+    return isRnbRequest(text);
+  });
+  if (!explicit) return null;
+
+  return {
+    stationGoal: "Keep the current radio session centered on R&B until the listener asks to move elsewhere.",
+    allowedMoves: [
+      "Prefer verified R&B, alt-R&B, neo-soul, and soft vocal tracks.",
+      "Only use adjacent electronic color when the track is explicitly R&B, alt-R&B, or neo-soul.",
+    ],
+    blockedMoves: [
+      "Do not fall back to EDM, classical, ambient piano, or old profile anchors unless they clearly support the R&B request.",
+    ],
+  };
+}
+
+function isRnbRequest(text: string): boolean {
+  return /\br\s*&?\s*b\b|\brnb\b/i.test(text);
 }
 
 function stationGoalFromMemory(facts: RadioAgentMemory[], localTimeBlock: string): string {

@@ -252,6 +252,80 @@ test("fallback planning uses the current contract when no playback or memory anc
   assert.ok(window.candidateTasks.every((task) => typeof task.style === "string"));
 });
 
+test("fallback planning prioritizes an explicit contract over stale taste anchors", async () => {
+  const director = new RadioAgentProgramDirector(null, () => NOW);
+
+  const window = await director.plan({
+    ...contextSnapshot(),
+    memoryFacts: [
+      {
+        uid: "42",
+        key: "artist:Anyma",
+        kind: "taste_fact",
+        value: "Listener has repeated library evidence for Anyma.",
+        confidence: 0.91,
+        evidenceCount: 6,
+        evidenceRefs: ["track:anyma-1"],
+        updatedAt: "2026-06-03T01:00:00.000Z",
+      },
+      {
+        uid: "42",
+        key: "artist:Glenn Gould",
+        kind: "taste_fact",
+        value: "Listener has repeated library evidence for Glenn Gould.",
+        confidence: 0.91,
+        evidenceCount: 6,
+        evidenceRefs: ["track:gould-1"],
+        updatedAt: "2026-06-03T01:00:00.000Z",
+      },
+      {
+        uid: "42",
+        key: "artist:Colyn",
+        kind: "taste_fact",
+        value: "Listener has repeated library evidence for Colyn.",
+        confidence: 0.91,
+        evidenceCount: 6,
+        evidenceRefs: ["track:colyn-1"],
+        updatedAt: "2026-06-03T01:00:00.000Z",
+      },
+    ],
+    currentTrack: { id: "edm-1", name: "Breakaway", artist: "Martin Garrix" },
+    readyQueue: [],
+    contract: "# Program Contract\nstation_goal: current R&B radio with soft vocal anchors\navoid: high-energy EDM, pure classical piano",
+  });
+
+  assert.match(window.candidateTasks[0]?.query ?? "", /R&B|vocal/i);
+  assert.ok(window.candidateTasks.every((task) => !/Anyma|Martin Garrix|Glenn Gould|Colyn/i.test(task.query)));
+  assert.doesNotMatch(window.hostIntent.text, /Anyma|Martin Garrix|Glenn Gould|Colyn/i);
+});
+
+test("model planning under an explicit R&B contract drops off-contract electronic candidates", async () => {
+  const model: ProgramPlanningModel = {
+    chat: async () => JSON.stringify({
+      station_brief: "Current R&B radio with soft vocal anchors.",
+      main_direction: "Keep R&B central.",
+      candidate_tasks: [
+        { query: "Anyma Eternity", reason: "Old profile anchor", style: "melodic techno" },
+        { query: "Martin Garrix Breakaway", reason: "Old EDM anchor", style: "festival EDM" },
+      ],
+    }),
+  };
+  const director = new RadioAgentProgramDirector(model, () => NOW);
+
+  const window = await director.plan({
+    ...contextSnapshot(),
+    memoryFacts: [],
+    currentTrack: null,
+    readyQueue: [],
+    contract: "# Program Contract\nstation_goal: current R&B radio with soft vocal anchors\navoid: high-energy EDM, pure classical piano",
+  });
+
+  assert.equal(window.source, "deterministic_fallback");
+  assert.ok(window.candidateTasks.length > 0);
+  assert.match(window.candidateTasks[0]?.query ?? "", /R&B|vocal/i);
+  assert.ok(window.candidateTasks.every((task) => !/Anyma|Martin Garrix/i.test(task.query)));
+});
+
 test("fallback planning rewrites raw memory-evidence station goals into listener-facing language", async () => {
   const director = new RadioAgentProgramDirector(null, () => NOW);
 

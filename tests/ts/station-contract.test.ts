@@ -27,6 +27,7 @@ test("creates a late-night R&B station contract from direction intent", () => {
   assert.equal(contract.mainDirection.toLowerCase().includes("r&b"), true);
   assert.ok(contract.allowedAdjacent.some((item) => /alt|neo|soul|downtempo|electronic/i.test(item)));
   assert.ok(contract.disallowed.some((item) => /classical|古典/i.test(item)));
+  assert.equal(contract.softBridge.some((item) => /ambient|piano/i.test(item)), false);
   assert.equal(contract.driftBudget, 1);
   assert.equal(contract.bridgeCount, 0);
   assert.equal(contract.mustReturnToContract, false);

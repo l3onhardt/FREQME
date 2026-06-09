@@ -407,6 +407,50 @@ test("runtime records explicit listener text in the profile without promoting it
   assert.ok(store.memoryRows.some((memory) => memory.kind === "session_evidence" && memory.key === "explicit:user_text"));
 });
 
+test("runtime keeps an explicit R&B request in the program contract across later playback refreshes", async () => {
+  const store = runtimeStore({
+    memories: (uid: string, kind: string, limit: number) =>
+      [
+        {
+          uid,
+          key: "artist:Anyma",
+          kind,
+          value: "Listener has repeated library evidence for Anyma.",
+          confidence: 0.91,
+          evidenceCount: 6,
+          evidenceRefs: ["track:anyma-1"],
+          updatedAt: "2026-06-03T01:00:00.000Z",
+        },
+      ].slice(0, limit),
+  });
+  const runtime = new RadioAgentRuntime({ mode: "assisted", store, now: () => "2026-06-03T01:02:03.000Z" });
+
+  await runtime.handle({
+    type: "session_restored",
+    uid: "42",
+    sessionId: 9,
+    payload: { timezoneName: "Asia/Hong_Kong", localTimeBlock: "daytime" },
+  });
+  await runtime.handle({
+    type: "user_text",
+    uid: "42",
+    sessionId: 9,
+    text: "play some rnb",
+    currentTrack: { id: "old-1", name: "Says", artist: "Nils Frahm" },
+  });
+  await runtime.handle({
+    type: "playback_started",
+    uid: "42",
+    sessionId: 9,
+    track: { id: "edm-1", name: "Breakaway", artist: "Martin Garrix" },
+  });
+
+  const contract = store.artifact("42", "program_contract.md");
+  assert.match(contract?.content ?? "", /R&B/i);
+  assert.doesNotMatch(contract?.content ?? "", /station_goal:.*Anyma/i);
+  assert.doesNotMatch(contract?.content ?? "", /Use adjacent electronic or ambient/i);
+});
+
 test("runtime plans an agent-owned program window on queue low", async () => {
   const store = runtimeStore({
     memories: (uid: string, kind: string, limit: number) =>

@@ -41,7 +41,7 @@ export class StationContractManager {
         ...(isRnb ? ["alt-R&B", "neo-soul", "soft vocal", "downtempo", "R&B-adjacent electronic"] : []),
         ...base.allowedAdjacent,
       ]),
-      softBridge: dedupe([...(isRnb ? ["ambient electronic", "piano ambient"] : []), ...base.softBridge]),
+      softBridge: isRnb ? [] : dedupe(base.softBridge),
       disallowed: dedupe([
         ...base.disallowed,
         ...(isRnb

@@ -1269,7 +1269,7 @@ async function handleMessage(msg) {
     }
 
     case 'segue': {
-      if (msg.tts_ready && msg.segue_id && activeSegueId && msg.segue_id !== activeSegueId) {
+      if (msg.tts_ready && msg.segue_id && pendingSegueTimer && activeSegueId && msg.segue_id !== activeSegueId) {
         break;
       }
       if (msg.segue_id) activeSegueId = msg.segue_id;

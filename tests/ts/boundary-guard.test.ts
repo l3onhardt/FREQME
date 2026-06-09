@@ -39,7 +39,7 @@ test("rejects classical chamber music inside late-night R&B contract", () => {
   assert.equal(decision.status, "reject_entity_mismatch");
 });
 
-test("allows one ambient electronic bridge", () => {
+test("rejects pure ambient electronic bridges inside an explicit R&B contract", () => {
   const guard = new BoundaryGuard();
   const decision = guard.evaluate({
     contract,
@@ -49,10 +49,36 @@ test("allows one ambient electronic bridge", () => {
     itemStyle: "ambient electronic",
   });
 
-  assert.equal(decision.status, "accept_as_bridge");
+  assert.equal(decision.status, "reject_off_contract");
 });
 
-test("allows generic electronic bridges while budget remains", () => {
+test("rejects modern classical instrumental fallbacks inside an explicit R&B contract", () => {
+  const guard = new BoundaryGuard();
+  const decision = guard.evaluate({
+    contract,
+    query: "Max Richter On the Nature of Daylight",
+    candidate: song("On the Nature of Daylight", "Max Richter"),
+    fallbackLevel: "episode_backup",
+    itemStyle: "modern classical instrumental",
+  });
+
+  assert.equal(decision.status, "reject_off_contract");
+});
+
+test("rejects unlabeled electronic remixes inside an explicit R&B contract", () => {
+  const guard = new BoundaryGuard();
+  const decision = guard.evaluate({
+    contract,
+    query: "Crave You Adventure Club Remix",
+    candidate: song("Crave You (Adventure Club Remix)", "Flight Facilities"),
+    fallbackLevel: "episode_primary",
+    itemStyle: "late-night crossover",
+  });
+
+  assert.equal(decision.status, "reject_off_contract");
+});
+
+test("rejects generic electronic bridges while R&B is the active contract", () => {
   const guard = new BoundaryGuard();
   const decision = guard.evaluate({
     contract,
@@ -62,7 +88,20 @@ test("allows generic electronic bridges while budget remains", () => {
     itemStyle: "electronic",
   });
 
-  assert.equal(decision.status, "accept_as_bridge");
+  assert.equal(decision.status, "reject_off_contract");
+});
+
+test("rejects piano ambient continuations inside an explicit R&B contract", () => {
+  const guard = new BoundaryGuard();
+  const decision = guard.evaluate({
+    contract,
+    query: "Nils Frahm Says",
+    candidate: song("Says", "Nils Frahm"),
+    fallbackLevel: "episode_primary",
+    itemStyle: "piano ambient",
+  });
+
+  assert.equal(decision.status, "reject_off_contract");
 });
 
 test("rejects generic piano bridges after bridge budget is used", () => {
@@ -114,7 +153,7 @@ test("does not treat unrelated words containing her as H.E.R.", () => {
     itemStyle: "indie folk",
   });
 
-  assert.notEqual(decision.status, "accept");
+  assert.equal(decision.status, "reject_off_contract");
 });
 
 test("requires return to R&B while mustReturnToContract is active", () => {

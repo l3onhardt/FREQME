@@ -99,6 +99,7 @@ function buildWindowFromParsed(
   const candidateTasks = arrayValue(valueFor(parsed, "candidateTasks"))
     .map(toCandidateTask)
     .filter((task): task is RadioAgentCandidateTask => task !== null)
+    .filter((task) => taskFitsContract(context, task))
     .slice(0, MAX_CANDIDATE_TASKS);
 
   return {
@@ -140,11 +141,13 @@ function buildFallbackWindow(context: RadioAgentContextSnapshot, createdAt: stri
 }
 
 function fallbackCandidateTasks(context: RadioAgentContextSnapshot): RadioAgentCandidateTask[] {
+  const contract = contractAnchor(context.contract);
   const anchors = [
     ...context.memoryFacts.map(memoryAnchor),
     context.currentTrack?.artist,
     ...context.readyQueue.map((track) => track.artist),
-    contractAnchor(context.contract),
+    contract,
+    ...contractDefaultQueries(contract),
     DEFAULT_FALLBACK_QUERY,
   ]
     .filter((anchor): anchor is string => Boolean(anchor?.trim()))
@@ -158,7 +161,7 @@ function fallbackCandidateTasks(context: RadioAgentContextSnapshot): RadioAgentC
     negativeConstraints: extractDisallowed(context.contract),
   }));
 
-  return tasks.filter(isAllowedCandidateTask).slice(0, MAX_CANDIDATE_TASKS);
+  return tasks.filter(isAllowedCandidateTask).filter((task) => taskFitsContract(context, task)).slice(0, MAX_CANDIDATE_TASKS);
 }
 
 function toCandidateTask(value: unknown): RadioAgentCandidateTask | null {
@@ -178,6 +181,17 @@ function isAllowedCandidateTask(task: RadioAgentCandidateTask): boolean {
   if (RAW_COMMAND_QUERY.test(query)) return false;
   if (UTILITY_AUDIO_QUERY.test(query)) return false;
   return true;
+}
+
+function taskFitsContract(context: RadioAgentContextSnapshot, task: RadioAgentCandidateTask): boolean {
+  const goal = contractAnchor(context.contract);
+  if (!isRnbContractGoal(goal)) return true;
+
+  const queryText = task.query.toLowerCase();
+  if (/\b(anyma|innellea|martin garrix|meduza|edm|techno|trance|festival|classical|concerto|sonata|quartet|piano ambient|nils frahm|max richter)\b/i.test(queryText)) {
+    return false;
+  }
+  return queryFitsRnbContract(queryText);
 }
 
 function toHostIntent(value: unknown): RadioAgentHostIntent {
@@ -232,12 +246,15 @@ function hasReadyAgentProgramItem(context: RadioAgentContextSnapshot): boolean {
 }
 
 function fallbackHostAnchor(context: RadioAgentContextSnapshot): string {
-  return (
+  const contract = contractAnchor(context.contract);
+  const anchor =
     memoryAnchor(context.memoryFacts[0]) ||
     context.currentTrack?.artist ||
     context.readyQueue[0]?.artist ||
-    contractAnchor(context.contract)
-  );
+    "";
+  if (anchor && (!contract || anchorFitsContract(contract, anchor))) return anchor;
+  if (isRnbContractGoal(contract)) return "R&B";
+  return contract;
 }
 
 function traceBasisFromContext(context: RadioAgentContextSnapshot): RadioAgentProgramWindow["traceBasis"] {
@@ -274,7 +291,9 @@ function fallbackStationBrief(context: RadioAgentContextSnapshot): string {
 }
 
 function fallbackMainDirection(context: RadioAgentContextSnapshot): string {
+  const contract = contractAnchor(context.contract);
   const anchor = memoryAnchor(context.memoryFacts[0]) || context.currentTrack?.artist || context.currentTrack?.name;
+  if (contract && (!anchor || !anchorFitsContract(contract, anchor))) return contract;
   return anchor ? `Stay close to ${anchor} and keep the current radio mood coherent.` : "Keep the current radio mood coherent.";
 }
 
@@ -298,6 +317,35 @@ function contractAnchor(contract: string): string {
   const goal = firstContractLine(contract, "station_goal");
   if (!RAW_MEMORY_EVIDENCE_TERMS.test(goal)) return goal;
   return evidenceAnchorsFromText(goal)[0] ?? "";
+}
+
+function anchorFitsContract(contractGoal: string, anchor: string): boolean {
+  if (!isRnbContractGoal(contractGoal)) return true;
+  return queryFitsRnbContract(anchor);
+}
+
+function isRnbContractGoal(goal: string): boolean {
+  return isRnbText(goal);
+}
+
+function queryFitsRnbContract(query: string): boolean {
+  if (isRnbText(query)) return true;
+  return /\b(vocal|vocals|soul|slow jam|slow jams)\b/i.test(query);
+}
+
+function contractDefaultQueries(contractGoal: string): string[] {
+  if (!isRnbContractGoal(contractGoal)) return [];
+  return [
+    "Daniel Caesar Japanese Denim",
+    "Frank Ocean Pink + White",
+    "SZA Broken Clocks",
+    "H.E.R. Focus",
+    "Brent Faiyaz Clouded",
+  ];
+}
+
+function isRnbText(text: string): boolean {
+  return /\br\s*&?\s*b\b|\brnb\b|alt[-\s]?r\s*&?\s*b|neo[-\s]?soul|frank ocean|sza|daniel caesar|h\.?e\.?r\.?|brent faiyaz|jorja smith|kelela|ravyn lenae|snoh aalegra|giveon|summer walker|the weeknd|partynextdoor/i.test(text);
 }
 
 function memoryAnchor(memory: RadioAgentMemory | undefined): string {
