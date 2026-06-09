@@ -81,6 +81,8 @@ test("narrates adjacent moves sparingly", async () => {
   assert.equal(result.shouldSpeak, true);
   assert.equal(result.event, "direction_changed");
   assert.match(result.text, /late-night R&B/i);
+  assert.match(result.text, /Adjacent Artist|Softly/);
+  assert.match(result.text, /回到|放宽|不乱跳/);
   assert.doesNotMatch(result.text, internalTerms);
   assert.doesNotMatch(result.text, awkwardNarrationTerms);
   assert.doesNotMatch(result.text, mojibakeTerms);

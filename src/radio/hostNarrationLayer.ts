@@ -66,7 +66,7 @@ export class HostNarrationLayer {
     if (status === "accept_as_adjacent" && args.recentNarrationCount <= 0) {
       const direction = listenerFacingDirection(args.stationContract);
       const text = direction
-        ? `这首稍微放宽一点，但后面会回到 ${direction}。`
+        ? `先用${trackLabel(args.track)}稍微放宽一下，后面会回到 ${direction}。`
         : `先用${trackLabel(args.track)}接住这一段，电台不会乱跳。`;
       return {
         shouldSpeak: true,
