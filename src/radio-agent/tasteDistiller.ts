@@ -86,6 +86,10 @@ export function distillTasteFacts(args: TasteDistillationArgs): TasteDistillatio
     upsertEvidence(hypotheses, item);
   }
 
+  for (const item of explicitPositiveArtistHypotheses(args.recentEvents)) {
+    upsertEvidence(hypotheses, item);
+  }
+
   for (const item of durablePositiveArtistFacts(args.recentEvents, existingMemories)) {
     upsertEvidence(facts, item);
   }
@@ -187,6 +191,25 @@ function completedListeningHypotheses(events: RadioAgentEvent[], existingMemorie
   return result;
 }
 
+function explicitPositiveArtistHypotheses(events: RadioAgentEvent[]): TasteEvidenceItem[] {
+  const result: TasteEvidenceItem[] = [];
+  for (const event of events) {
+    if (event.type !== "user_text") continue;
+    const text = stringValue(event.payload.text);
+    const artist = explicitPositiveArtistFromText(text);
+    if (!artist) continue;
+    result.push({
+      key: `session_artist:${artist}`,
+      kind: "taste_hypothesis",
+      value: `Listener explicitly asked for more ${artist}; treat this as a session preference signal until playback confirms it.`,
+      confidence: 0.64,
+      evidenceCount: 1,
+      evidenceRefs: event.id ? [`event:${event.id}`] : [`event:${event.createdAt}`],
+    });
+  }
+  return result;
+}
+
 function durablePositiveArtistFacts(events: RadioAgentEvent[], existingMemories: RadioAgentMemory[]): TasteEvidenceItem[] {
   const artistEvidence = completedArtistEvidence(events, existingMemories);
   const positiveEvidence = positiveExplicitArtistEvidence(events, Array.from(artistEvidence.keys()));
@@ -272,6 +295,20 @@ function textNamesPositiveArtist(text: string, artist: string): boolean {
   const before = normalizedText.slice(Math.max(0, index - 24), index);
   if (/\b(less|avoid|skip|not|no|don't|dont|dislike)\b|不要|别|不想/u.test(before)) return false;
   return /\b(more|play|want|like|love|prefer|again)\b|想听|喜欢|多来|来点/u.test(local);
+}
+
+function explicitPositiveArtistFromText(text: string): string {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  if (!normalized) return "";
+  if (/\b(less|avoid|skip|not|no|don't|dont|dislike)\b/i.test(normalized.slice(0, 24))) return "";
+
+  const match = normalized.match(
+    /\b(?:play|queue|put on|give me|want|need|like|love|prefer|more|again)\s+(?:some\s+|more\s+|tracks?\s+by\s+|songs?\s+by\s+)?([A-Z][A-Za-z0-9 .+'&-]{1,48}?)(?:\s+(?:tonight|today|please|pls|now|next|tracks?|songs?|music|radio|vibes?))?(?:[.!?]|$)/,
+  );
+  const artist = match?.[1]?.trim().replace(/\s+/g, " ") ?? "";
+  if (!artist) return "";
+  if (/\b(classical|edm|rnb|r&b|jazz|ambient|pop|rock|hip hop|soul|music|songs?|tracks?)\b/i.test(artist)) return "";
+  return artist.replace(/[.,!?]+$/u, "").trim();
 }
 
 function upsertEvidence(items: TasteEvidenceItem[], item: TasteEvidenceItem): void {

@@ -164,6 +164,33 @@ test("taste distiller turns repeated completed listening into a session taste hy
   assert.equal(result.hypotheses.some((item) => item.key === "session_artist:SZA"), false);
 });
 
+test("taste distiller turns explicit positive artist text into a session hypothesis before durable promotion", () => {
+  const result = distillTasteFacts({
+    uid: "42",
+    libraryTracks: [],
+    playlists: [],
+    recentEvents: [
+      {
+        id: 30,
+        uid: "42",
+        sessionId: 7,
+        type: "user_text",
+        priority: "hot",
+        payload: { text: "play more FKA twigs tonight" },
+        createdAt: "2026-06-03T01:00:00.000Z",
+      },
+    ],
+  });
+
+  const hypothesis = result.hypotheses.find((item) => item.key === "session_artist:FKA twigs");
+  assert.ok(hypothesis);
+  assert.equal(hypothesis?.kind, "taste_hypothesis");
+  assert.equal(hypothesis?.evidenceCount, 1);
+  assert.ok((hypothesis?.confidence || 0) >= 0.6);
+  assert.match(hypothesis?.value || "", /explicitly asked for more FKA twigs/i);
+  assert.equal(result.facts.some((item) => item.key === "artist:FKA twigs"), false);
+});
+
 test("taste distiller treats one skip as session evidence only", () => {
   const result = distillTasteFacts({
     uid: "42",
