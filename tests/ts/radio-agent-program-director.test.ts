@@ -225,6 +225,65 @@ test("fallback planning avoids recently skipped track artists as next anchors", 
   assert.ok(window.candidateTasks.every((task) => task.negativeConstraints.some((item) => /SZA|Too Much/i.test(item))));
 });
 
+test("fallback planning honors explicit negative artist avoids from session reflection", async () => {
+  const director = new RadioAgentProgramDirector(null, () => NOW);
+
+  const window = await director.plan({
+    ...contextSnapshot(),
+    profile: [
+      "# User Profile",
+      "",
+      "## Stable Taste Facts",
+      "- artist:Frank Ocean: Listener has repeated library evidence for Frank Ocean. (confidence: 0.92, evidence: 6)",
+      "- artist:SZA: Listener has repeated library evidence for SZA. (confidence: 0.91, evidence: 5)",
+      "- artist:Daniel Caesar: Listener has repeated library evidence for Daniel Caesar. (confidence: 0.82, evidence: 3)",
+    ].join("\n"),
+    memoryFacts: [
+      {
+        uid: "42",
+        key: "artist:Frank Ocean",
+        kind: "taste_fact",
+        value: "Listener has repeated library evidence for Frank Ocean.",
+        confidence: 0.92,
+        evidenceCount: 6,
+        evidenceRefs: ["track:frank-1"],
+        updatedAt: NOW,
+      },
+      {
+        uid: "42",
+        key: "artist:SZA",
+        kind: "taste_fact",
+        value: "Listener has repeated library evidence for SZA.",
+        confidence: 0.91,
+        evidenceCount: 5,
+        evidenceRefs: ["track:sza-1"],
+        updatedAt: NOW,
+      },
+      {
+        uid: "42",
+        key: "artist:Daniel Caesar",
+        kind: "taste_fact",
+        value: "Listener has repeated library evidence for Daniel Caesar.",
+        confidence: 0.82,
+        evidenceCount: 3,
+        evidenceRefs: ["track:daniel-1"],
+        updatedAt: NOW,
+      },
+    ],
+    memoryHypotheses: [],
+    currentTrack: null,
+    readyQueue: [],
+    reflection:
+      "# Session Reflection\n\n## Corrections\n- 不要Frank Ocean，less SZA tonight\n\n## Temporary Avoids\n- Frank Ocean\n- SZA\n",
+    contract: "# Program Contract\nstation_goal: mellow personal radio\navoid: high-energy EDM",
+  });
+
+  assert.ok(window.candidateTasks.length > 0);
+  assert.ok(window.candidateTasks.every((task) => !/Frank Ocean|SZA/i.test(task.query)));
+  assert.match(window.candidateTasks[0]?.query ?? "", /Daniel Caesar/i);
+  assert.ok(window.candidateTasks.every((task) => task.negativeConstraints.some((item) => /Frank Ocean|SZA/i.test(item))));
+});
+
 test("program director preserves spec-compliant host events and sanitizes internal host text", async () => {
   const events = [
     "station_open",

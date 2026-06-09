@@ -147,7 +147,7 @@ function buildFallbackWindow(context: RadioAgentContextSnapshot, createdAt: stri
 function fallbackCandidateTasks(context: RadioAgentContextSnapshot): RadioAgentCandidateTask[] {
   const contract = contractAnchor(context.contract);
   const failedQueries = repairFailedQueries(context.repair);
-  const skippedAvoids = reflectionSkippedAvoids(context.reflection);
+  const sessionAvoids = reflectionSessionAvoids(context.reflection);
   const anchors = [
     ...reflectionCompletedArtists(context.reflection),
     ...reflectionPositiveAnchors(context.reflection),
@@ -174,7 +174,7 @@ function fallbackCandidateTasks(context: RadioAgentContextSnapshot): RadioAgentC
   return tasks
     .filter(isAllowedCandidateTask)
     .filter((task) => !queryWasRecentlyFailed(task.query, failedQueries))
-    .filter((task) => !queryMatchesAvoids(task.query, skippedAvoids))
+    .filter((task) => !queryMatchesAvoids(task.query, sessionAvoids))
     .filter((task) => taskFitsContract(context, task))
     .slice(0, MAX_CANDIDATE_TASKS);
 }
@@ -327,7 +327,12 @@ function queryMatchesAvoids(query: string, avoids: string[]): boolean {
   if (!normalizedQuery) return false;
   return avoids.some((avoid) => {
     const normalizedAvoid = normalizeQueryForRepair(avoid);
-    return Boolean(normalizedAvoid && normalizedAvoid === normalizedQuery);
+    return Boolean(
+      normalizedAvoid &&
+        (normalizedAvoid === normalizedQuery ||
+          normalizedQuery.includes(normalizedAvoid) ||
+          normalizedAvoid.includes(normalizedQuery)),
+    );
   });
 }
 
@@ -428,6 +433,10 @@ function reflectionSkippedAvoids(reflection: string): string[] {
 
 function reflectionTemporaryAvoids(reflection: string): string[] {
   return reflectionSectionLines(reflection, "Temporary Avoids").filter(Boolean).slice(0, 8);
+}
+
+function reflectionSessionAvoids(reflection: string): string[] {
+  return uniqueStrings([...reflectionSkippedAvoids(reflection), ...reflectionTemporaryAvoids(reflection)]).slice(0, 12);
 }
 
 function reflectionSectionLines(markdown: string, heading: string): string[] {

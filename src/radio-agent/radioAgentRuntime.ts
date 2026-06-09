@@ -946,7 +946,15 @@ function listenerSessionFromEvents(
 ): Parameters<typeof buildListenerSessionMarkdown>[0] {
   const explicitUserText = events.find((event) => event.type === "user_text" && isRnbRequest(stringValue(event.payload.text)));
   const explicitText = stringValue(explicitUserText?.payload.text);
-  const rejectedMoves = explicitText ? rejectedMovesFromText(explicitText) : [];
+  const correctionTexts = events
+    .filter((event) => event.type === "user_text")
+    .map((event) => stringValue(event.payload.text))
+    .filter((text) => looksReflectiveCorrection(text))
+    .slice(0, 6);
+  const rejectedMoves = dedupeStrings([
+    ...(explicitText ? rejectedMovesFromText(explicitText) : []),
+    ...correctionTexts.flatMap(rejectedMovesFromText),
+  ]);
   const skipCorrections = events
     .filter((event) => event.type === "track_skipped")
     .map((event) => {
@@ -955,12 +963,7 @@ function listenerSessionFromEvents(
     })
     .filter(Boolean)
     .slice(0, 4);
-  const userCorrections = events
-    .filter((event) => event.type === "user_text")
-    .map((event) => stringValue(event.payload.text))
-    .filter(Boolean)
-    .slice(0, 4)
-    .map((text) => `User said: ${text}`);
+  const userCorrections = correctionTexts.slice(0, 4).map((text) => `User said: ${text}`);
 
   if (activeDirection) {
     return {
@@ -1046,11 +1049,41 @@ function rejectedMovesFromText(text: string): string[] {
   if (/电子|electronic|edm|techno|trance|ambient/i.test(text)) moves.push("generic electronic");
   if (/古典|classical|chamber|concerto|sonata|quartet/i.test(text)) moves.push("classical chamber music");
   if (/氛围|ambient|piano/i.test(text)) moves.push("ambient piano");
+  moves.push(...negativeArtistMovesFromText(text));
   return dedupeStrings(moves);
 }
 
 function looksReflectiveCorrection(text: string): boolean {
   return /不要|别|不想|更喜欢|喜欢|想听|avoid|less|more|skip|prefer/i.test(text);
+}
+
+function negativeArtistMovesFromText(text: string): string[] {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  if (!normalized) return [];
+
+  return dedupeStrings([
+    ...matchesForPattern(normalized, /(?:不要|别放|别播|不想听|少来点)\s*([A-Z][A-Za-z0-9 .+'&-]{1,48})(?=[，,。.!?]|$)/gu),
+    ...matchesForPattern(normalized, /\b(?:less|avoid|skip|no)\s+([A-Z][A-Za-z0-9 .+'&-]{1,48}?)(?=\s+(?:tonight|today|please|pls|now|next|tracks?|songs?|music|radio|vibes?)|[,.!?]|$)/gi),
+    ...matchesForPattern(normalized, /\b(?:don't|dont|do not)\s+(?:play|queue|put on|give me)?\s*([A-Z][A-Za-z0-9 .+'&-]{1,48}?)(?=\s+(?:tonight|today|please|pls|now|next|tracks?|songs?|music|radio|vibes?)|[,.!?]|$)/gi),
+  ]).filter((artist) => !isGenericAvoidMove(artist));
+}
+
+function matchesForPattern(text: string, pattern: RegExp): string[] {
+  return Array.from(text.matchAll(pattern))
+    .map((match) => cleanAvoidMove(match[1] || ""))
+    .filter(Boolean);
+}
+
+function cleanAvoidMove(value: string): string {
+  return value
+    .replace(/\s+/g, " ")
+    .replace(/\s+(?:tonight|today|please|pls|now|next|tracks?|songs?|music|radio|vibes?)$/i, "")
+    .replace(/[，,。.!?]+$/u, "")
+    .trim();
+}
+
+function isGenericAvoidMove(value: string): boolean {
+  return /\b(classical|edm|rnb|r&b|jazz|ambient|pop|rock|hip hop|soul|music|songs?|tracks?)\b/i.test(value);
 }
 
 function dedupeStrings(values: string[]): string[] {

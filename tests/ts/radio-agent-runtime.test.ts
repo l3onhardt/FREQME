@@ -480,6 +480,28 @@ test("runtime records explicit listener text in the profile without promoting it
   assert.ok(store.memoryRows.some((memory) => memory.kind === "session_evidence" && memory.key === "explicit:user_text"));
 });
 
+test("runtime turns explicit negative artist feedback into session-only avoids", async () => {
+  const store = runtimeStore();
+  const runtime = new RadioAgentRuntime({ mode: "assisted", store, now: () => "2026-06-03T01:02:03.000Z" });
+
+  await runtime.handle({
+    type: "user_text",
+    uid: "42",
+    sessionId: 9,
+    text: "不要Frank Ocean，less SZA tonight",
+  });
+
+  const reflection = store.artifact("42", "session_reflection.md");
+  const session = store.artifact("42", "listener_session.md");
+  assert.match(reflection?.content ?? "", /Temporary Avoids/);
+  assert.match(reflection?.content ?? "", /## Temporary Avoids[\s\S]*- Frank Ocean/);
+  assert.match(reflection?.content ?? "", /## Temporary Avoids[\s\S]*- SZA/);
+  assert.match(session?.content ?? "", /Rejected Moves/);
+  assert.match(session?.content ?? "", /## Rejected Moves[\s\S]*- Frank Ocean/);
+  assert.match(session?.content ?? "", /## Rejected Moves[\s\S]*- SZA/);
+  assert.equal(store.memoryRows.some((memory) => memory.kind === "taste_fact" && /Frank Ocean|SZA/.test(memory.value)), false);
+});
+
 test("runtime keeps an explicit R&B request in the program contract across later playback refreshes", async () => {
   const store = runtimeStore({
     memories: (uid: string, kind: string, limit: number) =>
