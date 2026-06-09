@@ -26,7 +26,7 @@ import type { RadioAgentArtifactRecord } from "../storage/radioAgentStore.js";
 import type { Track } from "../types.js";
 
 const DEFAULT_LIBRARY_SCAN_FRESHNESS_MS = 6 * 60 * 60 * 1000;
-const COMPACT_PROFILE_SOURCE_VERSION = "taste-distiller/v2-compact";
+const COMPACT_PROFILE_SOURCE_VERSION = "taste-distiller/v3-memory-merge";
 const LISTENER_SESSION_SOURCE_VERSION = "listener-session/v1";
 const SESSION_REFLECTION_SOURCE_VERSION = "session-reflection/v1";
 
@@ -224,11 +224,16 @@ export class RadioAgentRuntime {
     const playlists = this.deps.store.playlists(event.uid, 500);
     const libraryTracks = this.deps.store.libraryTracks(event.uid, 10000);
     const recentEvents = this.profileEvidenceEvents(event);
+    const existingMemories = [
+      ...this.deps.store.memories(event.uid, "taste_fact", 24),
+      ...this.deps.store.memories(event.uid, "taste_hypothesis", 24),
+    ];
     const result = distillTasteFacts({
       uid: event.uid,
       libraryTracks,
       playlists,
       recentEvents,
+      existingMemories,
     });
     const updatedAt = this.now();
     const evidenceItems = [...result.facts, ...result.hypotheses, ...result.sessionEvidence];

@@ -1,10 +1,11 @@
-import type { RadioAgentEvent, RadioLibraryPlaylist, RadioLibraryTrack } from "./types.js";
+import type { RadioAgentEvent, RadioAgentMemory, RadioLibraryPlaylist, RadioLibraryTrack } from "./types.js";
 
 export interface TasteDistillationArgs {
   uid: string;
   libraryTracks: RadioLibraryTrack[];
   playlists: RadioLibraryPlaylist[];
   recentEvents: RadioAgentEvent[];
+  existingMemories?: RadioAgentMemory[];
 }
 
 export interface TasteEvidenceItem {
@@ -39,10 +40,23 @@ export function distillTasteFacts(args: TasteDistillationArgs): TasteDistillatio
   const facts: TasteEvidenceItem[] = [];
   const hypotheses: TasteEvidenceItem[] = [];
   const sessionEvidence: TasteEvidenceItem[] = [];
+  const existingMemories = args.existingMemories || [];
+
+  for (const memory of existingMemories) {
+    if (memory.kind !== "taste_fact" && memory.kind !== "taste_hypothesis") continue;
+    upsertEvidence(memory.kind === "taste_fact" ? facts : hypotheses, {
+      key: memory.key,
+      kind: memory.kind,
+      value: memory.value,
+      confidence: memory.confidence,
+      evidenceCount: memory.evidenceCount,
+      evidenceRefs: memory.evidenceRefs,
+    });
+  }
 
   for (const [artist, tracks] of groupedBy(args.libraryTracks, (track) => track.artist).entries()) {
     if (tracks.length < 2 || !artist) continue;
-    facts.push({
+    upsertEvidence(facts, {
       key: `artist:${artist}`,
       kind: "taste_fact",
       value: `Listener has repeated library evidence for ${artist}.`,
@@ -54,7 +68,7 @@ export function distillTasteFacts(args: TasteDistillationArgs): TasteDistillatio
 
   for (const [album, tracks] of groupedBy(args.libraryTracks, (track) => track.album).entries()) {
     if (tracks.length < 2 || !album) continue;
-    facts.push({
+    upsertEvidence(facts, {
       key: `album:${album}`,
       kind: "taste_fact",
       value: `Listener has multiple saved tracks from ${album}.`,
@@ -65,11 +79,15 @@ export function distillTasteFacts(args: TasteDistillationArgs): TasteDistillatio
   }
 
   for (const item of playlistThemeHypotheses(args.playlists)) {
-    hypotheses.push(item);
+    upsertEvidence(hypotheses, item);
   }
 
-  for (const item of completedListeningHypotheses(args.recentEvents)) {
-    hypotheses.push(item);
+  for (const item of completedListeningHypotheses(args.recentEvents, existingMemories)) {
+    upsertEvidence(hypotheses, item);
+  }
+
+  for (const item of durablePositiveArtistFacts(args.recentEvents, existingMemories)) {
+    upsertEvidence(facts, item);
   }
 
   for (const event of args.recentEvents) {
@@ -151,17 +169,8 @@ function playlistThemeHypotheses(playlists: RadioLibraryPlaylist[]): TasteEviden
   return result;
 }
 
-function completedListeningHypotheses(events: RadioAgentEvent[]): TasteEvidenceItem[] {
-  const artistEvidence = new Map<string, { count: number; refs: string[] }>();
-  for (const event of events) {
-    if (event.type !== "track_completed") continue;
-    const track = extractTrack(event.payload.track) || extractTrack(event.payload.currentTrack);
-    if (!track || !track.artist) continue;
-    const current = artistEvidence.get(track.artist) || { count: 0, refs: [] };
-    current.count += 1;
-    current.refs.push(event.id ? `event:${event.id}` : `event:${event.createdAt}`);
-    artistEvidence.set(track.artist, current);
-  }
+function completedListeningHypotheses(events: RadioAgentEvent[], existingMemories: RadioAgentMemory[] = []): TasteEvidenceItem[] {
+  const artistEvidence = completedArtistEvidence(events, existingMemories);
 
   const result: TasteEvidenceItem[] = [];
   for (const [artist, evidence] of artistEvidence.entries()) {
@@ -176,6 +185,113 @@ function completedListeningHypotheses(events: RadioAgentEvent[]): TasteEvidenceI
     });
   }
   return result;
+}
+
+function durablePositiveArtistFacts(events: RadioAgentEvent[], existingMemories: RadioAgentMemory[]): TasteEvidenceItem[] {
+  const artistEvidence = completedArtistEvidence(events, existingMemories);
+  const positiveEvidence = positiveExplicitArtistEvidence(events, Array.from(artistEvidence.keys()));
+  const result: TasteEvidenceItem[] = [];
+
+  for (const [artist, evidence] of artistEvidence.entries()) {
+    const positive = positiveEvidence.get(artist);
+    if (!positive || evidence.count < 2) continue;
+    result.push({
+      key: `artist:${artist}`,
+      kind: "taste_fact",
+      value: `Listener explicitly asked for more ${artist} and completed repeated ${artist} listening; use ${artist} as a durable preference anchor.`,
+      confidence: Math.min(0.94, 0.68 + evidence.count * 0.06 + positive.count * 0.08),
+      evidenceCount: evidence.count + positive.count,
+      evidenceRefs: uniqueStrings([...evidence.refs, ...positive.refs]).slice(0, 12),
+    });
+  }
+
+  return result;
+}
+
+function completedArtistEvidence(
+  events: RadioAgentEvent[],
+  existingMemories: RadioAgentMemory[] = [],
+): Map<string, { count: number; refs: string[] }> {
+  const artistEvidence = new Map<string, { count: number; refs: string[] }>();
+
+  for (const memory of existingMemories) {
+    const artist = artistFromSessionMemory(memory);
+    if (!artist) continue;
+    const current = artistEvidence.get(artist) || { count: 0, refs: [] };
+    current.count += Math.max(1, memory.evidenceCount || 1);
+    current.refs.push(...memory.evidenceRefs);
+    artistEvidence.set(artist, current);
+  }
+
+  for (const event of events) {
+    if (event.type !== "track_completed") continue;
+    const track = extractTrack(event.payload.track) || extractTrack(event.payload.currentTrack);
+    if (!track || !track.artist) continue;
+    const current = artistEvidence.get(track.artist) || { count: 0, refs: [] };
+    current.count += 1;
+    current.refs.push(event.id ? `event:${event.id}` : `event:${event.createdAt}`);
+    artistEvidence.set(track.artist, current);
+  }
+
+  return artistEvidence;
+}
+
+function artistFromSessionMemory(memory: RadioAgentMemory): string {
+  if (memory.kind !== "taste_hypothesis" || !memory.key.startsWith("session_artist:")) return "";
+  return memory.key.split(":").slice(1).join(":").trim();
+}
+
+function positiveExplicitArtistEvidence(
+  events: RadioAgentEvent[],
+  candidateArtists: string[],
+): Map<string, { count: number; refs: string[] }> {
+  const result = new Map<string, { count: number; refs: string[] }>();
+  const uniqueArtists = uniqueStrings(candidateArtists);
+  for (const event of events) {
+    if (event.type !== "user_text") continue;
+    const text = stringValue(event.payload.text);
+    if (!text) continue;
+    for (const artist of uniqueArtists) {
+      if (!textNamesPositiveArtist(text, artist)) continue;
+      const current = result.get(artist) || { count: 0, refs: [] };
+      current.count += 1;
+      current.refs.push(event.id ? `event:${event.id}` : `event:${event.createdAt}`);
+      result.set(artist, current);
+    }
+  }
+  return result;
+}
+
+function textNamesPositiveArtist(text: string, artist: string): boolean {
+  const normalizedText = text.toLowerCase();
+  const normalizedArtist = artist.toLowerCase();
+  const index = normalizedText.indexOf(normalizedArtist);
+  if (index < 0) return false;
+
+  const local = normalizedText.slice(Math.max(0, index - 32), index + normalizedArtist.length + 32);
+  const before = normalizedText.slice(Math.max(0, index - 24), index);
+  if (/\b(less|avoid|skip|not|no|don't|dont|dislike)\b|不要|别|不想/u.test(before)) return false;
+  return /\b(more|play|want|like|love|prefer|again)\b|想听|喜欢|多来|来点/u.test(local);
+}
+
+function upsertEvidence(items: TasteEvidenceItem[], item: TasteEvidenceItem): void {
+  const index = items.findIndex((existing) => existing.key === item.key && existing.kind === item.kind);
+  if (index < 0) {
+    items.push({ ...item, evidenceRefs: uniqueStrings(item.evidenceRefs).slice(0, 12) });
+    return;
+  }
+
+  const existing = items[index];
+  items[index] = {
+    ...item,
+    confidence: Math.max(existing.confidence, item.confidence),
+    evidenceCount: Math.max(existing.evidenceCount, item.evidenceCount),
+    evidenceRefs: uniqueStrings([...existing.evidenceRefs, ...item.evidenceRefs]).slice(0, 12),
+  };
+}
+
+function uniqueStrings(items: string[]): string[] {
+  return Array.from(new Set(items.map((item) => item.trim()).filter(Boolean)));
 }
 
 function groupedBy<T>(items: T[], keyFn: (item: T) => string): Map<string, T[]> {

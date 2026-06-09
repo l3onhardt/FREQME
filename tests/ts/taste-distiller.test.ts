@@ -3,6 +3,105 @@ import test from "node:test";
 
 import { distillTasteFacts } from "../../src/radio-agent/tasteDistiller.js";
 
+test("taste distiller promotes explicit positive repeats into durable artist facts", () => {
+  const result = distillTasteFacts({
+    uid: "42",
+    libraryTracks: [],
+    playlists: [],
+    recentEvents: [
+      {
+        id: 20,
+        uid: "42",
+        sessionId: 7,
+        type: "user_text",
+        priority: "hot",
+        payload: { text: "more Frank Ocean tonight, less classical" },
+        createdAt: "2026-06-03T01:00:00.000Z",
+      },
+      {
+        id: 21,
+        uid: "42",
+        sessionId: 7,
+        type: "track_completed",
+        priority: "warm",
+        payload: { track: { id: "frank-1", name: "Nights", artist: "Frank Ocean" } },
+        createdAt: "2026-06-03T01:05:00.000Z",
+      },
+      {
+        id: 22,
+        uid: "42",
+        sessionId: 7,
+        type: "track_completed",
+        priority: "warm",
+        payload: { track: { id: "frank-2", name: "Pink + White", artist: "Frank Ocean" } },
+        createdAt: "2026-06-03T01:10:00.000Z",
+      },
+      {
+        id: 23,
+        uid: "42",
+        sessionId: 7,
+        type: "track_skipped",
+        priority: "hot",
+        payload: { track: { id: "classic-1", name: "Sonata", artist: "Classical Artist" } },
+        createdAt: "2026-06-03T01:12:00.000Z",
+      },
+    ],
+  });
+
+  const durable = result.facts.find((item) => item.key === "artist:Frank Ocean");
+  assert.ok(durable);
+  assert.equal(durable?.kind, "taste_fact");
+  assert.ok((durable?.confidence || 0) >= 0.8);
+  assert.ok((durable?.evidenceCount || 0) >= 3);
+  assert.equal(result.facts.some((item) => /classical/i.test(`${item.key} ${item.value}`)), false);
+  assert.ok(result.sessionEvidence.some((item) => item.key === "skip:classic-1"));
+});
+
+test("taste distiller combines existing session memory with new confirmation before durable promotion", () => {
+  const result = distillTasteFacts({
+    uid: "42",
+    libraryTracks: [],
+    playlists: [],
+    existingMemories: [
+      {
+        uid: "42",
+        key: "session_artist:Frank Ocean",
+        kind: "taste_hypothesis",
+        value: "Recent completed listening repeatedly returned to Frank Ocean.",
+        confidence: 0.72,
+        evidenceCount: 2,
+        evidenceRefs: ["event:10", "event:11"],
+        updatedAt: "2026-06-02T23:00:00.000Z",
+      },
+    ],
+    recentEvents: [
+      {
+        id: 24,
+        uid: "42",
+        sessionId: 8,
+        type: "user_text",
+        priority: "hot",
+        payload: { text: "play more Frank Ocean" },
+        createdAt: "2026-06-03T02:00:00.000Z",
+      },
+      {
+        id: 25,
+        uid: "42",
+        sessionId: 8,
+        type: "track_completed",
+        priority: "warm",
+        payload: { track: { id: "frank-3", name: "Ivy", artist: "Frank Ocean" } },
+        createdAt: "2026-06-03T02:05:00.000Z",
+      },
+    ],
+  });
+
+  const durable = result.facts.find((item) => item.key === "artist:Frank Ocean");
+  assert.ok(durable);
+  assert.ok((durable?.evidenceRefs || []).includes("event:10"));
+  assert.ok((durable?.evidenceRefs || []).includes("event:25"));
+});
+
 test("taste distiller turns repeated artists and playlist themes into facts", () => {
   const result = distillTasteFacts({
     uid: "42",

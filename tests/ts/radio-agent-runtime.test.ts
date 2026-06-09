@@ -257,7 +257,7 @@ test("runtime refreshes stale profile artifact versions from existing library ev
 
   const artifact = store.artifact("42", "user_profile.md");
   assert.ok(artifact?.content.includes("SZA"));
-  assert.ok(artifact?.sourceVersion.startsWith("taste-distiller/v2-compact"));
+  assert.ok(artifact?.sourceVersion.startsWith("taste-distiller/v3-memory-merge"));
 });
 
 test("runtime writes skip session evidence as a shadow decision", async () => {
@@ -387,6 +387,45 @@ test("runtime folds completed listening back into durable agent profile context"
   assert.match(profile?.content ?? "", /Anyma/);
   assert.match(contract?.content ?? "", /Anyma/);
   assert.match(profile?.sourceVersion ?? "", /sessionEvidence=0/);
+});
+
+test("runtime merges existing session hypotheses with new confirmations into durable taste facts", async () => {
+  const store = runtimeStore();
+  store.memoryRows.push({
+    uid: "42",
+    key: "session_artist:Frank Ocean",
+    kind: "taste_hypothesis",
+    value: "Recent completed listening repeatedly returned to Frank Ocean.",
+    confidence: 0.72,
+    evidenceCount: 2,
+    evidenceRefs: ["event:10", "event:11"],
+    updatedAt: "2026-06-02T23:00:00.000Z",
+  });
+  const runtime = new RadioAgentRuntime({ mode: "assisted", store, now: () => "2026-06-03T02:05:00.000Z" });
+
+  await runtime.handle({
+    type: "user_text",
+    uid: "42",
+    sessionId: 10,
+    text: "play more Frank Ocean",
+  });
+  await runtime.handle({
+    type: "track_completed",
+    uid: "42",
+    sessionId: 10,
+    track: { id: "frank-3", name: "Ivy", artist: "Frank Ocean" },
+    readyQueue: [{ id: "next-1", name: "Queued", artist: "Queued Artist" }],
+  });
+
+  const memory = store.memoryRows.find((item) => item.key === "artist:Frank Ocean");
+  assert.ok(memory);
+  assert.equal(memory?.kind, "taste_fact");
+  assert.ok((memory?.evidenceRefs || []).includes("event:10"));
+  assert.ok((memory?.evidenceRefs || []).some((ref) => /^event:\d+$/.test(ref) && ref !== "event:10" && ref !== "event:11"));
+
+  const profile = store.artifact("42", "user_profile.md");
+  assert.match(profile?.content ?? "", /durable preference anchor/);
+  assert.match(profile?.sourceVersion ?? "", /taste-distiller\/v3-memory-merge/);
 });
 
 test("runtime writes session reflection artifact from completed and skipped playback", async () => {
@@ -540,7 +579,7 @@ test("runtime plans an agent-owned program window on queue low", async () => {
         },
       ].slice(0, limit),
   });
-  store.saveArtifact("42", "user_profile.md", "# User Profile\nSZA", "taste-distiller/v2-compact");
+  store.saveArtifact("42", "user_profile.md", "# User Profile\nSZA", "taste-distiller/v3-memory-merge");
   store.saveArtifact("42", "station_now.md", "# Station Now\nlate_night", "station-context/v1");
   store.saveArtifact("42", "program_contract.md", "# Program Contract\nlate-night R&B", "program-contract/v1");
   store.saveArtifact("42", "listener_session.md", "# Listener Session\nactive_request: R&B\nnext_promise: stay inside R&B", "listener-session/v1");
