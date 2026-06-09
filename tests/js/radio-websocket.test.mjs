@@ -1117,6 +1117,35 @@ test('radio agent status is shown as safe listener-facing context', async () => 
   assert.ok(requests.some((url) => url === '/api/radio/agent/status'));
 });
 
+test('radio agent readiness is visible when assisted mode is degraded', async () => {
+  const { context, elements } = loadRadio({
+    fetchImpl: async (url) => {
+      if (String(url).startsWith('/api/radio/agent/status')) {
+        return {
+          ok: true,
+          json: async () => ({
+            readiness: {
+              summary: 'Agent is in assisted mode, but planning is degraded; using deterministic fallback.',
+            },
+          }),
+        };
+      }
+      return { ok: true, json: async () => ({}) };
+    },
+  });
+
+  await context.handleMessage({
+    type: 'play_track',
+    track: { name: 'Fallback Song', artist: 'Fallback Artist' },
+    url: '/api/radio/audio/1',
+  });
+  await flushAsyncWork();
+
+  assert.equal(elements.get('agent-status-panel').hidden, false);
+  assert.match(elements.get('agent-status-observation').textContent, /assisted mode/);
+  assert.match(elements.get('agent-status-observation').textContent, /deterministic fallback/);
+});
+
 test('planning request status speaks visually without changing current playback', async () => {
   const { context, elements, spectrumBars } = loadRadio({ spectrumBarCount: 8 });
   const audioMain = elements.get('audio-main');

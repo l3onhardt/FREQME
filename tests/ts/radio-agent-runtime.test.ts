@@ -817,6 +817,29 @@ test("runtime status exposes safe agent journal and repair summaries", () => {
   assert.doesNotMatch(JSON.stringify(status.explainability), /prompt|JSON trace/i);
 });
 
+test("runtime status exposes whether assisted agent planning is fully available", () => {
+  const store = runtimeStore();
+  const runtime = new RadioAgentRuntime({
+    mode: "assisted",
+    store,
+    readiness: {
+      planner: "degraded",
+      speech: "degraded",
+      reason: "LLM and TTS are not configured; assisted agent is using deterministic fallback.",
+    },
+    now: () => "2026-06-03T01:02:03.000Z",
+  });
+
+  const status = runtime.status("42", 9);
+
+  assert.equal(status.readiness.mode, "assisted");
+  assert.equal(status.readiness.planner, "degraded");
+  assert.equal(status.readiness.speech, "degraded");
+  assert.match(status.readiness.summary, /assisted/i);
+  assert.match(status.readiness.summary, /fallback/i);
+  assert.doesNotMatch(JSON.stringify(status.readiness), /tp-|api[_-]?key|secret/i);
+});
+
 test("runtime self-repairs off-contract program windows before assisted execution", async () => {
   const store = runtimeStore();
   store.saveArtifact("42", "program_contract.md", "# Program Contract\nstation_goal: late-night R&B\navoid: generic electronic, classical chamber music", "program-contract/v1");

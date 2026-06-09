@@ -3,6 +3,7 @@ import type { SelectionReason, Track } from "../types.js";
 
 export type RadioAgentPriority = "hot" | "warm" | "cold";
 export type RadioAgentMode = "shadow" | "assisted" | "active";
+export type RadioAgentCapabilityState = "available" | "degraded" | "disabled";
 
 export type RadioAgentEventType =
   | "login_completed"
@@ -143,11 +144,19 @@ export interface RadioShadowDecision {
   createdAt: string;
 }
 
+export interface RadioAgentReadiness {
+  mode: RadioAgentMode;
+  planner: RadioAgentCapabilityState;
+  speech: RadioAgentCapabilityState;
+  summary: string;
+}
+
 export interface RadioAgentStatus {
   mode: RadioAgentMode;
   uid: string | null;
   sessionId?: number | null;
   controlsPlayback: boolean;
+  readiness: RadioAgentReadiness;
   recentEvents: RadioAgentEvent[];
   recentDecisions: RadioShadowDecision[];
   artifacts: Record<string, { updatedAt: string; sourceVersion: string }>;

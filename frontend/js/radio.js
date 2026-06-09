@@ -618,12 +618,14 @@ function clearAgentStatus() {
   if (agentStatusPanel) agentStatusPanel.hidden = true;
 }
 
-function renderAgentStatus(explainability) {
+function renderAgentStatus(status) {
   if (!agentStatusPanel) return;
+  const readiness = status?.readiness || {};
+  const explainability = status?.explainability || {};
   const journal = explainability?.journal || {};
   const repair = explainability?.repair || {};
   const shown = [
-    setAgentStatusLine(agentStatusObservation, '观察：', journal.observation),
+    setAgentStatusLine(agentStatusObservation, '观察：', readiness.summary || journal.observation),
     setAgentStatusLine(agentStatusAction, '下一步：', journal.action || journal.nextCheck),
     setAgentStatusLine(agentStatusRepair, '修正：', repair.nextAttempt || repair.correction || repair.issue),
   ];
@@ -637,7 +639,7 @@ async function refreshAgentStatus() {
     const resp = await fetch(`/api/radio/agent/status${query}`);
     if (!resp.ok) return;
     const data = await resp.json();
-    renderAgentStatus(data.explainability);
+    renderAgentStatus(data);
   } catch {
     clearAgentStatus();
   }

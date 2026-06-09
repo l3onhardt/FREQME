@@ -43,6 +43,7 @@ import { tryQueueRadioAgentAssistedTrack } from "./radio-agent/assistedQueue.js"
 import { hostTextForRadioAgentDelivery } from "./radio-agent/hostDelivery.js";
 import { RadioAgentProgramDirector } from "./radio-agent/programDirector.js";
 import { RadioAgentProgramExecutor } from "./radio-agent/programExecutor.js";
+import type { RadioAgentCapabilityState } from "./radio-agent/types.js";
 import {
   CONTINUATION_BRAIN_READY_TIMEOUT_MS,
   USER_REQUEST_BRAIN_READY_TIMEOUT_MS,
@@ -82,11 +83,35 @@ const djRequestAgent = new DJRequestAgent(llm);
 const searchVerifyAgent = new SearchVerifyAgent(llm, netease, audioResolver);
 const radioAgentProgramDirector = new RadioAgentProgramDirector(llm);
 const radioAgentProgramExecutor = new RadioAgentProgramExecutor(searchVerifyAgent);
+
+function radioAgentReadinessFromConfig(): {
+  planner: RadioAgentCapabilityState;
+  speech: RadioAgentCapabilityState;
+  reason?: string;
+} {
+  const planningConfigured = Boolean(config.llmApiKey || config.mimoApiKey || config.llmFallbackApiKey);
+  const planner = config.radioAgentMode === "shadow" ? "disabled" : planningConfigured ? "available" : "degraded";
+  const speech = config.mimoApiKey ? "available" : "degraded";
+  const missing: string[] = [];
+
+  if (planner === "degraded") missing.push("planning is degraded");
+  if (speech === "degraded") missing.push("voice is degraded");
+
+  return {
+    planner,
+    speech,
+    ...(missing.length
+      ? { reason: `Agent is in ${config.radioAgentMode} mode, but ${missing.join(" and ")}; using deterministic fallback where needed.` }
+      : {}),
+  };
+}
+
 const radioAgent = new RadioAgentRuntime({
   mode: config.radioAgentMode,
   store: radioAgentStore,
   census: libraryCensus,
   programDirector: radioAgentProgramDirector,
+  readiness: radioAgentReadinessFromConfig(),
 });
 const stationDirector = new AIStationDirector(llm, djRequestAgent, searchVerifyAgent, djMemory);
 const scheduler = new StreamScheduler(netease, store, audioResolver);

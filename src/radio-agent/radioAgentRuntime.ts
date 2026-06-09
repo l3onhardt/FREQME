@@ -17,6 +17,7 @@ import {
   type RadioAgentEvent,
   type RadioAgentHandleResult,
   type RadioAgentMemory,
+  type RadioAgentReadiness,
   type RadioAgentMode,
   type RadioAgentProgramWindow,
   type RadioAgentStatus,
@@ -53,6 +54,7 @@ export interface RadioAgentRuntimeDeps {
   store: RadioAgentRuntimeStore;
   census?: Pick<LibraryCensus, "scan">;
   programDirector?: Pick<RadioAgentProgramDirector, "plan">;
+  readiness?: Partial<Pick<RadioAgentReadiness, "planner" | "speech">> & { reason?: string };
   libraryScanFreshnessMs?: number;
   now?: () => string;
 }
@@ -144,6 +146,7 @@ export class RadioAgentRuntime {
       uid,
       sessionId,
       controlsPlayback: false,
+      readiness: agentReadinessStatus(this.deps.mode, this.deps.readiness),
       recentEvents: this.deps.store.recentEvents(uid, sessionId, 20),
       recentDecisions: this.deps.store.latestShadowDecisions(uid, sessionId, 20),
       artifacts,
@@ -881,6 +884,52 @@ function safeExplainabilityLine(value: string): string {
     return "";
   }
   return compact.slice(0, 220).trim();
+}
+
+function agentReadinessStatus(
+  mode: RadioAgentMode,
+  readiness?: RadioAgentRuntimeDeps["readiness"],
+): RadioAgentReadiness {
+  const planner = readiness?.planner || (mode === "shadow" ? "disabled" : "available");
+  const speech = readiness?.speech || "available";
+  const reason = safeReadinessReason(readiness?.reason || "");
+
+  return {
+    mode,
+    planner,
+    speech,
+    summary: readinessSummary(mode, planner, speech, reason),
+  };
+}
+
+function readinessSummary(
+  mode: RadioAgentMode,
+  planner: RadioAgentReadiness["planner"],
+  speech: RadioAgentReadiness["speech"],
+  reason: string,
+): string {
+  if (mode === "shadow") {
+    return "Agent is in shadow mode, so it is learning and explaining without steering playback.";
+  }
+  if (planner === "degraded" || speech === "degraded") {
+    return reason || `Agent is in ${mode} mode, but planning or speech is degraded; using deterministic fallback where needed.`;
+  }
+  if (planner === "disabled") {
+    return `Agent is in ${mode} mode, but autonomous planning is disabled.`;
+  }
+  return `Agent is in ${mode} mode and can plan the station with assisted intelligence.`;
+}
+
+function safeReadinessReason(value: string): string {
+  return value
+    .replace(/\btp-[A-Za-z0-9._-]+/g, "[redacted]")
+    .replace(/\b(api[_-]?key|secret|token|bearer|prompt|json|tool call|trace basis|decision trace)\b/gi, "")
+    .replace(/\b(LLM|large language model|model)\b/gi, "planning")
+    .replace(/\bTTS\b/g, "voice")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 220)
+    .trim();
 }
 
 function shouldRefreshProfileFromBehavior(event: RadioAgentEvent): boolean {
