@@ -82,6 +82,10 @@ export class RadioAgentRuntime {
       this.saveSessionEvidence(event, "skip", "Single skip recorded as session evidence, not a permanent dislike.");
     }
 
+    if (event.type === "program_repair_needed") {
+      this.saveExecutionRepair(persistedEvent);
+    }
+
     if (shouldRefreshProfileFromBehavior(persistedEvent)) {
       this.refreshProfileArtifacts(persistedEvent);
     }
@@ -520,6 +524,38 @@ export class RadioAgentRuntime {
     );
     return repairedWindow;
   }
+
+  private saveExecutionRepair(event: RadioAgentEvent): void {
+    if (!event.uid) return;
+    const attemptedQueries = stringArrayFromUnknown(event.payload.attemptedQueries).slice(0, 8);
+    const reason = stringValue(event.payload.reason) || "program executor could not prepare a playable track";
+    const programWindow = event.payload.programWindow;
+    const nextAttempt = executionRepairNextAttempt(programWindow, attemptedQueries);
+    const guardrails = executionRepairGuardrails(programWindow);
+    const issue = `Execution could not prepare a playable track: ${reason}.`;
+    const correction = "Treat the failed queries as weak negative evidence for this pass, then replan with safer concrete songs.";
+
+    this.saveDecision(event, "execution_repair", {
+      issue,
+      evidence: attemptedQueries,
+      correction,
+      nextAttempt,
+    });
+    this.deps.store.saveArtifact(
+      event.uid,
+      "agent_repair.md",
+      buildAgentRepairMarkdown({
+        updatedAt: this.now(),
+        eventType: event.type,
+        issue,
+        evidence: attemptedQueries.length ? attemptedQueries : ["No playable candidate was prepared."],
+        correction,
+        guardrails,
+        nextAttempt,
+      }),
+      `${AGENT_REPAIR_SOURCE_VERSION} session=${event.sessionId ?? "none"} source=execution_feedback`,
+    );
+  }
 }
 
 function scanCompletedWithFailures(event: RadioAgentEvent): boolean {
@@ -699,6 +735,35 @@ function isRnbTextForRepair(text: string): boolean {
   );
 }
 
+function executionRepairNextAttempt(programWindow: unknown, attemptedQueries: string[]): string {
+  const window = isRecord(programWindow) ? programWindow : null;
+  const direction = stringValue(window?.mainDirection) || stringValue(window?.stationBrief);
+  if (isRnbTextForRepair(direction)) return "Replan with concrete late-night R&B songs such as Frank Ocean, SZA, or Daniel Caesar.";
+  const remainingCandidate = Array.isArray(window?.candidateTasks)
+    ? window.candidateTasks
+        .map((task) => (isRecord(task) ? stringValue(task.query) : ""))
+        .find((query) => query && !attemptedQueries.includes(query))
+    : "";
+  if (remainingCandidate) return remainingCandidate;
+  return direction ? `Replan with a more concrete song inside ${direction}.` : "Replan with a more concrete, playable song.";
+}
+
+function executionRepairGuardrails(programWindow: unknown): string[] {
+  const window = isRecord(programWindow) ? programWindow : null;
+  const disallowed = Array.isArray(window?.disallowed) ? window.disallowed.map(stringValue).filter(Boolean) : [];
+  const candidateConstraints = Array.isArray(window?.candidateTasks)
+    ? window.candidateTasks.flatMap((task) => {
+        if (!isRecord(task) || !Array.isArray(task.negativeConstraints)) return [];
+        return task.negativeConstraints.map(stringValue).filter(Boolean);
+      })
+    : [];
+  return dedupeStrings([
+    "avoid repeating failed unplayable queries in the immediate retry",
+    ...disallowed,
+    ...candidateConstraints,
+  ]).slice(0, 8);
+}
+
 function shouldRefreshProfileFromBehavior(event: RadioAgentEvent): boolean {
   return event.type === "track_completed" || event.type === "track_skipped" || event.type === "user_text";
 }
@@ -721,6 +786,11 @@ function readyQueueCountFromPayload(payload: Record<string, unknown>): number | 
 
 function stringValue(value: unknown): string {
   return value == null ? "" : String(value).trim();
+}
+
+function stringArrayFromUnknown(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.map(stringValue).filter(Boolean);
 }
 
 function listenerStateForEvent(event: RadioAgentEvent): string {

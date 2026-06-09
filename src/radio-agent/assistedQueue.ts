@@ -26,6 +26,15 @@ export interface RadioAgentAssistedQueueDeps {
       sessionId: number | null;
       currentTrack: Track | null;
       readyQueue: Track[];
+    } | {
+      type: "program_repair_needed";
+      uid: string | null;
+      sessionId: number | null;
+      reason: RadioAgentAssistedFallbackReason;
+      programWindow: RadioAgentProgramWindow;
+      attemptedQueries: string[];
+      currentTrack: Track | null;
+      readyQueue: Track[];
     }): Promise<RadioAgentHandleResult>;
   };
   executor: {
@@ -64,6 +73,7 @@ export async function tryQueueRadioAgentAssistedTrack(args: RadioAgentAssistedQu
 
     const prepared = await args.executor.prepareFirstPlayable(result.programWindow);
     if (!prepared) {
+      await reportRepairNeeded(args, result.programWindow, "program_executor_no_track");
       logFallback(args, "program_executor_no_track");
       return false;
     }
@@ -90,6 +100,26 @@ export async function tryQueueRadioAgentAssistedTrack(args: RadioAgentAssistedQu
 function logFallback(args: RadioAgentAssistedQueueDeps, reason: RadioAgentAssistedFallbackReason): void {
   try {
     args.logFallback(reason);
+  } catch {
+  }
+}
+
+async function reportRepairNeeded(
+  args: RadioAgentAssistedQueueDeps,
+  programWindow: RadioAgentProgramWindow,
+  reason: RadioAgentAssistedFallbackReason,
+): Promise<void> {
+  try {
+    await args.radioAgent.handle({
+      type: "program_repair_needed",
+      uid: args.uid,
+      sessionId: args.sessionId,
+      reason,
+      programWindow,
+      attemptedQueries: programWindow.candidateTasks.map((task) => task.query).filter(Boolean),
+      currentTrack: args.currentTrack,
+      readyQueue: args.readyQueue,
+    });
   } catch {
   }
 }

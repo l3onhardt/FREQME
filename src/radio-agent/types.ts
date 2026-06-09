@@ -17,6 +17,7 @@ export type RadioAgentEventType =
   | "track_completed"
   | "track_skipped"
   | "queue_low"
+  | "program_repair_needed"
   | "user_text"
   | "tts_completed"
   | "idle_tick"
@@ -185,6 +186,7 @@ const WARM_EVENTS = new Set<RadioAgentEventType>([
   "playback_started",
   "track_completed",
   "queue_low",
+  "program_repair_needed",
   "tts_completed",
   "weather_updated",
   "location_updated",

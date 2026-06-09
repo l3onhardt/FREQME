@@ -139,7 +139,18 @@ test("assisted queue logs and falls back when no program window is available", a
 });
 
 test("assisted queue logs and falls back when no playable track verifies", async () => {
+  const reported: Record<string, unknown>[] = [];
   const { deps, fallbackReasons } = assistedDeps({
+    radioAgent: {
+      handle: async (input: Record<string, unknown>) => {
+        reported.push(input);
+        return {
+          controlsPlayback: false,
+          event: { uid: "42", sessionId: 9, type: "queue_low", priority: "warm", payload: {}, createdAt: "" },
+          programWindow: window,
+        };
+      },
+    },
     executor: { prepareFirstPlayable: async () => null },
   });
 
@@ -147,6 +158,10 @@ test("assisted queue logs and falls back when no playable track verifies", async
 
   assert.equal(queued, false);
   assert.deepEqual(fallbackReasons, ["program_executor_no_track"]);
+  assert.equal(reported[1]?.type, "program_repair_needed");
+  assert.equal(reported[1]?.reason, "program_executor_no_track");
+  assert.equal((reported[1]?.programWindow as RadioAgentProgramWindow | undefined)?.id, "window-1");
+  assert.deepEqual(reported[1]?.attemptedQueries, ["SZA Good Days"]);
 });
 
 test("assisted queue logs and falls back before queueing when trace save fails", async () => {

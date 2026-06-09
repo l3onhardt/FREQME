@@ -754,6 +754,40 @@ test("runtime self-repairs off-contract program windows before assisted executio
   assert.ok(runtime.status("42", 9).artifacts["agent_repair.md"]);
 });
 
+test("runtime records executor failure feedback as an agent repair", async () => {
+  const store = runtimeStore();
+  const runtime = new RadioAgentRuntime({
+    mode: "assisted",
+    store,
+    now: () => "2026-06-03T01:02:03.000Z",
+  });
+
+  await runtime.handle({
+    type: "program_repair_needed",
+    uid: "42",
+    sessionId: 9,
+    reason: "program_executor_no_track",
+    attemptedQueries: ["SZA Good Days", "Frank Ocean Pink + White"],
+    programWindow: programWindow({
+      id: "window-1",
+      stationBrief: "late-night R&B",
+      mainDirection: "Keep late-night R&B coherent.",
+      candidateTasks: [
+        { query: "SZA Good Days", reason: "Known anchor.", style: "R&B", negativeConstraints: [] },
+      ],
+    }),
+  });
+
+  assert.ok(store.events.some((event) => event.type === "program_repair_needed"));
+  assert.ok(store.decisions.some((decision) => decision.decisionType === "execution_repair"));
+  const repair = store.artifact("42", "agent_repair.md");
+  assert.match(repair?.content ?? "", /# Agent Repair/);
+  assert.match(repair?.content ?? "", /program_executor_no_track/);
+  assert.match(repair?.content ?? "", /SZA Good Days/);
+  assert.match(repair?.content ?? "", /Frank Ocean Pink \+ White/);
+  assert.match(repair?.sourceVersion ?? "", /agent-repair\/v1/);
+});
+
 test("shadow mode records program windows but still never controls playback", async () => {
   const store = runtimeStore();
   const programDirector = {
