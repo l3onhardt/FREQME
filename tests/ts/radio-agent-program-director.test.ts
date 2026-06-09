@@ -611,6 +611,41 @@ test("model planning under an explicit R&B contract drops off-contract electroni
   assert.ok(window.candidateTasks.every((task) => !/Anyma|Martin Garrix/i.test(task.query)));
 });
 
+test("model planning under an explicit R&B contract rejects ambient and classical style metadata", async () => {
+  const model: ProgramPlanningModel = {
+    chat: async () => JSON.stringify({
+      station_brief: "Current R&B radio with soft vocal anchors.",
+      main_direction: "Keep R&B central.",
+      candidate_tasks: [
+        {
+          query: "soft vocal bridge",
+          reason: "A pure ambient electronic bridge before returning.",
+          style: "ambient electronic",
+        },
+        {
+          query: "quiet late-night vocal texture",
+          reason: "Modern classical piano interlude.",
+          style: "modern classical instrumental",
+        },
+      ],
+    }),
+  };
+  const director = new RadioAgentProgramDirector(model, () => NOW);
+
+  const window = await director.plan({
+    ...contextSnapshot(),
+    memoryFacts: [],
+    currentTrack: null,
+    readyQueue: [],
+    contract: "# Program Contract\nstation_goal: current R&B radio with soft vocal anchors\navoid: high-energy EDM, pure classical piano, ambient electronic",
+  });
+
+  assert.equal(window.source, "deterministic_fallback");
+  assert.ok(window.candidateTasks.length > 0);
+  assert.ok(window.candidateTasks.every((task) => !/ambient|classical|piano|electronic/i.test([task.query, task.reason, task.style].join(" "))));
+  assert.match(window.candidateTasks[0]?.query ?? "", /R&B|Daniel Caesar|Frank Ocean|SZA|H\.E\.R\.|Brent Faiyaz/i);
+});
+
 test("fallback planning rewrites raw memory-evidence station goals into listener-facing language", async () => {
   const director = new RadioAgentProgramDirector(null, () => NOW);
 

@@ -202,11 +202,19 @@ function taskFitsContract(context: RadioAgentContextSnapshot, task: RadioAgentCa
   const goal = contractAnchor(context.contract);
   if (!isRnbContractGoal(goal)) return true;
 
-  const queryText = task.query.toLowerCase();
-  if (/\b(anyma|innellea|martin garrix|meduza|edm|techno|trance|festival|classical|concerto|sonata|quartet|piano ambient|nils frahm|max richter)\b/i.test(queryText)) {
+  const taskText = [
+    task.query,
+    task.reason,
+    task.style,
+  ].join(" ");
+  if (isOffContractForRnb(taskText)) {
     return false;
   }
-  return queryFitsRnbContract(queryText);
+  return queryFitsRnbContract(taskText);
+}
+
+function isOffContractForRnb(text: string): boolean {
+  return /\b(anyma|innellea|colyn|martin garrix|meduza|edm|techno|trance|festival|classical|modern classical|concerto|sonata|quartet|piano ambient|piano interlude|ambient electronic|pure ambient|instrumental|glenn gould|nils frahm|max richter|jon hopkins|sakamoto|olafur)\b/i.test(text);
 }
 
 function toHostIntent(value: unknown): RadioAgentHostIntent {
