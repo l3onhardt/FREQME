@@ -59,3 +59,13 @@ test("server reports exhausted playback recovery back to the radio agent", () =>
   assert.match(source.slice(recoveryEvent, listenerError), /reason:\s*"queue_empty_after_all_recovery"/);
   assert.match(source.slice(recoveryEvent, listenerError), /currentTrack:\s*currentTrack\s*\?\s*trackInfo\(currentTrack\)\s*:\s*null/);
 });
+
+test("server delivers safe radio agent host speech into the live DJ message channel", () => {
+  const source = fs.readFileSync("src/server.ts", "utf8");
+
+  assert.match(source, /hostTextForRadioAgentDelivery/);
+  assert.match(source, /const mirrorRadioAgentHostSpeech\s*=\s*\(/);
+  assert.match(source, /radioAgent\.handle\(event\)\.then\(\(result\)/);
+  assert.match(source, /hostTextForRadioAgentDelivery\(\{\s*eventType:\s*result\.event\.type,\s*decision:\s*result\.hostDecision,/s);
+  assert.match(source, /synthesizeAndSendDjMessage\(text\)/);
+});

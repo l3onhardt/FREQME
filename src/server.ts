@@ -40,6 +40,7 @@ import { HostNarrationLayer } from "./radio/hostNarrationLayer.js";
 import { LibraryCensus } from "./radio-agent/libraryCensus.js";
 import { RadioAgentRuntime } from "./radio-agent/radioAgentRuntime.js";
 import { tryQueueRadioAgentAssistedTrack } from "./radio-agent/assistedQueue.js";
+import { hostTextForRadioAgentDelivery } from "./radio-agent/hostDelivery.js";
 import { RadioAgentProgramDirector } from "./radio-agent/programDirector.js";
 import { RadioAgentProgramExecutor } from "./radio-agent/programExecutor.js";
 import {
@@ -527,6 +528,22 @@ async function handleRadioSocket(socket: WebSocketType): Promise<void> {
     })().catch(() => undefined);
   };
 
+  const mirrorRadioAgentHostSpeech = (event: Record<string, unknown>): void => {
+    void radioAgent.handle(event).then((result) => {
+      const text = hostTextForRadioAgentDelivery({
+        eventType: result.event.type,
+        decision: result.hostDecision,
+      });
+      if (text) synthesizeAndSendDjMessage(text);
+    }).catch((error) => {
+      store.logPlaybackEvent("radio_agent_error", {
+        uid: typeof event.uid === "string" ? event.uid : null,
+        reason: error instanceof Error ? error.message : String(error),
+        payload: { eventType: event.type },
+      });
+    });
+  };
+
   const sendLateSegueTts = (segueId: string, text: string, track: Track, url: string): void => {
     if (!text) return;
     void (async () => {
@@ -1006,7 +1023,7 @@ async function handleRadioSocket(socket: WebSocketType): Promise<void> {
       }
 
       if (type === "skip") {
-        mirrorRadioAgent({
+        mirrorRadioAgentHostSpeech({
           type: "track_skipped",
           uid,
           sessionId,
