@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   buildListenerSessionMarkdown,
+  buildAgentJournalMarkdown,
   buildProgramContractMarkdown,
   buildSessionReflectionMarkdown,
   buildStationNowMarkdown,
@@ -115,4 +116,22 @@ test("session reflection markdown summarizes outcomes without over-promoting ski
   assert.match(markdown, /不要电子，回到 R&B/);
   assert.match(markdown, /Repeated completed listening returned to Anyma/);
   assert.match(markdown, /Do not turn a single skip into a permanent dislike/i);
+});
+
+test("agent journal markdown explains the latest decision without internal terms", () => {
+  const markdown = buildAgentJournalMarkdown({
+    updatedAt: "2026-06-03T01:02:03.000Z",
+    eventType: "queue_low",
+    observation: "Queue is low while the listener is staying in late-night R&B.",
+    interpretation: "Recent accepted listening and reflection point toward Frank Ocean.",
+    action: "Plan the next candidate around Frank Ocean and keep generic electronic out.",
+    guardrails: ["avoid generic electronic", "do not expose model trace"],
+    nextCheck: "If the listener skips again, narrow the R&B lane before adding more tracks.",
+  });
+
+  assert.match(markdown, /# Agent Journal/);
+  assert.match(markdown, /Queue is low/);
+  assert.match(markdown, /Frank Ocean/);
+  assert.match(markdown, /avoid generic electronic/);
+  assert.doesNotMatch(markdown, /model trace|prompt|JSON|tool call|shadow decision/i);
 });

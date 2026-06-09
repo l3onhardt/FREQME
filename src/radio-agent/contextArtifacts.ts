@@ -56,6 +56,16 @@ export interface BuildSessionReflectionMarkdownArgs {
   longTermCandidates: string[];
 }
 
+export interface BuildAgentJournalMarkdownArgs {
+  updatedAt: string;
+  eventType: string;
+  observation: string;
+  interpretation: string;
+  action: string;
+  guardrails: string[];
+  nextCheck: string;
+}
+
 export function buildUserProfileMarkdown(args: BuildUserProfileMarkdownArgs): string {
   return [
     "# User Profile",
@@ -178,6 +188,31 @@ export function buildSessionReflectionMarkdown(args: BuildSessionReflectionMarkd
   ].join("\n");
 }
 
+export function buildAgentJournalMarkdown(args: BuildAgentJournalMarkdownArgs): string {
+  return [
+    "# Agent Journal",
+    "",
+    `updated: ${args.updatedAt}`,
+    `event: ${cleanJournalLine(args.eventType) || "unknown"}`,
+    "",
+    "## Observation",
+    `- ${cleanJournalLine(args.observation) || "No strong listener-facing signal yet."}`,
+    "",
+    "## Interpretation",
+    `- ${cleanJournalLine(args.interpretation) || "Keep the station coherent while gathering more evidence."}`,
+    "",
+    "## Action",
+    `- ${cleanJournalLine(args.action) || "Continue with a conservative next track."}`,
+    "",
+    "## Guardrails",
+    ...listLines(args.guardrails.map(cleanJournalLine).filter(Boolean)),
+    "",
+    "## Next Check",
+    `- ${cleanJournalLine(args.nextCheck) || "Watch the next skip, completion, or direct request before updating memory."}`,
+    "",
+  ].join("\n");
+}
+
 function evidenceLines(items: ProfileEvidenceForMarkdown[], limit: number, label: string): string[] {
   if (!items.length) return ["- none"];
   const shown = items
@@ -202,4 +237,12 @@ function listLines(items: string[]): string[] {
 
 function formatConfidence(value: number): string {
   return Number.isFinite(value) ? value.toFixed(2) : "0.00";
+}
+
+function cleanJournalLine(value: string): string {
+  return value
+    .replace(/\b(model|prompt|JSON|tool call|shadow decision|decision trace|trace basis|trace|verification)\b/gi, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 180);
 }

@@ -631,6 +631,73 @@ test("runtime plans an agent-owned program window on queue low", async () => {
   assert.equal(((receivedSnapshot?.recentEvents as RadioAgentEvent[] | undefined)?.[0]?.payload ?? {}).raw_json, undefined);
 });
 
+test("runtime writes an agent journal after planning a program window", async () => {
+  const store = runtimeStore({
+    memories: (uid: string, kind: string, limit: number) =>
+      [
+        {
+          uid,
+          key: "artist:Frank Ocean",
+          kind,
+          value: "Listener explicitly asked for more Frank Ocean and completed repeated Frank Ocean listening.",
+          confidence: 0.9,
+          evidenceCount: 4,
+          evidenceRefs: ["event:10"],
+          updatedAt: "2026-06-03T01:02:03.000Z",
+        },
+      ].slice(0, limit),
+  });
+  store.saveArtifact("42", "program_contract.md", "# Program Contract\nstation_goal: late-night R&B\navoid: generic electronic", "program-contract/v1");
+  store.saveArtifact(
+    "42",
+    "session_reflection.md",
+    "# Session Reflection\n\n## Session Signals\n- session_artist:Frank Ocean: Recent completed listening repeatedly returned to Frank Ocean.\n\n## Temporary Avoids\n- generic electronic",
+    "session-reflection/v1",
+  );
+  const runtime = new RadioAgentRuntime({
+    mode: "assisted",
+    store,
+    programDirector: {
+      plan: async () =>
+        programWindow({
+          mainDirection: "Stay close to Frank Ocean and keep late-night R&B coherent.",
+          candidateTasks: [
+            {
+              query: "Frank Ocean Nights",
+              reason: "Known durable R&B anchor.",
+              style: "late-night R&B",
+              negativeConstraints: ["generic electronic"],
+            },
+          ],
+          hostIntent: {
+            shouldSpeak: true,
+            event: "return_to_contract",
+            reason: "queue recovery",
+            text: "我先顺着 Frank Ocean 的方向接一首，把电台稳住。",
+          },
+        }),
+    },
+    now: () => "2026-06-03T01:02:03.000Z",
+  });
+
+  await runtime.handle({
+    type: "queue_low",
+    uid: "42",
+    sessionId: 9,
+    currentTrack: { id: "frank-1", name: "Nights", artist: "Frank Ocean" },
+    readyQueue: [],
+  });
+
+  const journal = store.artifact("42", "agent_journal.md");
+  assert.match(journal?.content ?? "", /# Agent Journal/);
+  assert.match(journal?.content ?? "", /queue_low/);
+  assert.match(journal?.content ?? "", /Frank Ocean/);
+  assert.match(journal?.content ?? "", /generic electronic/);
+  assert.doesNotMatch(journal?.content ?? "", /prompt|JSON|tool call|shadow decision|model trace/i);
+  assert.match(journal?.sourceVersion ?? "", /agent-journal\/v1/);
+  assert.ok(runtime.status("42", 9).artifacts["agent_journal.md"]);
+});
+
 test("shadow mode records program windows but still never controls playback", async () => {
   const store = runtimeStore();
   const programDirector = {

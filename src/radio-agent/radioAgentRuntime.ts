@@ -1,6 +1,7 @@
 import type { LibraryCensus, LibraryCensusResult } from "./libraryCensus.js";
 import { buildRadioAgentContextSnapshot } from "./agentContext.js";
 import {
+  buildAgentJournalMarkdown,
   buildListenerSessionMarkdown,
   buildProgramContractMarkdown,
   buildSessionReflectionMarkdown,
@@ -16,6 +17,7 @@ import {
   type RadioAgentHandleResult,
   type RadioAgentMemory,
   type RadioAgentMode,
+  type RadioAgentProgramWindow,
   type RadioAgentStatus,
   type RadioHostDecision,
   type RadioLibraryPlaylist,
@@ -29,6 +31,7 @@ const DEFAULT_LIBRARY_SCAN_FRESHNESS_MS = 6 * 60 * 60 * 1000;
 const COMPACT_PROFILE_SOURCE_VERSION = "taste-distiller/v3-memory-merge";
 const LISTENER_SESSION_SOURCE_VERSION = "listener-session/v1";
 const SESSION_REFLECTION_SOURCE_VERSION = "session-reflection/v1";
+const AGENT_JOURNAL_SOURCE_VERSION = "agent-journal/v1";
 
 interface RadioAgentRuntimeStore {
   appendEvent(event: RadioAgentEvent): number;
@@ -106,7 +109,14 @@ export class RadioAgentRuntime {
   status(uid: string | null, sessionId: number | null = null): RadioAgentStatus {
     const artifacts: RadioAgentStatus["artifacts"] = {};
     if (uid) {
-      for (const key of ["user_profile.md", "station_now.md", "program_contract.md", "listener_session.md", "session_reflection.md"]) {
+      for (const key of [
+        "user_profile.md",
+        "station_now.md",
+        "program_contract.md",
+        "listener_session.md",
+        "session_reflection.md",
+        "agent_journal.md",
+      ]) {
         const artifact = this.deps.store.artifact(uid, key);
         if (artifact) {
           artifacts[key] = {
@@ -415,6 +425,7 @@ export class RadioAgentRuntime {
       });
       const window = await this.deps.programDirector.plan(snapshot);
       this.saveDecision(event, "program_window", { window });
+      this.saveAgentJournal(event, window);
       return window;
     } catch {
       return undefined;
@@ -435,6 +446,32 @@ export class RadioAgentRuntime {
   private nextDecisionId(type: string): string {
     this.sequence += 1;
     return `${type}-${this.now()}-${this.sequence}`;
+  }
+
+  private saveAgentJournal(event: RadioAgentEvent, window: RadioAgentProgramWindow): void {
+    if (!event.uid) return;
+    const firstTask = window.candidateTasks[0];
+    const guardrails = dedupeStrings([
+      ...window.disallowed,
+      ...(firstTask?.negativeConstraints || []),
+      window.returnRequirement,
+    ]).slice(0, 6);
+    this.deps.store.saveArtifact(
+      event.uid,
+      "agent_journal.md",
+      buildAgentJournalMarkdown({
+        updatedAt: this.now(),
+        eventType: event.type,
+        observation: journalObservation(event, window),
+        interpretation: window.mainDirection || window.stationBrief,
+        action: firstTask
+          ? `Next search direction: ${firstTask.query}. ${firstTask.reason}`
+          : "No candidate task was ready; keep the current station stable while gathering more evidence.",
+        guardrails,
+        nextCheck: journalNextCheck(event),
+      }),
+      `${AGENT_JOURNAL_SOURCE_VERSION} session=${event.sessionId ?? "none"} source=${window.source}`,
+    );
   }
 }
 
@@ -464,6 +501,31 @@ function isTrack(value: Track | null): value is Track {
 function extractReadyQueue(value: unknown): Track[] {
   if (!Array.isArray(value)) return [];
   return value.map(extractTrack).filter(isTrack);
+}
+
+function journalObservation(event: RadioAgentEvent, window: RadioAgentProgramWindow): string {
+  const track = extractTrack(event.payload.currentTrack) || extractTrack(event.payload.track);
+  const trackText = track ? `Current track is ${track.name || "unknown track"} - ${track.artist || "unknown artist"}.` : "";
+  const eventText =
+    event.type === "queue_low"
+      ? "Queue is low, so the agent needs to prepare the next move."
+      : event.type === "track_completed"
+        ? "A track completed and the agent is checking whether the queue still supports the station."
+        : event.type === "user_text"
+          ? "The listener gave a direct request or correction."
+          : `Recent event: ${event.type}.`;
+  const directionText = window.mainDirection ? `Active direction: ${window.mainDirection}.` : "";
+  return [eventText, trackText, directionText].filter(Boolean).join(" ");
+}
+
+function journalNextCheck(event: RadioAgentEvent): string {
+  if (event.type === "queue_low" || event.type === "track_completed") {
+    return "Watch the next completion, skip, or direct correction before changing the station direction.";
+  }
+  if (event.type === "user_text") {
+    return "Check whether the next played track satisfies the listener request.";
+  }
+  return "Check the next listener action before promoting any new memory.";
 }
 
 function shouldRefreshProfileFromBehavior(event: RadioAgentEvent): boolean {
