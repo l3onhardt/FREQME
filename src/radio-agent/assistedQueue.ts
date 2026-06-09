@@ -71,7 +71,14 @@ export async function tryQueueRadioAgentAssistedTrack(args: RadioAgentAssistedQu
       return false;
     }
 
-    const prepared = await args.executor.prepareFirstPlayable(result.programWindow);
+    let prepared: RadioAgentPreparedTrack | null = null;
+    try {
+      prepared = await args.executor.prepareFirstPlayable(result.programWindow);
+    } catch {
+      await reportRepairNeeded(args, result.programWindow, "assisted_queue_failed");
+      logFallback(args, "assisted_queue_failed");
+      return false;
+    }
     if (!prepared) {
       await reportRepairNeeded(args, result.programWindow, "program_executor_no_track");
       logFallback(args, "program_executor_no_track");
@@ -81,15 +88,22 @@ export async function tryQueueRadioAgentAssistedTrack(args: RadioAgentAssistedQu
     try {
       await args.traceStore.save(prepared.decisionTrace);
     } catch {
+      await reportRepairNeeded(args, result.programWindow, "trace_save_failed");
       logFallback(args, "trace_save_failed");
       return false;
     }
 
     const ttsHash = prepared.segueText ? await args.synthesize(prepared.segueText).catch(() => "") : "";
-    args.queue.addReady(prepared.track, prepared.url, prepared.selectionReason, {
-      segueText: prepared.segueText,
-      ttsHash,
-    });
+    try {
+      args.queue.addReady(prepared.track, prepared.url, prepared.selectionReason, {
+        segueText: prepared.segueText,
+        ttsHash,
+      });
+    } catch {
+      await reportRepairNeeded(args, result.programWindow, "assisted_queue_failed");
+      logFallback(args, "assisted_queue_failed");
+      return false;
+    }
     return true;
   } catch {
     logFallback(args, "assisted_queue_failed");

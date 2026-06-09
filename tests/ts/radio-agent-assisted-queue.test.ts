@@ -165,7 +165,18 @@ test("assisted queue logs and falls back when no playable track verifies", async
 });
 
 test("assisted queue logs and falls back before queueing when trace save fails", async () => {
+  const reported: Record<string, unknown>[] = [];
   const { deps, calls, fallbackReasons } = assistedDeps({
+    radioAgent: {
+      handle: async (input: Record<string, unknown>) => {
+        reported.push(input);
+        return {
+          controlsPlayback: false,
+          event: { uid: "42", sessionId: 9, type: "queue_low", priority: "warm", payload: {}, createdAt: "" },
+          programWindow: window,
+        };
+      },
+    },
     traceStore: {
       save: () => {
         calls.push("trace");
@@ -177,8 +188,12 @@ test("assisted queue logs and falls back before queueing when trace save fails",
   const queued = await tryQueueRadioAgentAssistedTrack(deps as any);
 
   assert.equal(queued, false);
-  assert.deepEqual(calls, ["agent", "executor", "trace"]);
+  assert.deepEqual(calls, ["executor", "trace"]);
   assert.deepEqual(fallbackReasons, ["trace_save_failed"]);
+  assert.equal(reported[0]?.type, "queue_low");
+  assert.equal(reported[1]?.type, "program_repair_needed");
+  assert.equal(reported[1]?.reason, "trace_save_failed");
+  assert.deepEqual(reported[1]?.attemptedQueries, ["SZA Good Days"]);
 });
 
 test("assisted queue logs and falls back when runtime throws", async () => {
@@ -192,8 +207,51 @@ test("assisted queue logs and falls back when runtime throws", async () => {
   assert.deepEqual(fallbackReasons, ["assisted_queue_failed"]);
 });
 
+test("assisted queue reports repair when queueing the prepared track fails", async () => {
+  const reported: Record<string, unknown>[] = [];
+  const { deps, calls, fallbackReasons } = assistedDeps({
+    radioAgent: {
+      handle: async (input: Record<string, unknown>) => {
+        reported.push(input);
+        return {
+          controlsPlayback: false,
+          event: { uid: "42", sessionId: 9, type: "queue_low", priority: "warm", payload: {}, createdAt: "" },
+          programWindow: window,
+        };
+      },
+    },
+    queue: {
+      addReady: () => {
+        calls.push("queue-throw");
+        throw new Error("queue down");
+      },
+    },
+  });
+
+  const queued = await tryQueueRadioAgentAssistedTrack(deps as any);
+
+  assert.equal(queued, false);
+  assert.deepEqual(fallbackReasons, ["assisted_queue_failed"]);
+  assert.equal(reported[0]?.type, "queue_low");
+  assert.equal(reported[1]?.type, "program_repair_needed");
+  assert.equal(reported[1]?.reason, "assisted_queue_failed");
+  assert.deepEqual(reported[1]?.attemptedQueries, ["SZA Good Days"]);
+  assert.ok(calls.includes("queue-throw"));
+});
+
 test("assisted queue logs and falls back when executor throws", async () => {
+  const reported: Record<string, unknown>[] = [];
   const { deps, fallbackReasons } = assistedDeps({
+    radioAgent: {
+      handle: async (input: Record<string, unknown>) => {
+        reported.push(input);
+        return {
+          controlsPlayback: false,
+          event: { uid: "42", sessionId: 9, type: "queue_low", priority: "warm", payload: {}, createdAt: "" },
+          programWindow: window,
+        };
+      },
+    },
     executor: { prepareFirstPlayable: async () => { throw new Error("executor down"); } },
   });
 
@@ -201,4 +259,8 @@ test("assisted queue logs and falls back when executor throws", async () => {
 
   assert.equal(queued, false);
   assert.deepEqual(fallbackReasons, ["assisted_queue_failed"]);
+  assert.equal(reported[0]?.type, "queue_low");
+  assert.equal(reported[1]?.type, "program_repair_needed");
+  assert.equal(reported[1]?.reason, "assisted_queue_failed");
+  assert.deepEqual(reported[1]?.attemptedQueries, ["SZA Good Days"]);
 });
