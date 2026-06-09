@@ -44,3 +44,18 @@ test("server keeps assisted fallback logging best effort", () => {
   assert.match(assistedQueueSource, /trace_save_failed/);
   assert.match(assistedQueueSource, /assisted_queue_failed/);
 });
+
+test("server reports exhausted playback recovery back to the radio agent", () => {
+  const source = fs.readFileSync("src/server.ts", "utf8");
+  const promoteNext = source.indexOf("const item = queue.promoteNext(previousEvent)");
+  const missingItem = source.indexOf("if (!item)", promoteNext);
+  const recoveryEvent = source.indexOf('type: "playback_recovery_needed"', missingItem);
+  const listenerError = source.indexOf('send({ type: "error"', missingItem);
+
+  assert.ok(promoteNext >= 0);
+  assert.ok(missingItem > promoteNext);
+  assert.ok(recoveryEvent > missingItem);
+  assert.ok(listenerError > recoveryEvent);
+  assert.match(source.slice(recoveryEvent, listenerError), /reason:\s*"queue_empty_after_all_recovery"/);
+  assert.match(source.slice(recoveryEvent, listenerError), /currentTrack:\s*currentTrack\s*\?\s*trackInfo\(currentTrack\)\s*:\s*null/);
+});

@@ -82,7 +82,7 @@ export class RadioAgentRuntime {
       this.saveSessionEvidence(event, "skip", "Single skip recorded as session evidence, not a permanent dislike.");
     }
 
-    if (event.type === "program_repair_needed") {
+    if (event.type === "program_repair_needed" || event.type === "playback_recovery_needed") {
       this.saveExecutionRepair(persistedEvent);
     }
 
@@ -529,16 +529,31 @@ export class RadioAgentRuntime {
   private saveExecutionRepair(event: RadioAgentEvent): void {
     if (!event.uid) return;
     const attemptedQueries = stringArrayFromUnknown(event.payload.attemptedQueries).slice(0, 8);
-    const reason = stringValue(event.payload.reason) || "program executor could not prepare a playable track";
+    const reason =
+      stringValue(event.payload.reason) ||
+      (event.type === "playback_recovery_needed"
+        ? "playback could not recover a next track"
+        : "program executor could not prepare a playable track");
     const programWindow = event.payload.programWindow;
+    const currentTrack = extractTrack(event.payload.currentTrack) || extractTrack(event.payload.track);
     const nextAttempt = executionRepairNextAttempt(programWindow, attemptedQueries);
     const guardrails = executionRepairGuardrails(programWindow);
-    const issue = `Execution could not prepare a playable track: ${reason}.`;
-    const correction = "Treat the failed queries as weak negative evidence for this pass, then replan with safer concrete songs.";
+    const issue =
+      event.type === "playback_recovery_needed"
+        ? `Playback recovery could not continue after the current track: ${reason}.`
+        : `Execution could not prepare a playable track: ${reason}.`;
+    const correction =
+      event.type === "playback_recovery_needed"
+        ? "Treat this as a continuity failure, then immediately replan with a concrete, playable song before changing station direction."
+        : "Treat the failed queries as weak negative evidence for this pass, then replan with safer concrete songs.";
+    const evidence = dedupeStrings([
+      ...attemptedQueries,
+      currentTrack ? `${currentTrack.name || "Unknown"} - ${currentTrack.artist || "Unknown"}` : "",
+    ]);
 
     this.saveDecision(event, "execution_repair", {
       issue,
-      evidence: attemptedQueries,
+      evidence,
       correction,
       nextAttempt,
     });
@@ -549,7 +564,7 @@ export class RadioAgentRuntime {
         updatedAt: this.now(),
         eventType: event.type,
         issue,
-        evidence: attemptedQueries.length ? attemptedQueries : ["No playable candidate was prepared."],
+        evidence: evidence.length ? evidence : ["No playable candidate was prepared."],
         correction,
         guardrails,
         nextAttempt,

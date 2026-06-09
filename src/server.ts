@@ -887,6 +887,14 @@ async function handleRadioSocket(socket: WebSocketType): Promise<void> {
     if (!queue.readyItems().length) await fillQueue(1, false);
     const item = queue.promoteNext(previousEvent);
     if (!item) {
+      mirrorRadioAgent({
+        type: "playback_recovery_needed",
+        uid,
+        sessionId,
+        reason: "queue_empty_after_all_recovery",
+        currentTrack: currentTrack ? trackInfo(currentTrack) : null,
+        readyQueue: queue.readyItems().map((readyItem) => trackInfo(readyItem.track)),
+      });
       send({ type: "error", message: "暂时没有更多歌曲，请稍后再试。" });
       return;
     }

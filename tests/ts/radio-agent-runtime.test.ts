@@ -788,6 +788,33 @@ test("runtime records executor failure feedback as an agent repair", async () =>
   assert.match(repair?.sourceVersion ?? "", /agent-repair\/v1/);
 });
 
+test("runtime records playback recovery failure as agent repair evidence", async () => {
+  const store = runtimeStore();
+  const runtime = new RadioAgentRuntime({
+    mode: "assisted",
+    store,
+    now: () => "2026-06-03T01:02:03.000Z",
+  });
+
+  await runtime.handle({
+    type: "playback_recovery_needed",
+    uid: "42",
+    sessionId: 9,
+    reason: "queue_empty_after_all_recovery",
+    currentTrack: { id: "s1", name: "Good Days", artist: "SZA" },
+    readyQueue: [],
+  });
+
+  assert.ok(store.events.some((event) => event.type === "playback_recovery_needed"));
+  assert.ok(store.decisions.some((decision) => decision.decisionType === "execution_repair"));
+  const repair = store.artifact("42", "agent_repair.md");
+  assert.match(repair?.content ?? "", /# Agent Repair/);
+  assert.match(repair?.content ?? "", /queue_empty_after_all_recovery/);
+  assert.match(repair?.content ?? "", /Good Days - SZA/);
+  assert.match(repair?.content ?? "", /concrete, playable song/i);
+  assert.match(repair?.sourceVersion ?? "", /agent-repair\/v1/);
+});
+
 test("runtime includes latest agent repair artifact in the next planning snapshot", async () => {
   const store = runtimeStore();
   store.saveArtifact(
