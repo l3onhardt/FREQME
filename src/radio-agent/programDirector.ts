@@ -147,7 +147,9 @@ function buildFallbackWindow(context: RadioAgentContextSnapshot, createdAt: stri
 function fallbackCandidateTasks(context: RadioAgentContextSnapshot): RadioAgentCandidateTask[] {
   const contract = contractAnchor(context.contract);
   const failedQueries = repairFailedQueries(context.repair);
+  const skippedAvoids = reflectionSkippedAvoids(context.reflection);
   const anchors = [
+    ...reflectionCompletedArtists(context.reflection),
     ...reflectionPositiveAnchors(context.reflection),
     ...context.memoryFacts.map(memoryAnchor),
     context.currentTrack?.artist,
@@ -170,6 +172,7 @@ function fallbackCandidateTasks(context: RadioAgentContextSnapshot): RadioAgentC
   return tasks
     .filter(isAllowedCandidateTask)
     .filter((task) => !queryWasRecentlyFailed(task.query, failedQueries))
+    .filter((task) => !queryMatchesAvoids(task.query, skippedAvoids))
     .filter((task) => taskFitsContract(context, task))
     .slice(0, MAX_CANDIDATE_TASKS);
 }
@@ -258,6 +261,7 @@ function hasReadyAgentProgramItem(context: RadioAgentContextSnapshot): boolean {
 function fallbackHostAnchor(context: RadioAgentContextSnapshot): string {
   const contract = contractAnchor(context.contract);
   const anchor =
+    reflectionCompletedArtists(context.reflection)[0] ||
     reflectionPositiveAnchors(context.reflection)[0] ||
     memoryAnchor(context.memoryFacts[0]) ||
     context.currentTrack?.artist ||
@@ -314,6 +318,15 @@ function queryWasRecentlyFailed(query: string, failedQueries: string[]): boolean
   });
 }
 
+function queryMatchesAvoids(query: string, avoids: string[]): boolean {
+  const normalizedQuery = normalizeQueryForRepair(query);
+  if (!normalizedQuery) return false;
+  return avoids.some((avoid) => {
+    const normalizedAvoid = normalizeQueryForRepair(avoid);
+    return Boolean(normalizedAvoid && normalizedAvoid === normalizedQuery);
+  });
+}
+
 function normalizeQueryForRepair(query: string): string {
   return query.toLowerCase().replace(/[^a-z0-9&.+ ]/g, " ").replace(/\s+/g, " ").trim();
 }
@@ -345,6 +358,7 @@ function fallbackStationBrief(context: RadioAgentContextSnapshot): string {
 function fallbackMainDirection(context: RadioAgentContextSnapshot): string {
   const contract = contractAnchor(context.contract);
   const anchor =
+    reflectionCompletedArtists(context.reflection)[0] ||
     reflectionPositiveAnchors(context.reflection)[0] ||
     memoryAnchor(context.memoryFacts[0]) ||
     context.currentTrack?.artist ||
@@ -365,7 +379,11 @@ function extractDisallowed(contract: string): string[] {
 }
 
 function fallbackNegativeConstraints(context: RadioAgentContextSnapshot): string[] {
-  return uniqueStrings([...extractDisallowed(context.contract), ...reflectionTemporaryAvoids(context.reflection)]);
+  return uniqueStrings([
+    ...extractDisallowed(context.contract),
+    ...reflectionTemporaryAvoids(context.reflection),
+    ...reflectionSkippedAvoids(context.reflection),
+  ]);
 }
 
 function reflectionPositiveAnchors(reflection: string): string[] {
@@ -379,6 +397,23 @@ function reflectionPositiveAnchors(reflection: string): string[] {
     if (anchor) anchors.push(anchor);
   }
   return uniqueStrings(anchors).filter((anchor) => !reflectionAvoidLooksLikeOnlyConstraint(anchor)).slice(0, 4);
+}
+
+function reflectionCompletedArtists(reflection: string): string[] {
+  return uniqueStrings(
+    reflectionSectionLines(reflection, "Completed Tracks")
+      .map(trackArtistFromReflectionLine)
+      .filter(Boolean),
+  ).slice(0, 4);
+}
+
+function reflectionSkippedAvoids(reflection: string): string[] {
+  return uniqueStrings(
+    reflectionSectionLines(reflection, "Skipped Tracks").flatMap((line) => [
+      trackArtistFromReflectionLine(line),
+      trackTitleFromReflectionLine(line),
+    ].filter(Boolean)),
+  ).slice(0, 8);
 }
 
 function reflectionTemporaryAvoids(reflection: string): string[] {
@@ -399,6 +434,18 @@ function reflectionSectionLines(markdown: string, heading: string): string[] {
     if (item && item.toLowerCase() !== "none") result.push(item);
   }
   return result;
+}
+
+function trackArtistFromReflectionLine(line: string): string {
+  const withoutId = line.replace(/\s+\([^)]*\)\s*$/u, "").trim();
+  const parts = withoutId.split(/\s+-\s+/u).map((part) => part.trim()).filter(Boolean);
+  return parts.length >= 2 ? parts.slice(1).join(" - ") : "";
+}
+
+function trackTitleFromReflectionLine(line: string): string {
+  const withoutId = line.replace(/\s+\([^)]*\)\s*$/u, "").trim();
+  const parts = withoutId.split(/\s+-\s+/u).map((part) => part.trim()).filter(Boolean);
+  return parts.length >= 2 ? parts[0] || "" : "";
 }
 
 function reflectionAnchorFromLine(line: string): string {

@@ -167,6 +167,25 @@ test("fallback planning turns session reflection into executable anchors and tem
   assert.doesNotMatch(window.hostIntent.text, /鎴|銆|鐨|涓|杩|俙|旁边|质感/);
 });
 
+test("fallback planning treats completed track artists as positive behavior anchors", async () => {
+  const director = new RadioAgentProgramDirector(null, () => NOW);
+
+  const window = await director.plan({
+    ...contextSnapshot(),
+    contract: "# Program Contract\nstation_goal: mellow R&B radio",
+    profile: "",
+    memoryFacts: [],
+    memoryHypotheses: [],
+    currentTrack: null,
+    readyQueue: [],
+    reflection:
+      "# Session Reflection\n\n## Completed Tracks\n- Skin Tight - Ravyn Lenae (r1)\n- Xtasy - Ravyn Lenae (r2)\n\n## Temporary Avoids\n- generic electronic\n",
+  });
+
+  assert.match(window.candidateTasks[0]?.query ?? "", /Ravyn Lenae/i);
+  assert.match(window.mainDirection, /Ravyn Lenae/i);
+});
+
 test("fallback planning does not use temporary avoids as positive anchors", async () => {
   const director = new RadioAgentProgramDirector(null, () => NOW);
 
@@ -184,6 +203,26 @@ test("fallback planning does not use temporary avoids as positive anchors", asyn
 
   assert.ok(window.candidateTasks.every((task) => !/^A$|Too Much|generic electronic/i.test(task.query)));
   assert.ok(window.candidateTasks.every((task) => task.negativeConstraints.includes("generic electronic")));
+});
+
+test("fallback planning avoids recently skipped track artists as next anchors", async () => {
+  const director = new RadioAgentProgramDirector(null, () => NOW);
+
+  const window = await director.plan({
+    ...contextSnapshot(),
+    contract: "# Program Contract\nstation_goal: mellow R&B radio",
+    profile: "",
+    memoryFacts: [{ ...contextSnapshot().memoryFacts[0]!, key: "artist:SZA" }],
+    memoryHypotheses: [],
+    currentTrack: null,
+    readyQueue: [],
+    reflection:
+      "# Session Reflection\n\n## Skipped Tracks\n- Too Much - SZA (bad-1)\n\n## Completed Tracks\n- Japanese Denim - Daniel Caesar (dc1)\n",
+  });
+
+  assert.ok(window.candidateTasks.every((task) => !/^SZA$/i.test(task.query)));
+  assert.match(window.candidateTasks[0]?.query ?? "", /Daniel Caesar/i);
+  assert.ok(window.candidateTasks.every((task) => task.negativeConstraints.some((item) => /SZA|Too Much/i.test(item))));
 });
 
 test("program director preserves spec-compliant host events and sanitizes internal host text", async () => {
