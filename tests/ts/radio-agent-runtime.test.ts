@@ -754,6 +754,65 @@ test("runtime self-repairs off-contract program windows before assisted executio
   assert.ok(runtime.status("42", 9).artifacts["agent_repair.md"]);
 });
 
+test("runtime self-repairs generic avoid violations outside R&B contracts", async () => {
+  const store = runtimeStore();
+  store.saveArtifact(
+    "42",
+    "program_contract.md",
+    "# Program Contract\nstation_goal: quiet late-night folk\navoid: high-energy EDM, festival drops",
+    "program-contract/v1",
+  );
+  const runtime = new RadioAgentRuntime({
+    mode: "assisted",
+    store,
+    programDirector: {
+      plan: async () =>
+        programWindow({
+          stationBrief: "quiet late-night folk",
+          mainDirection: "Keep the room intimate and acoustic.",
+          candidateTasks: [
+            {
+              query: "Martin Garrix festival drops",
+              reason: "High-energy festival lift.",
+              style: "high-energy EDM",
+              negativeConstraints: [],
+            },
+            {
+              query: "Nick Drake Pink Moon",
+              reason: "Quiet acoustic continuation.",
+              style: "late-night folk",
+              negativeConstraints: ["high-energy EDM"],
+            },
+          ],
+          disallowed: ["high-energy EDM", "festival drops"],
+          returnRequirement: "Stay acoustic and intimate.",
+          traceBasis: {
+            profile: "Nick Drake",
+            now: "late_night",
+            contract: "quiet late-night folk; avoid high-energy EDM and festival drops",
+            eventType: "queue_low",
+          },
+        }),
+    },
+    now: () => "2026-06-03T01:02:03.000Z",
+  });
+
+  const result = await runtime.handle({
+    type: "queue_low",
+    uid: "42",
+    sessionId: 9,
+    currentTrack: { id: "folk-1", name: "Pink Moon", artist: "Nick Drake" },
+    readyQueue: [],
+  });
+
+  assert.deepEqual(result.programWindow?.candidateTasks.map((task) => task.query), ["Nick Drake Pink Moon"]);
+  assert.ok(store.decisions.some((decision) => decision.decisionType === "program_repair"));
+  const repair = store.artifact("42", "agent_repair.md");
+  assert.match(repair?.content ?? "", /high-energy EDM|festival drops/i);
+  assert.match(repair?.content ?? "", /Martin Garrix festival drops/);
+  assert.match(repair?.content ?? "", /Nick Drake Pink Moon/);
+});
+
 test("runtime records executor failure feedback as an agent repair", async () => {
   const store = runtimeStore();
   const runtime = new RadioAgentRuntime({

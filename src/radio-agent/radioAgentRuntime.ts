@@ -636,6 +636,9 @@ interface ProgramRepairPlan {
 }
 
 function planProgramRepair(window: RadioAgentProgramWindow): ProgramRepairPlan | null {
+  const genericRepair = planGenericAvoidRepair(window);
+  if (genericRepair) return genericRepair;
+
   if (!isActiveRnbWindow(window)) return null;
   const offContractTasks = window.candidateTasks.filter((task) => taskClearlyBreaksRnb(task));
   if (!offContractTasks.length) return null;
@@ -656,6 +659,39 @@ function planProgramRepair(window: RadioAgentProgramWindow): ProgramRepairPlan |
     ]).slice(0, 8),
     replacementTasks,
   };
+}
+
+function planGenericAvoidRepair(window: RadioAgentProgramWindow): ProgramRepairPlan | null {
+  const guardrails = dedupeStrings([
+    ...window.disallowed,
+    ...window.candidateTasks.flatMap((task) => task.negativeConstraints),
+  ]).filter((item) => item.length >= 3);
+  if (!guardrails.length) return null;
+
+  const violatingTasks = window.candidateTasks.filter((task) => taskViolatesGuardrails(task, guardrails));
+  if (!violatingTasks.length) return null;
+
+  const replacementTasks = dedupeCandidateTasks(
+    window.candidateTasks.filter((task) => !taskViolatesGuardrails(task, guardrails)),
+  ).slice(0, 5);
+  if (!replacementTasks.length) return null;
+
+  return {
+    issue: "Planned search violated the active station guardrails.",
+    evidence: violatingTasks.map((task) => `${task.query}${task.style ? ` (${task.style})` : ""}`).slice(0, 5),
+    correction: `Remove candidates that touch ${humanListForRepair(guardrails.slice(0, 3))}, and continue inside ${window.mainDirection || window.stationBrief || "the current station direction"}.`,
+    guardrails: guardrails.slice(0, 8),
+    replacementTasks,
+  };
+}
+
+function taskViolatesGuardrails(task: RadioAgentProgramWindow["candidateTasks"][number], guardrails: string[]): boolean {
+  const taskText = normalizeRepairText([task.query, task.style, task.reason].join(" "));
+  if (!taskText) return false;
+  return guardrails.some((guardrail) => {
+    const normalizedGuardrail = normalizeRepairText(guardrail.replace(/^avoid\s+/i, ""));
+    return Boolean(normalizedGuardrail && taskText.includes(normalizedGuardrail));
+  });
 }
 
 function isActiveRnbWindow(window: RadioAgentProgramWindow): boolean {
@@ -743,6 +779,16 @@ function dedupeCandidateTasks(tasks: RadioAgentProgramWindow["candidateTasks"]):
     result.push(task);
   }
   return result;
+}
+
+function normalizeRepairText(text: string): string {
+  return text.toLowerCase().replace(/[^a-z0-9&.+ ]/g, " ").replace(/\s+/g, " ").trim();
+}
+
+function humanListForRepair(items: string[]): string {
+  const clean = dedupeStrings(items);
+  if (clean.length <= 2) return clean.join(" and ");
+  return `${clean.slice(0, -1).join(", ")} and ${clean[clean.length - 1]}`;
 }
 
 function isRnbTextForRepair(text: string): boolean {
