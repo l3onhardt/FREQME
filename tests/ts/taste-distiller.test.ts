@@ -191,6 +191,98 @@ test("taste distiller turns explicit positive artist text into a session hypothe
   assert.equal(result.facts.some((item) => item.key === "artist:FKA twigs"), false);
 });
 
+test("taste distiller understands varied explicit positive artist text", () => {
+  const result = distillTasteFacts({
+    uid: "42",
+    libraryTracks: [],
+    playlists: [],
+    recentEvents: [
+      {
+        id: 31,
+        uid: "42",
+        sessionId: 7,
+        type: "user_text",
+        priority: "hot",
+        payload: { text: "I love SZA lately" },
+        createdAt: "2026-06-03T01:00:00.000Z",
+      },
+      {
+        id: 32,
+        uid: "42",
+        sessionId: 7,
+        type: "user_text",
+        priority: "hot",
+        payload: { text: "more of Frank Ocean tonight" },
+        createdAt: "2026-06-03T01:01:00.000Z",
+      },
+      {
+        id: 33,
+        uid: "42",
+        sessionId: 7,
+        type: "user_text",
+        priority: "hot",
+        payload: { text: "多来点FKA twigs" },
+        createdAt: "2026-06-03T01:02:00.000Z",
+      },
+      {
+        id: 34,
+        uid: "42",
+        sessionId: 7,
+        type: "user_text",
+        priority: "hot",
+        payload: { text: "想听更多Daniel Caesar" },
+        createdAt: "2026-06-03T01:03:00.000Z",
+      },
+    ],
+  });
+
+  const keys = result.hypotheses.map((item) => item.key);
+  assert.ok(keys.includes("session_artist:SZA"));
+  assert.ok(keys.includes("session_artist:Frank Ocean"));
+  assert.ok(keys.includes("session_artist:FKA twigs"));
+  assert.ok(keys.includes("session_artist:Daniel Caesar"));
+  assert.equal(result.facts.some((item) => /SZA|Frank Ocean|FKA twigs|Daniel Caesar/.test(item.key)), false);
+});
+
+test("taste distiller does not turn negative artist text into positive hypotheses", () => {
+  const result = distillTasteFacts({
+    uid: "42",
+    libraryTracks: [],
+    playlists: [],
+    recentEvents: [
+      {
+        id: 35,
+        uid: "42",
+        sessionId: 7,
+        type: "user_text",
+        priority: "hot",
+        payload: { text: "don't play SZA tonight" },
+        createdAt: "2026-06-03T01:00:00.000Z",
+      },
+      {
+        id: 36,
+        uid: "42",
+        sessionId: 7,
+        type: "user_text",
+        priority: "hot",
+        payload: { text: "不要Frank Ocean" },
+        createdAt: "2026-06-03T01:01:00.000Z",
+      },
+      {
+        id: 37,
+        uid: "42",
+        sessionId: 7,
+        type: "user_text",
+        priority: "hot",
+        payload: { text: "less FKA twigs" },
+        createdAt: "2026-06-03T01:02:00.000Z",
+      },
+    ],
+  });
+
+  assert.equal(result.hypotheses.some((item) => /SZA|Frank Ocean|FKA twigs/.test(item.key)), false);
+});
+
 test("taste distiller treats one skip as session evidence only", () => {
   const result = distillTasteFacts({
     uid: "42",

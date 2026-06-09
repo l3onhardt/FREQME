@@ -434,6 +434,50 @@ test("fallback planning uses durable user profile anchors when memory rows are t
   assert.doesNotMatch(window.hostIntent.text, listenerUnsafeProgramTerms);
 });
 
+test("fallback planning immediately uses explicit session taste hypotheses", async () => {
+  const director = new RadioAgentProgramDirector(null, () => NOW);
+
+  const window = await director.plan({
+    ...contextSnapshot(),
+    profile: "",
+    memoryFacts: [],
+    memoryHypotheses: [
+      {
+        uid: "42",
+        key: "session_artist:FKA twigs",
+        kind: "taste_hypothesis",
+        value: "Listener explicitly asked for more FKA twigs; treat this as a session preference signal until playback confirms it.",
+        confidence: 0.64,
+        evidenceCount: 1,
+        evidenceRefs: ["event:30"],
+        updatedAt: NOW,
+      },
+      {
+        uid: "42",
+        key: "session_artist:Frank Ocean",
+        kind: "taste_hypothesis",
+        value: "Listener explicitly asked for more Frank Ocean; treat this as a session preference signal until playback confirms it.",
+        confidence: 0.63,
+        evidenceCount: 1,
+        evidenceRefs: ["event:31"],
+        updatedAt: NOW,
+      },
+    ],
+    currentTrack: null,
+    readyQueue: [],
+    contract: "# Program Contract\nstation_goal: mellow personal radio\navoid: high-energy EDM",
+  });
+
+  assert.equal(window.source, "deterministic_fallback");
+  assert.deepEqual(
+    window.candidateTasks.slice(0, 2).map((task) => task.query),
+    ["FKA twigs", "Frank Ocean"],
+  );
+  assert.match(window.mainDirection, /FKA twigs/i);
+  assert.match(window.hostIntent.text, /FKA twigs/i);
+  assert.doesNotMatch(window.hostIntent.text, listenerUnsafeProgramTerms);
+});
+
 test("fallback planning prioritizes an explicit contract over stale taste anchors", async () => {
   const director = new RadioAgentProgramDirector(null, () => NOW);
 

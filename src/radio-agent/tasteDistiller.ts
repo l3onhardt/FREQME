@@ -300,15 +300,35 @@ function textNamesPositiveArtist(text: string, artist: string): boolean {
 function explicitPositiveArtistFromText(text: string): string {
   const normalized = text.replace(/\s+/g, " ").trim();
   if (!normalized) return "";
-  if (/\b(less|avoid|skip|not|no|don't|dont|dislike)\b/i.test(normalized.slice(0, 24))) return "";
+  if (/\b(less|avoid|skip|not|no|don't|dont|dislike)\b/i.test(normalized.slice(0, 32))) return "";
+  if (/不要|别|不想|少来/u.test(normalized.slice(0, 8))) return "";
 
-  const match = normalized.match(
-    /\b(?:play|queue|put on|give me|want|need|like|love|prefer|more|again)\s+(?:some\s+|more\s+|tracks?\s+by\s+|songs?\s+by\s+)?([A-Z][A-Za-z0-9 .+'&-]{1,48}?)(?:\s+(?:tonight|today|please|pls|now|next|tracks?|songs?|music|radio|vibes?))?(?:[.!?]|$)/,
-  );
-  const artist = match?.[1]?.trim().replace(/\s+/g, " ") ?? "";
+  const patterns = [
+    /\b(?:play|queue|put on|give me|want|need|like|love|prefer)\s+(?:some\s+|more\s+|tracks?\s+by\s+|songs?\s+by\s+)?([A-Z][A-Za-z0-9 .+'&-]{1,48}?)(?:\s+(?:lately|tonight|today|please|pls|now|next|tracks?|songs?|music|radio|vibes?))?(?:[.!?]|$)/i,
+    /\bmore\s+of\s+([A-Z][A-Za-z0-9 .+'&-]{1,48}?)(?:\s+(?:lately|tonight|today|please|pls|now|next|tracks?|songs?|music|radio|vibes?))?(?:[.!?]|$)/i,
+    /\bmore\s+([A-Z][A-Za-z0-9 .+'&-]{1,48}?)(?:\s+(?:lately|tonight|today|please|pls|now|next|tracks?|songs?|music|radio|vibes?))?(?:[.!?]|$)/i,
+    /(?:多来点|来点|想听更多|想听点|喜欢|更喜欢)\s*([A-Z][A-Za-z0-9 .+'&-]{1,48})(?:[。！？.!?]|$)/u,
+  ];
+
+  const match = patterns.map((pattern) => normalized.match(pattern)).find((candidate) => candidate?.[1]);
+  const artist = cleanArtistCandidate(match?.[1] ?? "");
   if (!artist) return "";
-  if (/\b(classical|edm|rnb|r&b|jazz|ambient|pop|rock|hip hop|soul|music|songs?|tracks?)\b/i.test(artist)) return "";
-  return artist.replace(/[.,!?]+$/u, "").trim();
+  if (isGenericArtistCandidate(artist)) return "";
+  return artist;
+}
+
+function cleanArtistCandidate(value: string): string {
+  return value
+    .trim()
+    .replace(/\s+/g, " ")
+    .replace(/\s+(?:lately|tonight|today|please|pls|now|next|tracks?|songs?|music|radio|vibes?)$/i, "")
+    .replace(/[.,!?。！？]+$/u, "")
+    .trim();
+}
+
+function isGenericArtistCandidate(artist: string): boolean {
+  if (!artist) return false;
+  return /\b(classical|edm|rnb|r&b|jazz|ambient|pop|rock|hip hop|soul|music|songs?|tracks?)\b/i.test(artist);
 }
 
 function upsertEvidence(items: TasteEvidenceItem[], item: TasteEvidenceItem): void {

@@ -151,6 +151,7 @@ function fallbackCandidateTasks(context: RadioAgentContextSnapshot): RadioAgentC
   const anchors = [
     ...reflectionCompletedArtists(context.reflection),
     ...reflectionPositiveAnchors(context.reflection),
+    ...context.memoryHypotheses.map(memoryAnchor),
     ...context.memoryFacts.map(memoryAnchor),
     ...profileAnchors(context.profile),
     context.currentTrack?.artist,
@@ -264,6 +265,7 @@ function fallbackHostAnchor(context: RadioAgentContextSnapshot): string {
   const anchor =
     reflectionCompletedArtists(context.reflection)[0] ||
     reflectionPositiveAnchors(context.reflection)[0] ||
+    memoryAnchor(context.memoryHypotheses[0]) ||
     memoryAnchor(context.memoryFacts[0]) ||
     profileAnchors(context.profile)[0] ||
     context.currentTrack?.artist ||
@@ -358,7 +360,7 @@ function fallbackStationBrief(context: RadioAgentContextSnapshot): string {
   if (contractGoal && profileGoal && isGenericContractGoal(contractGoal)) {
     return `${contractGoal}; keep it close to ${profileGoal}.`;
   }
-  return listenerFacingGoal(contractGoal, context.memoryFacts) || profileGoal || "Keep the current personal radio session coherent.";
+  return listenerFacingGoal(contractGoal, [...context.memoryHypotheses, ...context.memoryFacts]) || profileGoal || "Keep the current personal radio session coherent.";
 }
 
 function fallbackMainDirection(context: RadioAgentContextSnapshot): string {
@@ -366,6 +368,7 @@ function fallbackMainDirection(context: RadioAgentContextSnapshot): string {
   const anchor =
     reflectionCompletedArtists(context.reflection)[0] ||
     reflectionPositiveAnchors(context.reflection)[0] ||
+    memoryAnchor(context.memoryHypotheses[0]) ||
     memoryAnchor(context.memoryFacts[0]) ||
     profileAnchors(context.profile)[0] ||
     context.currentTrack?.artist ||
