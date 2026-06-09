@@ -97,6 +97,11 @@ export function sanitizeHostText(text: string): string {
 }
 
 function userTextAcknowledgement(text: string): string {
+  const artistAvoids = explicitArtistAvoids(text);
+  if (artistAvoids.length > 0) {
+    return `好，${artistAvoids.join("、")} 我先避开，换别的方向接。`;
+  }
+
   if (isRnbRequest(text)) {
     const avoids = explicitAvoids(text);
     if (avoids.length > 0) {
@@ -105,6 +110,39 @@ function userTextAcknowledgement(text: string): string {
     return "好，先守住 R&B，人声和律动靠前，不乱跳出去。";
   }
   return "收到，我会按这个方向调整。";
+}
+
+function explicitArtistAvoids(text: string): string[] {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  if (!normalized) return [];
+
+  return Array.from(
+    new Set(
+      [
+        ...matchesForPattern(normalized, /(?:不要|别放|别播|不想听|少来点)\s*([A-Z][A-Za-z0-9 .+'&-]{1,48})(?=[，,。.!?]|$)/gu),
+        ...matchesForPattern(normalized, /\b(?:less|avoid|skip|no)\s+([A-Z][A-Za-z0-9 .+'&-]{1,48}?)(?=\s+(?:tonight|today|please|pls|now|next|tracks?|songs?|music|radio|vibes?)|[,.!?]|$)/gi),
+        ...matchesForPattern(normalized, /\b(?:don't|dont|do not)\s+(?:play|queue|put on|give me)?\s*([A-Z][A-Za-z0-9 .+'&-]{1,48}?)(?=\s+(?:tonight|today|please|pls|now|next|tracks?|songs?|music|radio|vibes?)|[,.!?]|$)/gi),
+      ].filter((artist) => !isGenericAvoid(artist)),
+    ),
+  ).slice(0, 3);
+}
+
+function matchesForPattern(text: string, pattern: RegExp): string[] {
+  return Array.from(text.matchAll(pattern))
+    .map((match) => cleanArtistAvoid(match[1] || ""))
+    .filter(Boolean);
+}
+
+function cleanArtistAvoid(value: string): string {
+  return value
+    .replace(/\s+/g, " ")
+    .replace(/\s+(?:tonight|today|please|pls|now|next|tracks?|songs?|music|radio|vibes?)$/i, "")
+    .replace(/[，,。.!?]+$/u, "")
+    .trim();
+}
+
+function isGenericAvoid(value: string): boolean {
+  return /\b(classical|edm|rnb|r&b|jazz|ambient|pop|rock|hip hop|soul|music|songs?|tracks?)\b/i.test(value);
 }
 
 function explicitAvoids(text: string): string[] {

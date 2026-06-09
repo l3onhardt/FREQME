@@ -78,6 +78,25 @@ test("host acknowledges explicit R&B boundaries in human language", () => {
   assert.doesNotMatch(decision.text || "", mojibakeTerms);
 });
 
+test("host acknowledges explicit artist-level avoids", () => {
+  const decision = decideHostSpeech({
+    eventType: "user_text",
+    recentHostLines: [],
+    profileReady: true,
+    lowInterruption: false,
+    userText: "不要Frank Ocean，less SZA tonight",
+  });
+
+  assert.equal(decision.shouldSpeak, true);
+  assert.equal(decision.event, "user_ack");
+  assert.match(decision.text || "", /Frank Ocean/);
+  assert.match(decision.text || "", /SZA/);
+  assert.match(decision.text || "", /避开|先不|不放|换/);
+  assert.doesNotMatch(decision.text || "", /model|prompt|json|trace|candidate|verification|tool call/i);
+  assert.doesNotMatch(decision.text || "", awkwardTerms);
+  assert.doesNotMatch(decision.text || "", mojibakeTerms);
+});
+
 test("host text never exposes internal planning terms", () => {
   const decision = decideHostSpeech({
     eventType: "queue_low",

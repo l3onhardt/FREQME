@@ -38,6 +38,23 @@ test("host agent acknowledges explicit R&B corrections with concrete boundaries"
   assert.doesNotMatch(decision.text || "", badHostText);
 });
 
+test("host agent acknowledges explicit negative artist feedback", () => {
+  const decision = planHostSpeech({
+    eventType: "user_text",
+    profileReady: true,
+    lowInterruption: false,
+    recentHostLines: [],
+    userText: "不要Frank Ocean，less SZA tonight",
+  });
+
+  assert.equal(decision.shouldSpeak, true);
+  assert.equal(decision.event, "user_ack");
+  assert.match(decision.text || "", /Frank Ocean/);
+  assert.match(decision.text || "", /SZA/);
+  assert.match(decision.text || "", /避开|先不|不放|换/);
+  assert.doesNotMatch(decision.text || "", badHostText);
+});
+
 test("host agent stays quiet on ordinary low-interruption continuation after recent speech", () => {
   const decision = planHostSpeech({
     eventType: "track_completed",
