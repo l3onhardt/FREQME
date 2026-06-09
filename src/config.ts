@@ -12,8 +12,9 @@ function intEnv(name: string, fallback: number): number {
 }
 
 export function parseRadioAgentMode(raw: string | undefined): RadioAgentMode {
-  const value = (raw || "shadow").toLowerCase();
-  return value === "assisted" || value === "active" ? value : "shadow";
+  const value = (raw || "assisted").toLowerCase();
+  if (value === "shadow" || value === "active") return value;
+  return "assisted";
 }
 
 function radioAgentModeEnv(): RadioAgentMode {
