@@ -584,6 +584,37 @@ test("fallback planning prioritizes an explicit contract over stale taste anchor
   assert.doesNotMatch(window.hostIntent.text, /Anyma|Martin Garrix|Glenn Gould|Colyn/i);
 });
 
+test("fallback planning turns a fresh R&B session contract into concrete first moves before old anchors", async () => {
+  const director = new RadioAgentProgramDirector(null, () => NOW);
+
+  const window = await director.plan({
+    ...contextSnapshot(),
+    profile: [
+      "# User Profile",
+      "",
+      "## Stable Taste Facts",
+      "- artist:Frank Ocean: Listener returns to Frank Ocean for late-night transitions. (confidence: 0.83, evidence: 4)",
+      "- artist:SZA: Listener has repeated library evidence for SZA. (confidence: 0.91, evidence: 5)",
+    ].join("\n"),
+    memoryFacts: contextSnapshot().memoryFacts,
+    memoryHypotheses: [],
+    currentTrack: { id: "old-anchor", name: "Nights", artist: "Frank Ocean" },
+    readyQueue: [],
+    contract:
+      "# Program Contract\nstation_goal: afternoon R&B with relaxed vocal groove\navoid: classical chamber music, generic electronic",
+    session:
+      "# Listener Session\nactive_request: afternoon R&B\naccepted_direction: Keep this session centered on relaxed afternoon R&B vocals.\nnext_promise: Stay in R&B until the listener asks to move elsewhere.",
+  });
+
+  assert.equal(window.source, "deterministic_fallback");
+  assert.match(window.candidateTasks[0]?.query ?? "", /afternoon|R&B|vocal|groove/i);
+  assert.doesNotMatch(window.candidateTasks[0]?.query ?? "", /^Frank Ocean$|^SZA$/i);
+  assert.ok(window.candidateTasks.some((task) => /Daniel Caesar|H\.E\.R\.|Brent Faiyaz|SZA|Frank Ocean/i.test(task.query)));
+  assert.match(window.mainDirection, /afternoon.*R&B|relaxed.*vocal/i);
+  assert.match(window.hostIntent.text, /R&B|afternoon/i);
+  assert.doesNotMatch(window.hostIntent.text, /profile|model|candidate|trace|JSON/i);
+});
+
 test("model planning under an explicit R&B contract drops off-contract electronic candidates", async () => {
   const model: ProgramPlanningModel = {
     chat: async () => JSON.stringify({

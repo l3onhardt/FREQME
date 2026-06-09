@@ -148,7 +148,9 @@ function fallbackCandidateTasks(context: RadioAgentContextSnapshot): RadioAgentC
   const contract = contractAnchor(context.contract);
   const failedQueries = repairFailedQueries(context.repair);
   const sessionAvoids = reflectionSessionAvoids(context.reflection);
+  const explicitContractQueries = explicitContractFallbackQueries(context);
   const anchors = [
+    ...explicitContractQueries,
     ...reflectionCompletedArtists(context.reflection),
     ...reflectionPositiveAnchors(context.reflection),
     ...context.memoryHypotheses.map(memoryAnchor),
@@ -156,8 +158,8 @@ function fallbackCandidateTasks(context: RadioAgentContextSnapshot): RadioAgentC
     ...profileAnchors(context.profile),
     context.currentTrack?.artist,
     ...context.readyQueue.map((track) => track.artist),
-    contract,
     ...contractDefaultQueries(contract),
+    ...(explicitContractQueries.length ? [] : [contract]),
     DEFAULT_FALLBACK_QUERY,
   ]
     .filter((anchor): anchor is string => Boolean(anchor?.trim()))
@@ -270,6 +272,8 @@ function hasReadyAgentProgramItem(context: RadioAgentContextSnapshot): boolean {
 
 function fallbackHostAnchor(context: RadioAgentContextSnapshot): string {
   const contract = contractAnchor(context.contract);
+  const explicitContract = explicitContractFallbackQueries(context)[0] || "";
+  if (explicitContract && isRnbContractGoal(contract)) return listenerFacingContractAnchor(contract);
   const anchor =
     reflectionCompletedArtists(context.reflection)[0] ||
     reflectionPositiveAnchors(context.reflection)[0] ||
@@ -282,6 +286,32 @@ function fallbackHostAnchor(context: RadioAgentContextSnapshot): string {
   if (anchor && (!contract || anchorFitsContract(contract, anchor))) return anchor;
   if (isRnbContractGoal(contract)) return "R&B";
   return contract;
+}
+
+function explicitContractFallbackQueries(context: RadioAgentContextSnapshot): string[] {
+  const contract = contractAnchor(context.contract);
+  if (!contract || isGenericContractGoal(contract)) return [];
+
+  if (isRnbContractGoal(contract)) {
+    return uniqueStrings([
+      listenerFacingContractAnchor(contract),
+      ...contractDefaultQueries(contract),
+    ]);
+  }
+
+  return [contract];
+}
+
+function listenerFacingContractAnchor(contractGoal: string): string {
+  const compact = contractGoal.replace(/\s+/g, " ").trim();
+  if (!compact) return "";
+  if (isRnbContractGoal(compact)) {
+    if (/\bafternoon\b/i.test(compact) || /下午/.test(compact)) return "afternoon relaxed R&B vocals";
+    if (/\blate[-\s]?night\b/i.test(compact) || /深夜|夜/.test(compact)) return "late-night R&B vocals";
+    if (/\bvocal|vocals|人声/i.test(compact)) return "R&B vocals";
+    return "relaxed R&B groove";
+  }
+  return compact;
 }
 
 function traceBasisFromContext(context: RadioAgentContextSnapshot): RadioAgentProgramWindow["traceBasis"] {
@@ -378,6 +408,8 @@ function fallbackStationBrief(context: RadioAgentContextSnapshot): string {
 
 function fallbackMainDirection(context: RadioAgentContextSnapshot): string {
   const contract = contractAnchor(context.contract);
+  const explicitContract = explicitContractFallbackQueries(context)[0] || "";
+  if (explicitContract) return `Stay with ${explicitContract} as the active station direction.`;
   const anchor =
     reflectionCompletedArtists(context.reflection)[0] ||
     reflectionPositiveAnchors(context.reflection)[0] ||
