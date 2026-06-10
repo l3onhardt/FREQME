@@ -168,3 +168,25 @@ test("requires return to R&B while mustReturnToContract is active", () => {
 
   assert.equal(decision.status, "reject_off_contract");
 });
+
+test("generic station contracts reject explicitly blocked styles", () => {
+  const guard = new BoundaryGuard();
+  const decision = guard.evaluate({
+    contract: {
+      ...contract,
+      id: "folk-contract",
+      mainDirection: "quiet late-night folk",
+      rawUserText: "play quiet folk",
+      allowedAdjacent: ["soft indie folk", "acoustic singer-songwriter"],
+      disallowed: ["high-energy EDM", "festival drops"],
+      positiveSeeds: ["quiet folk"],
+      negativeConstraints: ["high-energy EDM", "festival drops"],
+    },
+    query: "Martin Garrix Animals",
+    candidate: song("Animals", "Martin Garrix"),
+    fallbackLevel: "scheduler",
+    itemStyle: "high-energy EDM",
+  });
+
+  assert.equal(decision.status, "reject_off_contract");
+});

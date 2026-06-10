@@ -137,3 +137,70 @@ test("scheduler active intent search is still bounded by the current R&B station
   assert.deepEqual(neteaseSearches, ["ambient piano"]);
   assert.equal(picked?.id, "rnb-1");
 });
+
+test("scheduler active intent search respects generic station contract blocked moves", async () => {
+  const quietFolkContract: StationContract = {
+    id: "contract-folk",
+    mainDirection: "quiet late-night folk",
+    rawUserText: "play quiet folk",
+    allowedAdjacent: ["acoustic singer-songwriter"],
+    softBridge: [],
+    disallowed: ["high-energy EDM", "festival drops"],
+    positiveSeeds: ["quiet folk"],
+    negativeConstraints: ["high-energy EDM", "festival drops"],
+    driftBudget: 1,
+    bridgeCount: 0,
+    mustReturnToContract: false,
+    hostStyle: "standard",
+    createdAt: "2026-06-03T01:02:03.000Z",
+    updatedAt: "2026-06-03T01:02:03.000Z",
+  };
+  const sessionState = scheduler().newSessionState();
+  sessionState.activeIntent = {
+    label: "high-energy EDM",
+    rawText: "keep going",
+    expiresAfterTracks: 2,
+    constraints: [],
+    seedTask: {
+      type: "scene_genre_direction",
+      primaryEntities: [],
+      workHint: "",
+      styleHint: "high-energy EDM",
+      negativeConstraints: [],
+      searchGoals: ["high-energy EDM"],
+      mustNotSearchLiteralUserSentence: true,
+    },
+  };
+  const neteaseSearches: string[] = [];
+  const stream = new StreamScheduler(
+    {
+      similarSongs: async () => [],
+      recommendSongs: async () => [],
+      personalFm: async () => [track("folk-1", "Motion Sickness", "Phoebe Bridgers")],
+      search: async (query: string) => {
+        neteaseSearches.push(query);
+        return [{ ...track("edm-1", "Animals", "Martin Garrix"), source: "high-energy EDM" }];
+      },
+    } as any,
+    {
+      getRecentTrackIds: () => [],
+      wasTrackRecentlyFailed: () => false,
+    } as any,
+    {
+      resolveWithCandidates: async (candidate: Track) => ({ ok: true, songId: candidate.id, proxyUrl: `/audio/${candidate.id}` }),
+    } as any,
+    new BoundaryGuard(),
+  );
+
+  const picked = await stream.pickNext({
+    currentSongId: null,
+    profile: null,
+    userSettings: {},
+    sessionState,
+    uid: "42",
+    stationContract: quietFolkContract,
+  });
+
+  assert.deepEqual(neteaseSearches, ["high-energy EDM"]);
+  assert.equal(picked?.id, "folk-1");
+});

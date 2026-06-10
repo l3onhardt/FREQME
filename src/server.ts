@@ -471,17 +471,18 @@ function schedulerStationContract(uid: string | null, sessionId: number | null):
 function stationContractFromAgentArtifact(uid: string): StationContract | null {
   const content = radioAgentStore.artifact(uid, "program_contract.md")?.content || "";
   const stationGoal = markdownField(content, "station_goal");
-  if (!stationGoal || !isRnbContractText(stationGoal)) return null;
+  if (!stationGoal) return null;
   const blocked = markdownSectionItems(content, "Blocked Moves");
+  const allowed = markdownSectionItems(content, "Allowed Moves");
   return {
     id: `radio-agent-artifact-${uid}`,
     mainDirection: stationGoal,
     rawUserText: stationGoal,
-    allowedAdjacent: markdownSectionItems(content, "Allowed Moves"),
+    allowedAdjacent: allowed,
     softBridge: [],
-    disallowed: blocked.length ? blocked : ["classical", "electronic", "ambient", "piano"],
-    positiveSeeds: ["R&B"],
-    negativeConstraints: blocked.length ? blocked : ["classical", "electronic", "ambient", "piano"],
+    disallowed: blocked,
+    positiveSeeds: [stationGoal],
+    negativeConstraints: blocked,
     driftBudget: 1,
     bridgeCount: 0,
     mustReturnToContract: false,
@@ -519,10 +520,6 @@ function markdownSectionItems(markdown: string, heading: string): string[] {
     if (item && item.toLowerCase() !== "none") items.push(item);
   }
   return items.slice(0, 12);
-}
-
-function isRnbContractText(text: string): boolean {
-  return /\br\s*&?\s*b\b|\brnb\b/i.test(text);
 }
 
 async function pickBridgeTrack(uid: string | null, profile: TasteProfile | null): Promise<BridgePick | null> {

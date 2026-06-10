@@ -64,6 +64,15 @@ export class BoundaryGuard {
       };
     }
 
+    const blockedMove = this.blockedMove(searchable, args.contract);
+    if (blockedMove) {
+      return {
+        status: "reject_off_contract",
+        reason: `Candidate matches blocked station move: ${blockedMove}.`,
+        contractId: args.contract.id,
+      };
+    }
+
     return { status: "accept_as_adjacent", reason: "No deterministic boundary violation found.", contractId: args.contract.id };
   }
 
@@ -74,5 +83,13 @@ export class BoundaryGuard {
   private isRnbFit(searchable: string, artist: string): boolean {
     if (/rnb|randb|neosoul|altsoul|soul|frankocean|sza|danielcaesar|brentfaiyaz|jorjasmith|kelela|ravynlenae|snohaalegra|giveon|summerwalker|theweeknd|partynextdoor|miguel|usher|dangelo|erykahbadu|theinternet|sonder/.test(searchable)) return true;
     return artist === "her" || artist === "h.e.r" || artist === "h.e.r.";
+  }
+
+  private blockedMove(searchable: string, contract: StationContract): string {
+    for (const move of [...contract.disallowed, ...contract.negativeConstraints]) {
+      const normalized = normalizeMatchText(move);
+      if (normalized && searchable.includes(normalized)) return move;
+    }
+    return "";
   }
 }

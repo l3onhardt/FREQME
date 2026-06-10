@@ -45,6 +45,19 @@ test("server passes the active station contract into degraded scheduler fallback
   assert.match(source, /radioAgentStore\.artifact\(uid,\s*"program_contract\.md"\)/);
 });
 
+test("server parses generic radio agent program contracts for scheduler fallback", () => {
+  const source = fs.readFileSync("src/server.ts", "utf8");
+  const parserStart = source.indexOf("function stationContractFromAgentArtifact");
+  const parserEnd = source.indexOf("function isStationContract", parserStart);
+  const parserSource = source.slice(parserStart, parserEnd);
+
+  assert.ok(parserStart >= 0);
+  assert.ok(parserEnd > parserStart);
+  assert.doesNotMatch(parserSource, /isRnbContractText/);
+  assert.match(parserSource, /positiveSeeds:\s*\[stationGoal\]/);
+  assert.match(parserSource, /negativeConstraints:\s*blocked/);
+});
+
 test("server keeps assisted fallback logging best effort", () => {
   const source = fs.readFileSync("src/server.ts", "utf8");
   const assistedQueueSource = fs.readFileSync("src/radio-agent/assistedQueue.ts", "utf8");
