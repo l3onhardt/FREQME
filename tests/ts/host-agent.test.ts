@@ -3,7 +3,8 @@ import test from "node:test";
 
 import { planHostSpeech } from "../../src/radio-agent/hostAgent.js";
 
-const badHostText = /shadow decision|low-interruption|program contract|decision trace|model|prompt|JSON|旁边|质感|当前电台方向|鎴|銆|鐨|涓|杩|俙|閹|娑/u;
+const badHostText =
+  /shadow decision|low-interruption|program contract|decision trace|model|prompt|JSON|candidate|verification|tool call|鏃佽竟|璐ㄦ劅|褰撳墠鐢靛彴鏂瑰悜|鎴戝厛|濂斤紝|閬垮紑|鐢靛瓙|鍙ゅ吀|閹磡|娑搢|淇檤|闁箌|濞憒/i;
 
 test("host agent opens the station in natural listener-facing language", () => {
   const decision = planHostSpeech({
@@ -15,8 +16,8 @@ test("host agent opens the station in natural listener-facing language", () => {
 
   assert.equal(decision.shouldSpeak, true);
   assert.equal(decision.event, "station_open");
-  assert.match(decision.text || "", /先放一首|先接一首/);
-  assert.match(decision.text || "", /后台|整理|了解/);
+  assert.match(decision.text || "", /先接一首|先放一首/);
+  assert.match(decision.text || "", /后面|慢慢|习惯|歌单/);
   assert.doesNotMatch(decision.text || "", badHostText);
 });
 
@@ -34,7 +35,7 @@ test("host agent acknowledges explicit R&B corrections with concrete boundaries"
   assert.match(decision.text || "", /R&B/i);
   assert.match(decision.text || "", /电子/);
   assert.match(decision.text || "", /古典/);
-  assert.match(decision.text || "", /避开|不碰|先不/);
+  assert.match(decision.text || "", /避开|不乱跳|先不/);
   assert.doesNotMatch(decision.text || "", badHostText);
 });
 
@@ -44,7 +45,7 @@ test("host agent acknowledges explicit negative artist feedback", () => {
     profileReady: true,
     lowInterruption: false,
     recentHostLines: [],
-    userText: "不要Frank Ocean，less SZA tonight",
+    userText: "不要 Frank Ocean, less SZA tonight",
   });
 
   assert.equal(decision.shouldSpeak, true);

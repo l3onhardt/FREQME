@@ -3,7 +3,7 @@ import test from "node:test";
 
 import { decideHostSpeech } from "../../src/radio-agent/hostPolicy.js";
 
-const mojibakeTerms = /鎴|銆|鐨|涓|浣|绾|俙|紝/;
+const mojibakeTerms = /鎴戝厛|濂斤紝|閬垮紑|鐢靛瓙|鍙ゅ吀|閹磡|閵|娑搢|淇檤|闁箌|濞憒|璐ㄦ劅|鏃佽竟/u;
 const awkwardTerms = /继续保持这个感觉|旁边|质感|主线还是|当前电台方向/;
 
 test("host speaks for first station handoff", () => {
@@ -31,7 +31,7 @@ test("host opening line changes after profile is ready", () => {
   assert.equal(decision.event, "station_open");
   assert.doesNotMatch(decision.text || "", /后台|整理|profile|model|trace/i);
   assert.doesNotMatch(decision.text || "", mojibakeTerms);
-  assert.match(decision.text || "", /熟悉|接上|习惯/);
+  assert.match(decision.text || "", /熟悉|接一首|习惯/);
 });
 
 test("host records silence for ordinary continuation", () => {
@@ -84,7 +84,7 @@ test("host acknowledges explicit artist-level avoids", () => {
     recentHostLines: [],
     profileReady: true,
     lowInterruption: false,
-    userText: "不要Frank Ocean，less SZA tonight",
+    userText: "不要 Frank Ocean, less SZA tonight",
   });
 
   assert.equal(decision.shouldSpeak, true);

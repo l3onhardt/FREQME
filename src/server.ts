@@ -914,7 +914,7 @@ async function handleRadioSocket(socket: WebSocketType): Promise<void> {
       await Promise.race([prewarmTask, new Promise((resolve) => setTimeout(resolve, 1500))]).catch(() => null);
     }
     if (!queue.readyItems().length) {
-      mirrorRadioAgent({
+      mirrorRadioAgentHostSpeech({
         type: "queue_low",
         uid,
         sessionId,
@@ -929,7 +929,7 @@ async function handleRadioSocket(socket: WebSocketType): Promise<void> {
     if (!queue.readyItems().length) await fillQueue(1, false);
     const item = queue.promoteNext(previousEvent);
     if (!item) {
-      mirrorRadioAgent({
+      mirrorRadioAgentHostSpeech({
         type: "playback_recovery_needed",
         uid,
         sessionId,

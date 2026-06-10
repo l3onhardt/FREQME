@@ -47,17 +47,26 @@ test("host delivery speaks recovery decisions after agent repair", () => {
     decision: decision({
       event: "recovery",
       reason: "recovering from the last failed queue attempt",
-      text: "Recovering from that last miss; I will steady this back into R&B with Daniel Caesar Japanese Denim.",
+      text: "刚才那一下没接稳，我把电台拉回 R&B，先接 Daniel Caesar 的方向。",
     }),
   });
 
-  assert.equal(text, "Recovering from that last miss; I will steady this back into R&B with Daniel Caesar Japanese Denim.");
+  assert.equal(text, "刚才那一下没接稳，我把电台拉回 R&B，先接 Daniel Caesar 的方向。");
 });
 
 test("host delivery does not speak internal or broken planning text", () => {
   const text = hostTextForRadioAgentDelivery({
     eventType: "track_skipped",
     decision: decision({ text: "The shadow decision says this candidate is valid JSON." }),
+  });
+
+  assert.equal(text, "");
+});
+
+test("host delivery does not speak mojibake fallback text", () => {
+  const text = hostTextForRadioAgentDelivery({
+    eventType: "track_skipped",
+    decision: decision({ text: "鏄庣櫧锛岃繖棣栧厛閬垮紑锛屾垜鎶婃柟鍚戞敹鍥炴潵銆?" }),
   });
 
   assert.equal(text, "");

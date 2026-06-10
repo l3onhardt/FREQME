@@ -84,3 +84,16 @@ test("server delivers safe radio agent host speech into the live DJ message chan
   assert.match(source, /hostTextForRadioAgentDelivery\(\{\s*eventType:\s*result\.event\.type,\s*decision:\s*result\.hostDecision,/s);
   assert.match(source, /synthesizeAndSendDjMessage\(text\)/);
 });
+
+test("server routes queue and recovery pressure through radio agent host speech", () => {
+  const source = fs.readFileSync("src/server.ts", "utf8");
+  const sendPreparedNext = source.indexOf("const sendPreparedNext =");
+  const queueLowEvent = source.indexOf('type: "queue_low"', sendPreparedNext);
+  const recoveryEvent = source.indexOf('type: "playback_recovery_needed"', sendPreparedNext);
+
+  assert.ok(sendPreparedNext >= 0);
+  assert.ok(queueLowEvent > sendPreparedNext);
+  assert.ok(recoveryEvent > queueLowEvent);
+  assert.match(source.slice(queueLowEvent - 80, queueLowEvent), /mirrorRadioAgentHostSpeech\(\{\s*$/);
+  assert.match(source.slice(recoveryEvent - 80, recoveryEvent), /mirrorRadioAgentHostSpeech\(\{\s*$/);
+});
