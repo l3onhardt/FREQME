@@ -94,6 +94,10 @@ export function distillTasteFacts(args: TasteDistillationArgs): TasteDistillatio
     upsertEvidence(facts, item);
   }
 
+  for (const item of durableCompletedArtistFacts(args.recentEvents, existingMemories)) {
+    upsertEvidence(facts, item);
+  }
+
   for (const event of args.recentEvents) {
     if (event.type === "track_skipped") {
       const track = extractTrack(event.payload.track) || extractTrack(event.payload.currentTrack);
@@ -247,6 +251,34 @@ function durablePositiveArtistFacts(events: RadioAgentEvent[], existingMemories:
       confidence: Math.min(0.94, 0.68 + evidence.count * 0.06 + positive.count * 0.08),
       evidenceCount: evidence.count + positive.count,
       evidenceRefs: uniqueStrings([...evidence.refs, ...positive.refs]).slice(0, 12),
+    });
+  }
+
+  return result;
+}
+
+function durableCompletedArtistFacts(events: RadioAgentEvent[], existingMemories: RadioAgentMemory[]): TasteEvidenceItem[] {
+  const artistEvidence = completedArtistEvidence(events, existingMemories);
+  const result: TasteEvidenceItem[] = [];
+
+  for (const [artist, evidence] of artistEvidence.entries()) {
+    const hasPriorSessionSignal = existingMemories.some((memory) => artistFromSessionMemory(memory) === artist);
+    const newCompletedRefs = events
+      .filter((event) => event.type === "track_completed")
+      .map((event) => ({
+        event,
+        track: extractTrack(event.payload.track) || extractTrack(event.payload.currentTrack),
+      }))
+      .filter((item) => item.track?.artist === artist)
+      .map((item) => (item.event.id ? `event:${item.event.id}` : `event:${item.event.createdAt}`));
+    if (!hasPriorSessionSignal || newCompletedRefs.length < 1 || evidence.count < 3) continue;
+    result.push({
+      key: `artist:${artist}`,
+      kind: "taste_fact",
+      value: `Listener completed repeated ${artist} listening across sessions; use ${artist} as a conservative durable preference anchor.`,
+      confidence: Math.min(0.84, 0.58 + evidence.count * 0.05),
+      evidenceCount: evidence.count,
+      evidenceRefs: uniqueStrings([...evidence.refs, ...newCompletedRefs]).slice(0, 12),
     });
   }
 

@@ -102,6 +102,46 @@ test("taste distiller combines existing session memory with new confirmation bef
   assert.ok((durable?.evidenceRefs || []).includes("event:25"));
 });
 
+test("taste distiller promotes repeated completed listening across sessions into a conservative durable fact", () => {
+  const result = distillTasteFacts({
+    uid: "42",
+    libraryTracks: [],
+    playlists: [],
+    existingMemories: [
+      {
+        uid: "42",
+        key: "session_artist:SZA",
+        kind: "taste_hypothesis",
+        value: "Recent completed listening repeatedly returned to SZA.",
+        confidence: 0.7,
+        evidenceCount: 2,
+        evidenceRefs: ["event:50", "event:51"],
+        updatedAt: "2026-06-02T23:00:00.000Z",
+      },
+    ],
+    recentEvents: [
+      {
+        id: 52,
+        uid: "42",
+        sessionId: 8,
+        type: "track_completed",
+        priority: "warm",
+        payload: { track: { id: "sza-3", name: "Broken Clocks", artist: "SZA" } },
+        createdAt: "2026-06-03T02:05:00.000Z",
+      },
+    ],
+  });
+
+  const durable = result.facts.find((item) => item.key === "artist:SZA");
+  assert.ok(durable);
+  assert.equal(durable?.kind, "taste_fact");
+  assert.ok((durable?.confidence || 0) >= 0.7);
+  assert.ok((durable?.confidence || 0) < 0.9);
+  assert.ok((durable?.evidenceRefs || []).includes("event:50"));
+  assert.ok((durable?.evidenceRefs || []).includes("event:52"));
+  assert.match(durable?.value || "", /completed repeated SZA listening/i);
+});
+
 test("taste distiller turns repeated artists and playlist themes into facts", () => {
   const result = distillTasteFacts({
     uid: "42",
