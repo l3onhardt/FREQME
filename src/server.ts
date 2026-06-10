@@ -1005,7 +1005,20 @@ async function handleRadioSocket(socket: WebSocketType): Promise<void> {
     return false;
   };
 
+  let nextTrackTask: Promise<void> = Promise.resolve();
+
   const sendPreparedNext = async (
+    previousEvent = "played",
+    options: { allowContinuation?: boolean; skipPrewarmWait?: boolean } = {},
+  ): Promise<void> => {
+    nextTrackTask = nextTrackTask.then(
+      () => runSendPreparedNext(previousEvent, options),
+      () => runSendPreparedNext(previousEvent, options),
+    );
+    return await nextTrackTask;
+  };
+
+  const runSendPreparedNext = async (
     previousEvent = "played",
     options: { allowContinuation?: boolean; skipPrewarmWait?: boolean } = {},
   ): Promise<void> => {

@@ -155,6 +155,23 @@ test("server gives assisted radio agent first chance to continue an empty queue"
   assert.ok(legacyContinuation > fillQueueCall);
 });
 
+test("server serializes next-track promotion requests", () => {
+  const source = fs.readFileSync("src/server.ts", "utf8");
+  const guardDeclaration = source.indexOf("let nextTrackTask: Promise<void> = Promise.resolve()");
+  const wrapperStart = source.indexOf("const sendPreparedNext = async", guardDeclaration);
+  const innerStart = source.indexOf("const runSendPreparedNext = async", wrapperStart);
+  const endedHandler = source.indexOf('if (type === "track_ended")');
+  const skipHandler = source.indexOf('if (type === "skip")');
+
+  assert.ok(guardDeclaration >= 0);
+  assert.ok(wrapperStart > guardDeclaration);
+  assert.ok(innerStart > wrapperStart);
+  assert.match(source.slice(wrapperStart, innerStart), /nextTrackTask\s*=\s*nextTrackTask\.then\(\s*\(\)\s*=>\s*runSendPreparedNext\(previousEvent,\s*options\)/);
+  assert.match(source.slice(wrapperStart, innerStart), /return await nextTrackTask/);
+  assert.match(source.slice(endedHandler, skipHandler), /await sendPreparedNext\("played"\)/);
+  assert.match(source.slice(skipHandler, skipHandler + 1200), /await sendPreparedNext\("skipped"\)/);
+});
+
 test("server executes explicit user direction with radio agent program window before legacy request planning", () => {
   const source = fs.readFileSync("src/server.ts", "utf8");
   const songRequestHandler = source.indexOf('if (type === "song_request")');
