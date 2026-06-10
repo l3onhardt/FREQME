@@ -32,6 +32,23 @@ export interface RadioAgentUserTextResult {
   shouldClearQueue: boolean;
 }
 
+export interface RadioAgentTrackEndedArgs {
+  uid: string | null;
+  sessionId: number | null;
+  previousEvent: "played" | "skipped";
+  currentTrack: Record<string, unknown> | null;
+  readyQueue: Record<string, unknown>[];
+}
+
+export interface RadioAgentTrackEndedResult {
+  action: "promote_ready" | "queued_program" | "legacy_fallback";
+  agentResult: RadioAgentHandleResult | null;
+  programWindow?: RadioAgentProgramWindow;
+  programQueued: boolean;
+  hostText: string;
+  fallbackReason?: string;
+}
+
 export interface RadioAgentHostTextArgs {
   eventType: RadioAgentEventType;
   decision?: RadioHostDecision;
@@ -83,6 +100,55 @@ export class RadioAgentService {
     return {
       backgroundStarted,
       fallbackReason: pick ? "opening_track_prepare_failed" : "no_opening_track_candidate",
+    };
+  }
+
+  async handleTrackEnded(args: RadioAgentTrackEndedArgs): Promise<RadioAgentTrackEndedResult> {
+    if (args.readyQueue.length > 0) {
+      return {
+        action: "promote_ready",
+        agentResult: null,
+        programQueued: false,
+        hostText: "",
+      };
+    }
+
+    const agentResult = this.deps.handleRadioAgentEvent
+      ? await this.deps.handleRadioAgentEvent({
+          type: "queue_low",
+          uid: args.uid,
+          sessionId: args.sessionId,
+          currentTrack: args.currentTrack,
+          readyQueue: args.readyQueue,
+        })
+      : null;
+    const programWindow = agentResult?.programWindow;
+    const programQueued = programWindow && this.deps.queueProgramWindow ? await this.deps.queueProgramWindow(programWindow) : false;
+    const hostText =
+      agentResult && this.deps.hostTextForDelivery
+        ? this.deps.hostTextForDelivery({
+            eventType: agentResult.event.type,
+            decision: agentResult.hostDecision,
+          })
+        : "";
+
+    if (programQueued) {
+      return {
+        action: "queued_program",
+        agentResult,
+        ...(programWindow ? { programWindow } : {}),
+        programQueued,
+        hostText,
+      };
+    }
+
+    return {
+      action: "legacy_fallback",
+      agentResult,
+      ...(programWindow ? { programWindow } : {}),
+      programQueued: false,
+      hostText,
+      fallbackReason: programWindow ? "program_window_queue_failed" : "program_window_missing",
     };
   }
 

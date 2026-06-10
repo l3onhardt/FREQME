@@ -209,6 +209,94 @@ test("service can execute an explicit direction through the queue adapter", asyn
   assert.deepEqual(calls, ["agent:user_text", "clear", "queue:window-jazz", "host:user_text"]);
 });
 
+test("service continues from the active contract when a track ends and queue is empty", async () => {
+  const calls: string[] = [];
+  const programWindow = radioWindow({
+    id: "window-continuation",
+    stationBrief: "Keep quiet jazz moving.",
+    mainDirection: "quiet jazz for reading",
+    traceBasis: { profile: "", now: "", contract: "quiet jazz for reading", eventType: "queue_low" },
+  });
+  const service = new RadioAgentService({
+    chooseOpeningTrack: () => null,
+    prepareTrack: async () => null,
+    handleRadioAgentEvent: async (event) => {
+      calls.push(`agent:${event.type}`);
+      return {
+        controlsPlayback: false,
+        event: { uid: "42", sessionId: 7, type: "queue_low", priority: "warm", payload: {}, createdAt: "2026-06-11T00:00:00.000Z" },
+        hostDecision: {
+          shouldSpeak: false,
+          event: "silent",
+          reason: "ordinary continuation",
+        },
+        programWindow,
+      } satisfies RadioAgentHandleResult;
+    },
+    queueProgramWindow: async (window) => {
+      calls.push(`queue:${window.id}`);
+      return true;
+    },
+    hostTextForDelivery: ({ eventType }) => {
+      calls.push(`host:${eventType}`);
+      return "";
+    },
+  });
+
+  const result = await service.handleTrackEnded({
+    uid: "42",
+    sessionId: 7,
+    previousEvent: "played",
+    currentTrack: { id: "current", name: "Blue in Green", artist: "Miles Davis" },
+    readyQueue: [],
+  });
+
+  assert.equal(result.action, "queued_program");
+  assert.equal(result.programWindow?.id, "window-continuation");
+  assert.equal(result.programQueued, true);
+  assert.equal(result.fallbackReason, undefined);
+  assert.deepEqual(calls, ["agent:queue_low", "queue:window-continuation", "host:queue_low"]);
+});
+
+test("service returns an explicit fallback when track end continuation cannot queue a program", async () => {
+  const calls: string[] = [];
+  const service = new RadioAgentService({
+    chooseOpeningTrack: () => null,
+    prepareTrack: async () => null,
+    handleRadioAgentEvent: async (event) => {
+      calls.push(`agent:${event.type}`);
+      return {
+        controlsPlayback: false,
+        event: { uid: "42", sessionId: 7, type: "queue_low", priority: "warm", payload: {}, createdAt: "2026-06-11T00:00:00.000Z" },
+        hostDecision: {
+          shouldSpeak: true,
+          event: "recovery",
+          reason: "no playable continuation",
+          text: "我先找一首稳的接上。",
+        },
+      } satisfies RadioAgentHandleResult;
+    },
+    hostTextForDelivery: ({ eventType, decision }) => {
+      calls.push(`host:${eventType}`);
+      return decision?.text || "";
+    },
+  });
+
+  const result = await service.handleTrackEnded({
+    uid: "42",
+    sessionId: 7,
+    previousEvent: "played",
+    currentTrack: { id: "current", name: "Blue in Green", artist: "Miles Davis" },
+    readyQueue: [],
+  });
+
+  assert.equal(result.action, "legacy_fallback");
+  assert.equal(result.programQueued, false);
+  assert.equal(result.fallbackReason, "program_window_missing");
+  assert.equal(result.hostText, "我先找一首稳的接上。");
+  assert.deepEqual(calls, ["agent:queue_low", "host:queue_low"]);
+});
+
 function prepared(
   track: Track,
   selectionReason: SelectionReason = { type: "radio_agent_opening_liked", text: "Started from a liked track." },

@@ -1116,15 +1116,14 @@ async function handleRadioSocket(socket: WebSocketType): Promise<void> {
     if (!options.skipPrewarmWait && prewarmTask) {
       await Promise.race([prewarmTask, new Promise((resolve) => setTimeout(resolve, 1500))]).catch(() => null);
     }
-    if (!queue.readyItems().length) {
-      mirrorRadioAgentHostSpeech({
-        type: "queue_low",
-        uid,
-        sessionId,
-        currentTrack: currentTrack ? trackInfo(currentTrack) : null,
-      });
-    }
-    if (!queue.readyItems().length) await fillQueue(1, false);
+    const trackEndResult = await radioAgentService.handleTrackEnded({
+      uid,
+      sessionId,
+      previousEvent: previousEvent === "skipped" ? "skipped" : "played",
+      currentTrack: currentTrack ? trackInfo(currentTrack) : null,
+      readyQueue: queue.readyItems().map((readyItem) => trackInfo(readyItem.track)),
+    });
+    if (!queue.readyItems().length && trackEndResult.action === "legacy_fallback") await fillQueue(1, false);
     if (!queue.readyItems().length && allowContinuation && activeRequestToken == null) {
       const beforeContinuation = kickBrainContinuation();
       const ready = await waitForNewBrainReadyItem(beforeContinuation, CONTINUATION_BRAIN_READY_TIMEOUT_MS);
@@ -1132,31 +1131,13 @@ async function handleRadioSocket(socket: WebSocketType): Promise<void> {
     }
     const item = queue.promoteNext(previousEvent);
     if (!item) {
-      const agentRecoveryResult = await mirrorRadioAgentImmediate({
-        type: "playback_recovery_needed",
-        uid,
-        sessionId,
-        reason: "queue_empty_after_all_recovery",
-        currentTrack: currentTrack ? trackInfo(currentTrack) : null,
-        readyQueue: queue.readyItems().map((readyItem) => trackInfo(readyItem.track)),
-      });
-      if (agentRecoveryResult?.programWindow && (await queueRadioAgentWindow(agentRecoveryResult.programWindow))) {
-        const recoveredItem = queue.promoteNext(previousEvent);
-        if (recoveredItem) {
-          sendTrack(recoveredItem.track, recoveredItem.url);
-          if (allowContinuation && activeRequestToken == null) {
-            kickBrainContinuation();
-          }
-          return;
-        }
-      }
-      const recoveryText = agentRecoveryResult
-        ? hostTextForRadioAgentDelivery({
-            eventType: agentRecoveryResult.event.type,
-            decision: agentRecoveryResult.hostDecision,
-          })
-        : "";
+      const recoveryText = trackEndResult.hostText;
       if (recoveryText) synthesizeAndSendDjMessage(recoveryText);
+      store.logPlaybackEvent("radio_agent_track_end_fallback", {
+        uid,
+        songId: currentSongId,
+        reason: trackEndResult.fallbackReason || "queue_empty_after_all_recovery",
+      });
       send({ type: "error", message: "暂时没有更多歌曲，请稍后再试。" });
       return;
     }

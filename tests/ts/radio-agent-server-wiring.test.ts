@@ -102,26 +102,30 @@ test("server keeps assisted fallback logging best effort", () => {
 
 test("server gives the radio agent a final recovery window before reporting playback exhaustion", () => {
   const source = fs.readFileSync("src/server.ts", "utf8");
+  const sendPreparedNext = source.indexOf("const runSendPreparedNext =");
+  const serviceRecovery = source.indexOf("await radioAgentService.handleTrackEnded", sendPreparedNext);
   const promoteNext = source.indexOf("const item = queue.promoteNext(previousEvent)");
   const missingItem = source.indexOf("if (!item)", promoteNext);
-  const agentRecoveryResult = source.indexOf("const agentRecoveryResult = await mirrorRadioAgentImmediate", missingItem);
-  const recoveryEvent = source.indexOf('type: "playback_recovery_needed"', agentRecoveryResult);
-  const agentRecoveryQueue = source.indexOf("queueRadioAgentWindow(agentRecoveryResult.programWindow)", agentRecoveryResult);
-  const recoveredItem = source.indexOf("const recoveredItem = queue.promoteNext(previousEvent)", agentRecoveryQueue);
+  const fallbackAction = source.indexOf('trackEndResult.action === "legacy_fallback"', serviceRecovery);
+  const fallbackLog = source.indexOf('store.logPlaybackEvent("radio_agent_track_end_fallback"', missingItem);
   const listenerError = source.indexOf('send({ type: "error"', missingItem);
 
+  assert.ok(sendPreparedNext >= 0);
+  assert.ok(serviceRecovery > sendPreparedNext);
   assert.ok(promoteNext >= 0);
+  assert.ok(promoteNext > serviceRecovery);
   assert.ok(missingItem > promoteNext);
-  assert.ok(agentRecoveryResult > missingItem);
-  assert.ok(recoveryEvent > agentRecoveryResult);
-  assert.ok(agentRecoveryQueue > agentRecoveryResult);
-  assert.ok(recoveredItem > agentRecoveryQueue);
-  assert.ok(listenerError > recoveredItem);
-  const recoveryBlock = source.slice(recoveryEvent, listenerError);
-  assert.match(recoveryBlock, /reason:\s*"queue_empty_after_all_recovery"/);
+  assert.ok(fallbackAction > serviceRecovery);
+  assert.ok(fallbackLog > missingItem);
+  assert.ok(listenerError > fallbackLog);
+  const recoveryBlock = source.slice(serviceRecovery, listenerError);
   assert.match(recoveryBlock, /currentTrack:\s*currentTrack\s*\?\s*trackInfo\(currentTrack\)\s*:\s*null/);
-  assert.match(recoveryBlock, /sendTrack\(recoveredItem\.track,\s*recoveredItem\.url\)/);
-  assert.match(recoveryBlock, /return;/);
+  assert.match(recoveryBlock, /readyQueue:\s*queue\.readyItems\(\)\.map\(\(readyItem\)\s*=>\s*trackInfo\(readyItem\.track\)\)/);
+  assert.match(recoveryBlock, /fallbackReason/);
+  assert.match(source.slice(promoteNext, missingItem), /queue\.promoteNext\(previousEvent\)/);
+  assert.doesNotMatch(source.slice(missingItem, listenerError), /queue\.promoteNext\(previousEvent\)/);
+  assert.match(source.slice(listenerError, listenerError + 220), /return;/);
+  assert.doesNotMatch(recoveryBlock, /await\s+mirrorRadioAgentImmediate\(\{/);
 });
 
 test("server reports queue pressure when playback completion is mirrored to the radio agent", () => {
@@ -152,35 +156,33 @@ test("server delivers safe radio agent host speech into the live DJ message chan
 test("server routes queue pressure through host speech and recovery pressure through executable agent recovery", () => {
   const source = fs.readFileSync("src/server.ts", "utf8");
   const sendPreparedNext = source.indexOf("const sendPreparedNext =");
-  const queueLowEvent = source.indexOf('type: "queue_low"', sendPreparedNext);
-  const agentRecoveryResult = source.indexOf("const agentRecoveryResult = await mirrorRadioAgentImmediate", queueLowEvent);
-  const recoveryEvent = source.indexOf('type: "playback_recovery_needed"', agentRecoveryResult);
-  const recoveryText = source.indexOf("const recoveryText = agentRecoveryResult", recoveryEvent);
+  const serviceContinuation = source.indexOf("await radioAgentService.handleTrackEnded", sendPreparedNext);
+  const recoveryText = source.indexOf("const recoveryText = trackEndResult.hostText", serviceContinuation);
 
   assert.ok(sendPreparedNext >= 0);
-  assert.ok(queueLowEvent > sendPreparedNext);
-  assert.ok(agentRecoveryResult > queueLowEvent);
-  assert.ok(recoveryEvent > agentRecoveryResult);
-  assert.ok(recoveryText > recoveryEvent);
-  assert.match(source.slice(queueLowEvent - 80, queueLowEvent), /mirrorRadioAgentHostSpeech\(\{\s*$/);
-  assert.match(source.slice(agentRecoveryResult, recoveryText), /queueRadioAgentWindow\(agentRecoveryResult\.programWindow\)/);
-  assert.match(source.slice(recoveryText, recoveryText + 260), /hostTextForRadioAgentDelivery/);
+  assert.ok(serviceContinuation > sendPreparedNext);
+  assert.ok(recoveryText > serviceContinuation);
+  assert.match(source.slice(serviceContinuation, recoveryText), /previousEvent/);
+  assert.match(source.slice(serviceContinuation, recoveryText), /readyQueue:\s*queue\.readyItems\(\)\.map\(\(readyItem\)\s*=>\s*trackInfo\(readyItem\.track\)\)/);
+  assert.doesNotMatch(source.slice(sendPreparedNext, recoveryText), /mirrorRadioAgentHostSpeech\(\{\s*type:\s*"queue_low"/);
+  assert.doesNotMatch(source.slice(sendPreparedNext, recoveryText), /await\s+mirrorRadioAgentImmediate\(\{\s*type:\s*"playback_recovery_needed"/);
 });
 
-test("server gives assisted radio agent first chance to continue an empty queue", () => {
+test("server gives RadioAgentService first chance to continue an empty queue", () => {
   const source = fs.readFileSync("src/server.ts", "utf8");
   const sendPreparedNextStart = source.indexOf("const sendPreparedNext =");
   const sendPreparedNextEnd = source.indexOf('socket.on("message"', sendPreparedNextStart);
   const sendPreparedNextSource = source.slice(sendPreparedNextStart, sendPreparedNextEnd);
-  const queueLowEvent = sendPreparedNextSource.indexOf('type: "queue_low"');
-  const fillQueueCall = sendPreparedNextSource.indexOf("await fillQueue(1, false)", queueLowEvent);
-  const legacyContinuation = sendPreparedNextSource.indexOf("kickBrainContinuation()", queueLowEvent);
+  const serviceContinuation = sendPreparedNextSource.indexOf("const trackEndResult = await radioAgentService.handleTrackEnded");
+  const fillQueueCall = sendPreparedNextSource.indexOf("await fillQueue(1, false)", serviceContinuation);
+  const legacyContinuation = sendPreparedNextSource.indexOf("kickBrainContinuation()", serviceContinuation);
 
   assert.ok(sendPreparedNextStart >= 0);
   assert.ok(sendPreparedNextEnd > sendPreparedNextStart);
-  assert.ok(queueLowEvent >= 0);
-  assert.ok(fillQueueCall > queueLowEvent);
+  assert.ok(serviceContinuation >= 0);
+  assert.ok(fillQueueCall > serviceContinuation);
   assert.ok(legacyContinuation > fillQueueCall);
+  assert.doesNotMatch(sendPreparedNextSource, /const trackEndResult = !queue\.readyItems\(\)\.length/);
 });
 
 test("server continuation prompt is grounded in the active station contract", () => {
