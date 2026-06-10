@@ -119,7 +119,7 @@ export class RadioAgentRuntime {
     this.saveDecision(event, "host", { ...hostDecision });
 
     return {
-      controlsPlayback: false,
+      controlsPlayback: this.deps.mode === "active" && Boolean(programWindow),
       event: persistedEvent,
       hostDecision,
       programWindow,
@@ -157,7 +157,7 @@ export class RadioAgentRuntime {
       mode: this.deps.mode,
       uid,
       sessionId,
-      controlsPlayback: false,
+      controlsPlayback: this.deps.mode === "active",
       readiness: agentReadinessStatus(this.deps.mode, this.deps.readiness),
       recentEvents: this.deps.store.recentEvents(uid, sessionId, 20),
       recentDecisions: this.deps.store.latestShadowDecisions(uid, sessionId, 20),

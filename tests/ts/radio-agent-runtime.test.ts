@@ -1229,7 +1229,7 @@ test("runtime keeps host decisions when no program director is configured", asyn
   assert.ok(store.decisions.some((decision) => decision.decisionType === "host"));
 });
 
-test("active mode records program windows but still never controls playback", async () => {
+test("active mode controls playback when it produces an agent program window", async () => {
   const store = runtimeStore();
   const runtime = new RadioAgentRuntime({
     mode: "active",
@@ -1240,9 +1240,36 @@ test("active mode records program windows but still never controls playback", as
 
   const result = await runtime.handle({ type: "queue_low", uid: "42", sessionId: 9 });
 
-  assert.equal(result.controlsPlayback, false);
+  assert.equal(result.controlsPlayback, true);
   assert.equal(result.programWindow?.source, "deterministic_fallback");
   assert.ok(store.decisions.some((decision) => decision.decisionType === "program_window"));
+});
+
+test("active mode does not claim playback control without an executable program window", async () => {
+  const store = runtimeStore();
+  const runtime = new RadioAgentRuntime({
+    mode: "active",
+    store,
+    now: () => "2026-06-03T01:02:03.000Z",
+  });
+
+  const result = await runtime.handle({ type: "queue_low", uid: "42", sessionId: 9 });
+
+  assert.equal(result.controlsPlayback, false);
+  assert.equal(result.programWindow, undefined);
+});
+
+test("runtime status reports playback ownership in active mode", () => {
+  const store = runtimeStore();
+  const runtime = new RadioAgentRuntime({
+    mode: "active",
+    store,
+    now: () => "2026-06-03T01:02:03.000Z",
+  });
+
+  const status = runtime.status("42", 9);
+
+  assert.equal(status.controlsPlayback, true);
 });
 
 test("runtime keeps host decisions when program director planning fails", async () => {
