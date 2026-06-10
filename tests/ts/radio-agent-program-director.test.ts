@@ -1084,7 +1084,8 @@ test("fallback planning treats the next move after execution repair as recovery"
 
   assert.equal(window.hostIntent.shouldSpeak, true);
   assert.equal(window.hostIntent.event, "recovery");
-  assert.match(window.hostIntent.text, /recover|steady|back|R&B|Daniel Caesar|H\.E\.R\.|Brent Faiyaz/i);
+  assert.match(window.hostIntent.text, /刚才|接稳|R&B|换|稳|继续|Daniel Caesar|H\.E\.R\.|Brent Faiyaz/i);
+  assert.doesNotMatch(window.hostIntent.text, /recover|miss|candidate|model|trace|prompt|contract/i);
   assert.doesNotMatch(window.hostIntent.text, listenerUnsafeProgramTerms);
   assert.ok(window.candidateTasks.every((task) => !/^SZA$|^Frank Ocean$/i.test(task.query)));
 });

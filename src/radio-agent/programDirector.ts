@@ -297,11 +297,11 @@ function hasExecutionRepair(repair: string): boolean {
 
 function recoveryHostText(context: RadioAgentContextSnapshot): string {
   const anchor = fallbackRecoveryAnchor(context);
-  const direction = isRnbContractGoal(contractAnchor(context.contract)) ? "R&B" : "the station";
+  const direction = isRnbContractGoal(contractAnchor(context.contract)) ? "R&B" : "这个方向";
   return sanitizeHostText(
     anchor
-      ? `Recovering from that last miss; I will steady this back into ${direction} with ${anchor}.`
-      : `Recovering from that last miss; I will steady this back into ${direction} with a safer playable song.`,
+      ? `刚才那一下没接稳，我换一首更稳的 ${anchor}，继续守住 ${direction}。`
+      : `刚才那一下没接稳，我先换一首更稳的，继续守住 ${direction}。`,
   );
 }
 
