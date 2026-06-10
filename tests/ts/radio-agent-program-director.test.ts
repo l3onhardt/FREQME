@@ -284,6 +284,86 @@ test("fallback planning honors explicit negative artist avoids from session refl
   assert.ok(window.candidateTasks.every((task) => task.negativeConstraints.some((item) => /Frank Ocean|SZA/i.test(item))));
 });
 
+test("fallback planning honors structured session avoid evidence even without reflection", async () => {
+  const director = new RadioAgentProgramDirector(null, () => NOW);
+
+  const window = await director.plan({
+    ...contextSnapshot(),
+    profile: [
+      "# User Profile",
+      "",
+      "## Stable Taste Facts",
+      "- artist:Frank Ocean: Listener has repeated library evidence for Frank Ocean. (confidence: 0.92, evidence: 6)",
+      "- artist:SZA: Listener has repeated library evidence for SZA. (confidence: 0.91, evidence: 5)",
+      "- artist:Daniel Caesar: Listener has repeated library evidence for Daniel Caesar. (confidence: 0.82, evidence: 3)",
+    ].join("\n"),
+    memoryFacts: [
+      {
+        uid: "42",
+        key: "artist:Frank Ocean",
+        kind: "taste_fact",
+        value: "Listener has repeated library evidence for Frank Ocean.",
+        confidence: 0.92,
+        evidenceCount: 6,
+        evidenceRefs: ["track:frank-1"],
+        updatedAt: NOW,
+      },
+      {
+        uid: "42",
+        key: "artist:SZA",
+        kind: "taste_fact",
+        value: "Listener has repeated library evidence for SZA.",
+        confidence: 0.91,
+        evidenceCount: 5,
+        evidenceRefs: ["track:sza-1"],
+        updatedAt: NOW,
+      },
+      {
+        uid: "42",
+        key: "artist:Daniel Caesar",
+        kind: "taste_fact",
+        value: "Listener has repeated library evidence for Daniel Caesar.",
+        confidence: 0.82,
+        evidenceCount: 3,
+        evidenceRefs: ["track:daniel-1"],
+        updatedAt: NOW,
+      },
+    ],
+    memoryHypotheses: [],
+    sessionEvidence: [
+      {
+        uid: "42",
+        key: "session_avoid:Frank Ocean",
+        kind: "session_evidence",
+        value: "Listener asked for a session-only avoid of Frank Ocean.",
+        confidence: 0.83,
+        evidenceCount: 1,
+        evidenceRefs: ["event:38"],
+        updatedAt: NOW,
+      },
+      {
+        uid: "42",
+        key: "session_avoid:SZA",
+        kind: "session_evidence",
+        value: "Listener asked for a session-only avoid of SZA.",
+        confidence: 0.83,
+        evidenceCount: 1,
+        evidenceRefs: ["event:39"],
+        updatedAt: NOW,
+      },
+    ],
+    reflection: "",
+    currentTrack: { id: "frank-1", name: "Nights", artist: "Frank Ocean" },
+    readyQueue: [{ id: "sza-1", name: "Snooze", artist: "SZA" }],
+    contract: "# Program Contract\nstation_goal: mellow personal radio\navoid: high-energy EDM",
+  });
+
+  assert.ok(window.candidateTasks.length > 0);
+  assert.ok(window.candidateTasks.every((task) => !/Frank Ocean|SZA/i.test(task.query)));
+  assert.match(window.candidateTasks[0]?.query ?? "", /Daniel Caesar/i);
+  assert.ok(window.candidateTasks.every((task) => task.negativeConstraints.some((item) => /Frank Ocean|SZA/i.test(item))));
+});
+
 test("program director preserves spec-compliant host events and sanitizes internal host text", async () => {
   const events = [
     "station_open",
@@ -900,6 +980,7 @@ function contextSnapshot(): RadioAgentContextSnapshot {
     repair: "",
     memoryFacts,
     memoryHypotheses: [],
+    sessionEvidence: [],
     recentEvents: [
       {
         uid: "42",

@@ -88,6 +88,7 @@ function buildPrompt(context: RadioAgentContextSnapshot, createdAt: string): str
     section("Agent Repair", context.repair),
     section("Memory Facts", context.memoryFacts.map(formatMemory).join("\n")),
     section("Memory Hypotheses", context.memoryHypotheses.map(formatMemory).join("\n")),
+    section("Session Evidence", context.sessionEvidence.map(formatMemory).join("\n")),
     section("Recent Events", JSON.stringify(context.recentEvents)),
     section("Current Track", JSON.stringify(context.currentTrack)),
     section("Ready Queue", JSON.stringify(context.readyQueue)),
@@ -147,7 +148,7 @@ function buildFallbackWindow(context: RadioAgentContextSnapshot, createdAt: stri
 function fallbackCandidateTasks(context: RadioAgentContextSnapshot): RadioAgentCandidateTask[] {
   const contract = contractAnchor(context.contract);
   const failedQueries = repairFailedQueries(context.repair);
-  const sessionAvoids = reflectionSessionAvoids(context.reflection);
+  const avoids = fallbackNegativeConstraints(context);
   const explicitContractQueries = explicitContractFallbackQueries(context);
   const anchors = [
     ...explicitContractQueries,
@@ -163,7 +164,8 @@ function fallbackCandidateTasks(context: RadioAgentContextSnapshot): RadioAgentC
     DEFAULT_FALLBACK_QUERY,
   ]
     .filter((anchor): anchor is string => Boolean(anchor?.trim()))
-    .map((anchor) => anchor.trim());
+    .map((anchor) => anchor.trim())
+    .filter((anchor) => !queryMatchesAvoids(anchor, avoids));
 
   const uniqueAnchors = Array.from(new Set(anchors));
   const tasks = uniqueAnchors.map((anchor) => ({
@@ -176,7 +178,7 @@ function fallbackCandidateTasks(context: RadioAgentContextSnapshot): RadioAgentC
   return tasks
     .filter(isAllowedCandidateTask)
     .filter((task) => !queryWasRecentlyFailed(task.query, failedQueries))
-    .filter((task) => !queryMatchesAvoids(task.query, sessionAvoids))
+    .filter((task) => !queryMatchesAvoids(task.query, avoids))
     .filter((task) => taskFitsContract(context, task))
     .slice(0, MAX_CANDIDATE_TASKS);
 }
@@ -498,7 +500,19 @@ function fallbackNegativeConstraints(context: RadioAgentContextSnapshot): string
     ...extractDisallowed(context.contract),
     ...reflectionTemporaryAvoids(context.reflection),
     ...reflectionSkippedAvoids(context.reflection),
+    ...sessionEvidenceAvoids(context.sessionEvidence),
   ]);
+}
+
+function sessionEvidenceAvoids(memories: RadioAgentMemory[]): string[] {
+  return memories.map(sessionAvoidAnchor).filter(Boolean);
+}
+
+function sessionAvoidAnchor(memory: RadioAgentMemory | undefined): string {
+  if (!memory || memory.kind !== "session_evidence") return "";
+  if (memory.key.startsWith("session_avoid:")) return memory.key.split(":").slice(1).join(":").trim();
+  const match = memory.value.match(/\bsession-only avoid of\s+([^.;]+)/i)?.[1]?.trim();
+  return match || "";
 }
 
 function reflectionPositiveAnchors(reflection: string): string[] {

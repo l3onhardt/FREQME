@@ -36,6 +36,7 @@ export function buildRadioAgentContextSnapshot(
     repair: compactArtifact(args.artifacts["agent_repair.md"]),
     memoryFacts: args.memories.filter((memory) => memory.kind === "taste_fact"),
     memoryHypotheses: args.memories.filter((memory) => memory.kind === "taste_hypothesis"),
+    sessionEvidence: args.memories.filter((memory) => memory.kind === "session_evidence"),
     recentEvents: args.recentEvents.slice(0, 12).map(sanitizeEvent),
     currentTrack: sanitizeTrack(args.currentTrack ?? null),
     readyQueue: args.readyQueue.map((track) => sanitizeTrack(track)).filter((track) => track !== null),

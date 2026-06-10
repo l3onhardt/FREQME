@@ -441,6 +441,7 @@ export class RadioAgentRuntime {
       const memories = [
         ...this.deps.store.memories(event.uid, "taste_fact", 12),
         ...this.deps.store.memories(event.uid, "taste_hypothesis", 12),
+        ...this.deps.store.memories(event.uid, "session_evidence", 12),
       ];
       const artifacts = {
         "user_profile.md": this.deps.store.artifact(event.uid, "user_profile.md")?.content,

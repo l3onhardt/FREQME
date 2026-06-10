@@ -110,6 +110,16 @@ export function distillTasteFacts(args: TasteDistillationArgs): TasteDistillatio
 
     if (event.type === "user_text") {
       const text = stringValue(event.payload.text);
+      for (const artist of explicitNegativeArtistsFromText(text)) {
+        sessionEvidence.push({
+          key: `session_avoid:${artist}`,
+          kind: "session_evidence",
+          value: `Listener asked for a session-only avoid of ${artist}; do not promote this into a durable dislike without repeated confirmation.`,
+          confidence: 0.83,
+          evidenceCount: 1,
+          evidenceRefs: event.id ? [`event:${event.id}`] : [`event:${event.createdAt}`],
+        });
+      }
       if (!text || !looksLikePreferenceText(text)) continue;
       sessionEvidence.push({
         key: "explicit:user_text",
@@ -295,6 +305,32 @@ function textNamesPositiveArtist(text: string, artist: string): boolean {
   const before = normalizedText.slice(Math.max(0, index - 24), index);
   if (/\b(less|avoid|skip|not|no|don't|dont|dislike)\b|不要|别|不想/u.test(before)) return false;
   return /\b(more|play|want|like|love|prefer|again)\b|想听|喜欢|多来|来点/u.test(local);
+}
+
+function explicitNegativeArtistsFromText(text: string): string[] {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  if (!normalized) return [];
+
+  return uniqueStrings([
+    ...matchesForPattern(
+      normalized,
+      /\b(?:less|avoid|skip|no)\s+([A-Z][A-Za-z0-9 .+'&-]{1,48}?)(?=\s+(?:lately|tonight|today|please|pls|now|next|tracks?|songs?|music|radio|vibes?)|[,.!?]|$)/gi,
+    ),
+    ...matchesForPattern(
+      normalized,
+      /\b(?:don't|dont|do not)\s+(?:play|queue|put on|give me)?\s*([A-Z][A-Za-z0-9 .+'&-]{1,48}?)(?=\s+(?:lately|tonight|today|please|pls|now|next|tracks?|songs?|music|radio|vibes?)|[,.!?]|$)/gi,
+    ),
+    ...matchesForPattern(
+      normalized,
+      /(?:不要|别放|别播|不想(?:要|听|放|播)?|少来点)\s*([A-Z][A-Za-z0-9 .+'&-]{1,48})(?=\s*(?:了|啦|吧|嘛|呀|今晚|今天|现在|下一首|tonight|today|please|pls|now|next|tracks?|songs?|music|radio|vibes?)?(?:[，,。.!?]|$))/giu,
+    ),
+  ]).filter((artist) => !isGenericArtistCandidate(artist));
+}
+
+function matchesForPattern(text: string, pattern: RegExp): string[] {
+  return Array.from(text.matchAll(pattern))
+    .map((match) => cleanArtistCandidate(match[1] || ""))
+    .filter(Boolean);
 }
 
 function explicitPositiveArtistFromText(text: string): string {

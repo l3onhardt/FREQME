@@ -26,6 +26,16 @@ test("agent context compacts profile, now, contract, memory, and current playbac
       evidenceRefs: ["track:s1"],
       updatedAt: "2026-06-03T01:01:00.000Z",
     },
+    {
+      uid: "42",
+      key: "session_avoid:Frank Ocean",
+      kind: "session_evidence",
+      value: "Listener asked for a session-only avoid of Frank Ocean.",
+      confidence: 0.83,
+      evidenceCount: 1,
+      evidenceRefs: ["event:2"],
+      updatedAt: "2026-06-03T01:02:00.000Z",
+    },
   ];
 
   const snapshot = buildRadioAgentContextSnapshot({
@@ -54,6 +64,7 @@ test("agent context compacts profile, now, contract, memory, and current playbac
   assert.match(snapshot.session, /active_request: R&B/);
   assert.match(snapshot.reflection, /repeated completed listening returned to SZA/);
   assert.equal(snapshot.memoryFacts[0]?.key, "artist:SZA");
+  assert.equal(snapshot.sessionEvidence[0]?.key, "session_avoid:Frank Ocean");
 });
 
 test("agent context caps large artifacts before model boundary", () => {

@@ -204,6 +204,7 @@ export interface RadioAgentContextSnapshot {
   repair: string;
   memoryFacts: RadioAgentMemory[];
   memoryHypotheses: RadioAgentMemory[];
+  sessionEvidence: RadioAgentMemory[];
   recentEvents: RadioAgentEvent[];
   currentTrack: Track | null;
   readyQueue: Track[];

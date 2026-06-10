@@ -283,6 +283,41 @@ test("taste distiller does not turn negative artist text into positive hypothese
   assert.equal(result.hypotheses.some((item) => /SZA|Frank Ocean|FKA twigs/.test(item.key)), false);
 });
 
+test("taste distiller turns explicit negative artist text into session-only avoid evidence", () => {
+  const result = distillTasteFacts({
+    uid: "42",
+    libraryTracks: [],
+    playlists: [],
+    recentEvents: [
+      {
+        id: 38,
+        uid: "42",
+        sessionId: 7,
+        type: "user_text",
+        priority: "hot",
+        payload: { text: "don't play SZA tonight" },
+        createdAt: "2026-06-03T01:00:00.000Z",
+      },
+      {
+        id: 39,
+        uid: "42",
+        sessionId: 7,
+        type: "user_text",
+        priority: "hot",
+        payload: { text: "less Frank Ocean please" },
+        createdAt: "2026-06-03T01:01:00.000Z",
+      },
+    ],
+  });
+
+  const avoids = result.sessionEvidence.filter((item) => item.key.startsWith("session_avoid:"));
+  assert.deepEqual(new Set(avoids.map((item) => item.key)), new Set(["session_avoid:SZA", "session_avoid:Frank Ocean"]));
+  assert.ok(avoids.every((item) => item.kind === "session_evidence"));
+  assert.ok(avoids.every((item) => item.value.includes("session-only avoid")));
+  assert.equal(result.facts.some((item) => /SZA|Frank Ocean/.test(`${item.key} ${item.value}`)), false);
+  assert.equal(result.hypotheses.some((item) => /SZA|Frank Ocean/.test(`${item.key} ${item.value}`)), false);
+});
+
 test("taste distiller treats one skip as session evidence only", () => {
   const result = distillTasteFacts({
     uid: "42",
