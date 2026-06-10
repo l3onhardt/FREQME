@@ -113,19 +113,24 @@ function buildWindowFromParsed(
     safeModelTasks.length > 0 || !hasExecutionRepair(context.repair) || parsedCandidateTasks.length === 0
       ? safeModelTasks
       : fallbackCandidateTasks(context).slice(0, MAX_CANDIDATE_TASKS);
+  const stationBrief = stringValue(valueFor(parsed, "stationBrief")) || fallbackStationBrief(context);
+  const mainDirection = stringValue(valueFor(parsed, "mainDirection")) || fallbackMainDirection(context);
+  const allowedAdjacent = stringArray(valueFor(parsed, "allowedAdjacent"));
+  const returnRequirement = stringValue(valueFor(parsed, "returnRequirement")) || "Return to the station brief after adjacent exploration.";
+  const hostIntent = toHostIntent(valueFor(parsed, "hostIntent"));
 
   return {
     id: makeWindowId(context, createdAt),
     uid: context.uid,
     sessionId: context.sessionId,
-    stationBrief: stringValue(valueFor(parsed, "stationBrief")) || fallbackStationBrief(context),
-    mainDirection: stringValue(valueFor(parsed, "mainDirection")) || fallbackMainDirection(context),
-    allowedAdjacent: stringArray(valueFor(parsed, "allowedAdjacent")),
+    stationBrief: sanitizeWindowTextForContract(context, stationBrief, "brief", candidateTasks),
+    mainDirection: sanitizeWindowTextForContract(context, mainDirection, "direction", candidateTasks),
+    allowedAdjacent: sanitizeAllowedAdjacentForContract(context, allowedAdjacent),
     bridgeBudget: numberValue(valueFor(parsed, "bridgeBudget"), 1),
     disallowed: uniqueStrings([...stringArray(valueFor(parsed, "disallowed")), ...contractBlockedMoves(context.contract)]),
-    returnRequirement: stringValue(valueFor(parsed, "returnRequirement")) || "Return to the station brief after adjacent exploration.",
+    returnRequirement: sanitizeWindowTextForContract(context, returnRequirement, "return", candidateTasks),
     candidateTasks,
-    hostIntent: toHostIntent(valueFor(parsed, "hostIntent")),
+    hostIntent: sanitizeHostIntentForContract(context, hostIntent, candidateTasks),
     traceBasis: traceBasisFromContext(context),
     source,
     createdAt,
@@ -225,7 +230,53 @@ function taskFitsContract(context: RadioAgentContextSnapshot, task: RadioAgentCa
 }
 
 function isOffContractForRnb(text: string): boolean {
-  return /\b(anyma|innellea|colyn|martin garrix|meduza|edm|techno|trance|festival|classical|modern classical|concerto|sonata|quartet|piano ambient|piano interlude|ambient electronic|pure ambient|instrumental|glenn gould|nils frahm|max richter|jon hopkins|sakamoto|olafur)\b/i.test(text);
+  return /\b(anyma|innellea|colyn|martin garrix|meduza|edm|techno|trance|festival|classical|modern classical|concerto|sonata|quartet|ambient|piano ambient|piano interlude|ambient electronic|pure ambient|instrumental|glenn gould|nils frahm|max richter|jon hopkins|sakamoto|olafur)\b|电子|古典|氛围|钢琴/u.test(text);
+}
+
+function sanitizeWindowTextForContract(
+  context: RadioAgentContextSnapshot,
+  text: string,
+  field: "brief" | "direction" | "return",
+  tasks: RadioAgentCandidateTask[],
+): string {
+  const contract = contractAnchor(context.contract);
+  if (!isRnbContractGoal(contract) || !isOffContractForRnb(text)) return text;
+
+  const anchor = listenerFacingTaskAnchor(tasks[0]);
+  if (field === "brief") return "Keep the current R&B radio focused on vocals, groove, and close soul textures.";
+  if (field === "direction") {
+    return anchor
+      ? `Stay in the R&B lane with ${anchor} as the next safe anchor.`
+      : "Stay in the R&B lane with vocal and groove-forward choices.";
+  }
+  return "Stay in R&B until the listener asks to move elsewhere.";
+}
+
+function sanitizeAllowedAdjacentForContract(context: RadioAgentContextSnapshot, moves: string[]): string[] {
+  const contract = contractAnchor(context.contract);
+  if (!isRnbContractGoal(contract)) return moves;
+  return moves.filter((move) => !isOffContractForRnb(move));
+}
+
+function sanitizeHostIntentForContract(
+  context: RadioAgentContextSnapshot,
+  hostIntent: RadioAgentHostIntent,
+  tasks: RadioAgentCandidateTask[],
+): RadioAgentHostIntent {
+  const contract = contractAnchor(context.contract);
+  if (!isRnbContractGoal(contract) || !hostIntent.shouldSpeak || !isOffContractForRnb(hostIntent.text)) return hostIntent;
+
+  const anchor = listenerFacingTaskAnchor(tasks[0]);
+  return {
+    shouldSpeak: true,
+    event: "return_to_contract",
+    reason: "keeps explicit R&B request in bounds",
+    text: sanitizeHostText(anchor ? `我把方向收回 R&B，下一首先用 ${anchor} 稳住人声和律动。` : "我把方向收回 R&B，先守住人声和律动。"),
+  };
+}
+
+function listenerFacingTaskAnchor(task: RadioAgentCandidateTask | undefined): string {
+  return task?.query?.trim() || "";
 }
 
 function toHostIntent(value: unknown): RadioAgentHostIntent {

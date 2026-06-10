@@ -960,6 +960,51 @@ test("model planning under an explicit R&B contract rejects ambient and classica
   assert.match(window.candidateTasks[0]?.query ?? "", /R&B|Daniel Caesar|Frank Ocean|SZA|H\.E\.R\.|Brent Faiyaz/i);
 });
 
+test("model planning under an explicit R&B contract sanitizes off-contract narration fields", async () => {
+  const model: ProgramPlanningModel = {
+    chat: async () => JSON.stringify({
+      station_brief: "Take a modern classical and ambient electronic bridge before returning.",
+      main_direction: "Move through ambient piano textures, then return to R&B later.",
+      allowed_adjacent: ["ambient electronic", "modern classical"],
+      return_requirement: "After the piano interlude, return to the R&B request.",
+      candidate_tasks: [
+        {
+          query: "Daniel Caesar Get You",
+          reason: "Concrete R&B vocal anchor.",
+          style: "R&B",
+        },
+      ],
+      host_intent: {
+        should_speak: true,
+        event: "bridge_entered",
+        reason: "soft contrast",
+        text: "我先接一段氛围电子和古典钢琴，再回到 R&B。",
+      },
+    }),
+  };
+  const director = new RadioAgentProgramDirector(model, () => NOW);
+
+  const window = await director.plan({
+    ...contextSnapshot(),
+    memoryFacts: [],
+    currentTrack: null,
+    readyQueue: [],
+    contract: "# Program Contract\nstation_goal: current R&B radio with soft vocal anchors\navoid: high-energy EDM, pure classical piano, ambient electronic",
+    session:
+      "# Listener Session\nactive_request: R&B\naccepted_direction: Keep this session centered on R&B vocals and groove.\nnext_promise: Stay in R&B until the listener asks to move elsewhere.",
+  });
+
+  assert.equal(window.source, "model");
+  assert.deepEqual(window.candidateTasks.map((task) => task.query), ["Daniel Caesar Get You"]);
+  assert.doesNotMatch(window.stationBrief, /ambient|classical|piano|电子|古典|氛围/i);
+  assert.doesNotMatch(window.mainDirection, /ambient|classical|piano|电子|古典|氛围/i);
+  assert.ok(window.allowedAdjacent.every((move) => !/ambient|classical|piano|电子|古典|氛围/i.test(move)));
+  assert.doesNotMatch(window.returnRequirement, /ambient|classical|piano|电子|古典|氛围/i);
+  assert.notEqual(window.hostIntent.event, "bridge_entered");
+  assert.doesNotMatch(window.hostIntent.text, /ambient|classical|piano|电子|古典|氛围/i);
+  assert.match([window.stationBrief, window.mainDirection, window.hostIntent.text].join(" "), /R&B|Daniel Caesar|vocal|人声/i);
+});
+
 test("model planning rejects candidates blocked by generic program contract moves", async () => {
   const model: ProgramPlanningModel = {
     chat: async () =>
