@@ -518,7 +518,7 @@ test("program director preserves spec-compliant host events and sanitizes intern
   }
 });
 
-test("program director does not pass model mojibake or awkward host text downstream", async () => {
+test("program director replaces model mojibake or awkward host text with safe handoff speech", async () => {
   const badHostTexts = [
     "这首会稍微贴近旁边的质感，但主线还是继续保持这个感觉。",
     "鎴戝厛椤虹潃 SZA 鐨勬柟鍚戞帴涓€棣栵紝鎶婄數鍙扮ǔ浣忋€俙",
@@ -542,9 +542,9 @@ test("program director does not pass model mojibake or awkward host text downstr
 
     const window = await director.plan(contextSnapshot());
 
-    assert.equal(window.hostIntent.shouldSpeak, false);
-    assert.equal(window.hostIntent.event, "silent");
-    assert.equal(window.hostIntent.text, "");
+    assert.equal(window.hostIntent.shouldSpeak, true);
+    assert.equal(window.hostIntent.event, "return_to_contract");
+    assert.match(window.hostIntent.text, /R&B|SZA Snooze|人声|律动/i);
     assert.doesNotMatch(window.hostIntent.text, unsafeHostSpeechText);
   }
 });

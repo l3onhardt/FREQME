@@ -266,6 +266,9 @@ function sanitizeHostIntentForContract(
   tasks: RadioAgentCandidateTask[],
 ): RadioAgentHostIntent {
   const contract = contractAnchor(context.contract);
+  if (hostIntent.event === "silent" && hostIntent.reason === "unsafe_model_host_text") {
+    return safeReplacementHostIntent(context, tasks, "replaced unsafe model host text");
+  }
   if (!isRnbContractGoal(contract) || !hostIntent.shouldSpeak || !isOffContractForRnb(hostIntent.text)) return hostIntent;
 
   const anchor = listenerFacingTaskAnchor(tasks[0]);
@@ -281,14 +284,39 @@ function listenerFacingTaskAnchor(task: RadioAgentCandidateTask | undefined): st
   return task?.query?.trim() || "";
 }
 
+function safeReplacementHostIntent(
+  context: RadioAgentContextSnapshot,
+  tasks: RadioAgentCandidateTask[],
+  reason: string,
+): RadioAgentHostIntent {
+  const anchor = listenerFacingTaskAnchor(tasks[0]);
+  const isRnb = isRnbContractGoal(contractAnchor(context.contract));
+  const text = sanitizeHostText(
+    isRnb
+      ? anchor
+        ? `我把方向收回 R&B，下一首用 ${anchor} 稳住人声和律动。`
+        : "我把方向收回 R&B，先守住人声和律动。"
+      : anchor
+        ? `我先接一首 ${anchor}，把电台稳住。`
+        : "我先接一首稳一点的，把电台续上。",
+  );
+  return text
+    ? { shouldSpeak: true, event: "return_to_contract", reason, text }
+    : silentHostIntent("safe_replacement_host_text_filtered");
+}
+
 function toHostIntent(value: unknown): RadioAgentHostIntent {
   if (!isRecord(value)) return silentHostIntent("missing_host_intent");
 
   const shouldSpeak = valueFor(value, "shouldSpeak") === true;
   const event = hostEventValue(valueFor(value, "event"));
   const reason = stringValue(valueFor(value, "reason"));
-  const text = sanitizeHostText(stringValue(valueFor(value, "text")));
+  const rawText = stringValue(valueFor(value, "text"));
+  const text = sanitizeHostText(rawText);
 
+  if (shouldSpeak && event !== "silent" && rawText && !text) {
+    return silentHostIntent(INTERNAL_HOST_TERMS.test(rawText) ? "unsafe_internal_host_text" : "unsafe_model_host_text");
+  }
   if (!shouldSpeak || event === "silent" || !text) return silentHostIntent(reason || "silent");
   return { shouldSpeak: true, event, reason, text };
 }
