@@ -36,6 +36,18 @@ const SESSION_REFLECTION_SOURCE_VERSION = "session-reflection/v1";
 const AGENT_JOURNAL_SOURCE_VERSION = "agent-journal/v1";
 const AGENT_REPAIR_SOURCE_VERSION = "agent-repair/v1";
 
+interface ActiveSessionDirection {
+  activeRequest: string;
+  stationGoal: string;
+  acceptedDirection: string;
+  allowedMoves: string[];
+  blockedMoves: string[];
+  rejectedMoves?: string[];
+  openHypotheses: string[];
+  nextPromise: string;
+  hostGuidance: string;
+}
+
 interface RadioAgentRuntimeStore {
   appendEvent(event: RadioAgentEvent): number;
   recentEvents(uid: string | null, sessionId: number | null, limit: number): RadioAgentEvent[];
@@ -968,29 +980,69 @@ function listenerStateForEvent(event: RadioAgentEvent): string {
   return "unknown";
 }
 
-function currentSessionDirection(events: RadioAgentEvent[]): { stationGoal: string; allowedMoves: string[]; blockedMoves: string[] } | null {
-  const explicit = events.find((event) => {
+function currentSessionDirection(events: RadioAgentEvent[]): ActiveSessionDirection | null {
+  const explicitRnb = events.find((event) => {
     if (event.type !== "user_text") return false;
     const text = stringValue(event.payload.text);
     return isRnbRequest(text);
   });
-  if (!explicit) return null;
+  if (explicitRnb) {
+    return {
+      activeRequest: "R&B",
+      stationGoal: "Keep the current radio session centered on R&B until the listener asks to move elsewhere.",
+      acceptedDirection: "Keep the current session centered on R&B vocals, groove, and closely related soul textures.",
+      allowedMoves: [
+        "Prefer verified R&B, alt-R&B, neo-soul, and soft vocal tracks.",
+        "Only use adjacent electronic color when the track is explicitly R&B, alt-R&B, or neo-soul.",
+      ],
+      blockedMoves: [
+        "Do not fall back to EDM, classical, ambient piano, or old profile anchors unless they clearly support the R&B request.",
+      ],
+      rejectedMoves: [
+        "generic electronic",
+        "EDM",
+        "classical chamber music",
+        "ambient piano",
+        "old electronic/classical profile anchors unless they clearly support R&B",
+      ],
+      openHypotheses: [
+        "The listener wants the current session to stay in R&B; this is an active session constraint.",
+        "Do not treat this request as a permanent dislike of electronic, classical, or ambient music.",
+      ],
+      nextPromise: "Stay in R&B until the listener asks to move elsewhere.",
+      hostGuidance: "Acknowledge the R&B lane naturally; keep vocals and groove forward, and avoid vague filler.",
+    };
+  }
+
+  const explicitArtist = events
+    .filter((event) => event.type === "user_text")
+    .map((event) => positiveArtistRequestFromText(stringValue(event.payload.text)))
+    .find(Boolean);
+  if (!explicitArtist) return null;
 
   return {
-    stationGoal: "Keep the current radio session centered on R&B until the listener asks to move elsewhere.",
+    activeRequest: explicitArtist,
+    stationGoal: `Keep the current radio session centered on ${explicitArtist} until the listener asks to move elsewhere.`,
+    acceptedDirection: `Keep this session close to ${explicitArtist}: start from that artist as the primary anchor, then use nearby tracks only when they support the same feel.`,
     allowedMoves: [
-      "Prefer verified R&B, alt-R&B, neo-soul, and soft vocal tracks.",
-      "Only use adjacent electronic color when the track is explicitly R&B, alt-R&B, or neo-soul.",
+      `Use ${explicitArtist} as the primary session anchor.`,
+      "Use adjacent artists or tracks only when they clearly support the requested artist direction.",
     ],
     blockedMoves: [
-      "Do not fall back to EDM, classical, ambient piano, or old profile anchors unless they clearly support the R&B request.",
+      "Do not let older profile anchors override this explicit session request.",
     ],
+    openHypotheses: [
+      `The listener explicitly asked for more ${explicitArtist}; treat this as a session preference until playback confirms it.`,
+      "Do not promote this into a durable preference without repeated evidence or completed listening.",
+    ],
+    nextPromise: `Stay close to ${explicitArtist} until the listener asks to move elsewhere.`,
+    hostGuidance: `Acknowledge ${explicitArtist} naturally if speaking, then keep the handoff concrete and low-interruption.`,
   };
 }
 
 function listenerSessionFromEvents(
   events: RadioAgentEvent[],
-  activeDirection: { stationGoal: string; allowedMoves: string[]; blockedMoves: string[] } | null,
+  activeDirection: ActiveSessionDirection | null,
   updatedAt: string,
 ): Parameters<typeof buildListenerSessionMarkdown>[0] {
   const explicitUserText = events.find((event) => event.type === "user_text" && isRnbRequest(stringValue(event.payload.text)));
@@ -1017,23 +1069,13 @@ function listenerSessionFromEvents(
   if (activeDirection) {
     return {
       updatedAt,
-      activeRequest: "R&B",
-      acceptedDirection: "Keep the current session centered on R&B vocals, groove, and closely related soul textures.",
-      rejectedMoves: dedupeStrings([
-        ...rejectedMoves,
-        "generic electronic",
-        "EDM",
-        "classical chamber music",
-        "ambient piano",
-        "old electronic/classical profile anchors unless they clearly support R&B",
-      ]),
+      activeRequest: activeDirection.activeRequest,
+      acceptedDirection: activeDirection.acceptedDirection,
+      rejectedMoves: dedupeStrings([...rejectedMoves, ...(activeDirection.rejectedMoves || [])]),
       recentCorrections: [...userCorrections, ...skipCorrections].slice(0, 6),
-      openHypotheses: [
-        "The listener wants the current session to stay in R&B; this is an active session constraint.",
-        "Do not treat this request as a permanent dislike of electronic, classical, or ambient music.",
-      ],
-      nextPromise: "Stay in R&B until the listener asks to move elsewhere.",
-      hostGuidance: "Acknowledge the R&B lane naturally; keep vocals and groove forward, and avoid vague filler.",
+      openHypotheses: activeDirection.openHypotheses,
+      nextPromise: activeDirection.nextPromise,
+      hostGuidance: activeDirection.hostGuidance,
     };
   }
 
@@ -1153,6 +1195,27 @@ function looksReflectiveCorrection(text: string): boolean {
   return /不要|别|不想|更喜欢|喜欢|想听|avoid|less|more|skip|prefer/i.test(text);
 }
 
+function positiveArtistRequestFromText(text: string): string {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  if (!normalized) return "";
+  if (/^\s*(less|avoid|skip|no|don't|dont|do not|dislike)\b/i.test(normalized)) return "";
+  if (/涓嶈|鍒珅涓嶆兂|灏戞潵/.test(normalized.slice(0, 8))) return "";
+
+  const patterns = [
+    /\b(?:play|queue|put on|give me|want|need|like|love|prefer)\s+(?:some\s+|more\s+|tracks?\s+by\s+|songs?\s+by\s+)?([A-Z][A-Za-z0-9 .+'&-]{1,48}?)(?:\s+(?:lately|tonight|today|please|pls|now|next|tracks?|songs?|music|radio|vibes?))?(?:[.!?]|$)/i,
+    /\bmore\s+of\s+([A-Z][A-Za-z0-9 .+'&-]{1,48}?)(?:\s+(?:lately|tonight|today|please|pls|now|next|tracks?|songs?|music|radio|vibes?))?(?:[.!?]|$)/i,
+    /\bmore\s+([A-Z][A-Za-z0-9 .+'&-]{1,48}?)(?:\s+(?:lately|tonight|today|please|pls|now|next|tracks?|songs?|music|radio|vibes?))?(?:[.!?]|$)/i,
+  ];
+  const match = patterns.map((pattern) => normalized.match(pattern)).find((candidate) => candidate?.[1]);
+  const artist = cleanArtistRequest(match?.[1] || "");
+  if (!artist || isGenericAvoidMove(artist)) return "";
+
+  const index = normalized.toLowerCase().indexOf(artist.toLowerCase());
+  const before = index >= 0 ? normalized.toLowerCase().slice(Math.max(0, index - 24), index) : "";
+  if (/\b(less|avoid|skip|not|no|don't|dont|dislike)\b/.test(before)) return "";
+  return artist;
+}
+
 function negativeArtistMovesFromText(text: string): string[] {
   const normalized = text.replace(/\s+/g, " ").trim();
   if (!normalized) return [];
@@ -1175,6 +1238,14 @@ function cleanAvoidMove(value: string): string {
     .replace(/\s+/g, " ")
     .replace(/\s+(?:tonight|today|please|pls|now|next|tracks?|songs?|music|radio|vibes?)$/i, "")
     .replace(/[，,。.!?]+$/u, "")
+    .trim();
+}
+
+function cleanArtistRequest(value: string): string {
+  return value
+    .replace(/\s+/g, " ")
+    .replace(/\s+(?:lately|tonight|today|please|pls|now|next|tracks?|songs?|music|radio|vibes?)$/i, "")
+    .replace(/[.,!?]+$/u, "")
     .trim();
 }
 

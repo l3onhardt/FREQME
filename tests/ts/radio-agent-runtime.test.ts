@@ -573,6 +573,47 @@ test("runtime keeps an explicit R&B request in the program contract across later
   assert.doesNotMatch(contract?.content ?? "", /Use adjacent electronic or ambient/i);
 });
 
+test("runtime keeps explicit positive artist requests in the current station contract", async () => {
+  const store = runtimeStore({
+    memories: (uid: string, kind: string, limit: number) =>
+      [
+        {
+          uid,
+          key: "artist:Anyma",
+          kind,
+          value: "Listener has repeated library evidence for Anyma.",
+          confidence: 0.91,
+          evidenceCount: 6,
+          evidenceRefs: ["track:anyma-1"],
+          updatedAt: "2026-06-03T01:00:00.000Z",
+        },
+      ].slice(0, limit),
+  });
+  const runtime = new RadioAgentRuntime({ mode: "assisted", store, now: () => "2026-06-03T01:02:03.000Z" });
+
+  await runtime.handle({
+    type: "user_text",
+    uid: "42",
+    sessionId: 9,
+    text: "more Frank Ocean tonight",
+  });
+  await runtime.handle({
+    type: "playback_started",
+    uid: "42",
+    sessionId: 9,
+    track: { id: "old-1", name: "Pictures Of You", artist: "Anyma" },
+  });
+
+  const session = store.artifact("42", "listener_session.md");
+  const contract = store.artifact("42", "program_contract.md");
+  assert.match(session?.content ?? "", /active_request: Frank Ocean/i);
+  assert.match(session?.content ?? "", /accepted_direction: Keep this session close to Frank Ocean/i);
+  assert.match(session?.content ?? "", /Stay close to Frank Ocean until the listener asks to move elsewhere/i);
+  assert.match(contract?.content ?? "", /station_goal: Keep the current radio session centered on Frank Ocean/i);
+  assert.match(contract?.content ?? "", /Use Frank Ocean as the primary session anchor/i);
+  assert.doesNotMatch(contract?.content ?? "", /station_goal:.*Anyma/i);
+});
+
 test("runtime writes current listener session memory for explicit R&B boundaries", async () => {
   const store = runtimeStore({
     memories: (uid: string, kind: string, limit: number) =>

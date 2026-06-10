@@ -584,6 +584,38 @@ test("fallback planning prioritizes an explicit contract over stale taste anchor
   assert.doesNotMatch(window.hostIntent.text, /Anyma|Martin Garrix|Glenn Gould|Colyn/i);
 });
 
+test("fallback planning prioritizes an explicit artist session contract over stale taste anchors", async () => {
+  const director = new RadioAgentProgramDirector(null, () => NOW);
+
+  const window = await director.plan({
+    ...contextSnapshot(),
+    memoryFacts: [
+      {
+        uid: "42",
+        key: "artist:Anyma",
+        kind: "taste_fact",
+        value: "Listener has repeated library evidence for Anyma.",
+        confidence: 0.91,
+        evidenceCount: 6,
+        evidenceRefs: ["track:anyma-1"],
+        updatedAt: "2026-06-03T01:00:00.000Z",
+      },
+    ],
+    currentTrack: { id: "old-anchor", name: "Pictures Of You", artist: "Anyma" },
+    readyQueue: [],
+    contract:
+      "# Program Contract\nstation_goal: Keep the current radio session centered on Frank Ocean until the listener asks to move elsewhere.\n\n## Allowed Moves\n- Use Frank Ocean as the primary session anchor.\n- Use adjacent artists only when they clearly support the requested artist direction.\n\n## Blocked Moves\n- Do not let older profile anchors override this explicit session request.",
+    session:
+      "# Listener Session\nactive_request: Frank Ocean\naccepted_direction: Keep this session close to Frank Ocean.\nnext_promise: Stay close to Frank Ocean until the listener asks to move elsewhere.",
+  });
+
+  assert.equal(window.source, "deterministic_fallback");
+  assert.match(window.candidateTasks[0]?.query ?? "", /Frank Ocean/i);
+  assert.doesNotMatch(window.candidateTasks[0]?.query ?? "", /Anyma/i);
+  assert.match(window.mainDirection, /Frank Ocean/i);
+  assert.doesNotMatch(window.hostIntent.text, /Anyma/i);
+});
+
 test("fallback planning turns a fresh R&B session contract into concrete first moves before old anchors", async () => {
   const director = new RadioAgentProgramDirector(null, () => NOW);
 

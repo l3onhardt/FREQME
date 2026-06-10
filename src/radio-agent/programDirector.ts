@@ -320,6 +320,9 @@ function fallbackHostAnchor(context: RadioAgentContextSnapshot): string {
 }
 
 function explicitContractFallbackQueries(context: RadioAgentContextSnapshot): string[] {
+  const explicitArtist = explicitArtistSessionAnchor(context);
+  if (explicitArtist) return [explicitArtist];
+
   const contract = contractAnchor(context.contract);
   if (!contract || isGenericContractGoal(contract)) return [];
 
@@ -331,6 +334,28 @@ function explicitContractFallbackQueries(context: RadioAgentContextSnapshot): st
   }
 
   return [contract];
+}
+
+function explicitArtistSessionAnchor(context: RadioAgentContextSnapshot): string {
+  const sessionAnchor = context.session.match(/^active_request:\s*(.+)$/imu)?.[1]?.trim() || "";
+  const contractAnchorText =
+    context.contract.match(/\bcentered on\s+(.+?)\s+until\b/iu)?.[1]?.trim() ||
+    context.contract.match(/\bUse\s+(.+?)\s+as the primary session anchor\b/iu)?.[1]?.trim() ||
+    "";
+  const anchor = cleanSessionAnchor(sessionAnchor || contractAnchorText);
+  if (!anchor || isGenericContractGoal(anchor) || isBroadStyleSessionAnchor(anchor)) return "";
+  return anchor;
+}
+
+function cleanSessionAnchor(value: string): string {
+  return value
+    .replace(/\s+/g, " ")
+    .replace(/[.,;:!?]+$/u, "")
+    .trim();
+}
+
+function isBroadStyleSessionAnchor(value: string): boolean {
+  return /^(?:r\s*&?\s*b|rnb|alt[-\s]?r\s*&?\s*b|neo[-\s]?soul|soul|pop|rock|jazz|edm|electronic|ambient|classical)$/i.test(value.trim());
 }
 
 function listenerFacingContractAnchor(contractGoal: string): string {
