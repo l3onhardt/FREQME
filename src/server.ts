@@ -573,6 +573,14 @@ async function handleRadioSocket(socket: WebSocketType): Promise<void> {
     });
   };
 
+  const clearReadyQueueForExplicitDirection = (requestText: string): void => {
+    try {
+      const intent = intentRouter.classify(requestText);
+      if (intent.shouldClearQueue && !intent.shouldExplain) queue.clearReady();
+    } catch {
+    }
+  };
+
   const sendLateSegueTts = (segueId: string, text: string, track: Track, url: string): void => {
     if (!text) return;
     void (async () => {
@@ -1083,6 +1091,7 @@ async function handleRadioSocket(socket: WebSocketType): Promise<void> {
           text: requestText,
           currentTrack: currentTrack ? trackInfo(currentTrack) : null,
         });
+        clearReadyQueueForExplicitDirection(requestText);
         introSendCancelled = true;
         store.logPlaybackEvent("song_request", { uid, songId: currentSongId, reason: requestText });
         const requestToken = ++nextRequestToken;

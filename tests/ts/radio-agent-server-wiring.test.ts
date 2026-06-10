@@ -125,3 +125,20 @@ test("server waits for explicit user direction to refresh radio agent context be
   assert.ok(legacyBrainRequest > userTextEvent);
   assert.match(source.slice(userTextEvent - 120, userTextEvent), /await\s+mirrorRadioAgentImmediate\(\{\s*$/);
 });
+
+test("server clears stale ready queue after explicit listener direction before planning replacement", () => {
+  const source = fs.readFileSync("src/server.ts", "utf8");
+  const songRequestHandler = source.indexOf('if (type === "song_request")');
+  const agentRefresh = source.indexOf("await mirrorRadioAgentImmediate", songRequestHandler);
+  const staleClear = source.indexOf("clearReadyQueueForExplicitDirection(requestText)", agentRefresh);
+  const readyBeforeRequest = source.indexOf("const readyBeforeRequest = snapshotReadyItems(queue)", staleClear);
+  const legacyBrainRequest = source.indexOf("radioBrain.handleUserText", readyBeforeRequest);
+
+  assert.ok(songRequestHandler >= 0);
+  assert.ok(agentRefresh > songRequestHandler);
+  assert.ok(staleClear > agentRefresh);
+  assert.ok(readyBeforeRequest > staleClear);
+  assert.ok(legacyBrainRequest > readyBeforeRequest);
+  assert.match(source, /const clearReadyQueueForExplicitDirection\s*=\s*\(requestText:\s*string\):\s*void\s*=>/);
+  assert.match(source, /queue\.clearReady\(\)/);
+});
