@@ -1148,8 +1148,9 @@ test('radio agent readiness is visible when assisted mode is degraded', async ()
   await flushAsyncWork();
 
   assert.equal(elements.get('agent-status-panel').hidden, false);
-  assert.match(elements.get('agent-status-observation').textContent, /assisted mode/);
-  assert.match(elements.get('agent-status-observation').textContent, /deterministic fallback/);
+  assert.match(elements.get('agent-status-observation').textContent, /^观察：/);
+  assert.match(elements.get('agent-status-observation').textContent, /保守|稳|接歌|继续/);
+  assert.doesNotMatch(elements.get('agent-status-observation').textContent, /Agent|assisted|deterministic|fallback|degraded/i);
 });
 
 test('planning request status speaks visually without changing current playback', async () => {

@@ -597,10 +597,28 @@ async function playTrack(track, url) {
 function safeAgentStatusText(value) {
   const text = String(value || '').replace(/\s+/g, ' ').trim();
   if (!text) return '';
-  if (/\b(model|prompt|json|tool call|shadow decision|decision trace|trace basis|verification)\b/i.test(text)) {
+  const readiness = listenerFacingReadinessText(text);
+  if (readiness) return readiness;
+  if (/\b(model|prompt|json|tool call|shadow decision|decision trace|trace basis|verification|agent|assisted|deterministic|fallback|degraded)\b/i.test(text)) {
     return '';
   }
   return text.slice(0, 180).trim();
+}
+
+function listenerFacingReadinessText(text) {
+  if (/\bshadow mode\b/i.test(text)) {
+    return '我会先听和记录，不急着接管播放。';
+  }
+  if (/\b(degraded|deterministic fallback|fallback)\b/i.test(text)) {
+    return '我先用保守方式接歌，继续把电台稳住。';
+  }
+  if (/\b(disabled|autonomous planning is disabled)\b/i.test(text)) {
+    return '我会先跟住当前播放，不强行改方向。';
+  }
+  if (/\b(assisted intelligence|can plan the station|assisted mode|active mode)\b/i.test(text)) {
+    return '我在看当前方向，提前准备后面的歌。';
+  }
+  return '';
 }
 
 function setAgentStatusLine(element, prefix, value) {
