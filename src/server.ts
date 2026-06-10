@@ -1281,21 +1281,29 @@ async function handleRadioSocket(socket: WebSocketType): Promise<void> {
       if (type === "song_request") {
         const requestText = compactText(message.text || "", 120);
         if (!requestText) return;
-        const agentTextResult = await radioAgentService.handleUserText({
-          uid,
-          sessionId,
-          text: requestText,
-          currentTrack: currentTrack ? trackInfo(currentTrack) : null,
-          readyQueue: queue.readyItems().map((readyItem) => trackInfo(readyItem.track)),
-          shouldClearQueue: (() => {
-            try {
-              const intent = intentRouter.classify(requestText);
-              return intent.shouldClearQueue && !intent.shouldExplain;
-            } catch {
-              return false;
-            }
-          })(),
-        });
+        let requestIntent: ReturnType<typeof intentRouter.classify> | null = null;
+        try {
+          requestIntent = intentRouter.classify(requestText);
+        } catch {
+          requestIntent = null;
+        }
+        const agentTextResult =
+          requestIntent?.type === "correction" || requestIntent?.type === "negative_feedback"
+            ? await radioAgentService.handleCorrection({
+                uid,
+                sessionId,
+                text: requestText,
+                currentTrack: currentTrack ? trackInfo(currentTrack) : null,
+                readyQueue: queue.readyItems().map((readyItem) => trackInfo(readyItem.track)),
+              })
+            : await radioAgentService.handleUserText({
+                uid,
+                sessionId,
+                text: requestText,
+                currentTrack: currentTrack ? trackInfo(currentTrack) : null,
+                readyQueue: queue.readyItems().map((readyItem) => trackInfo(readyItem.track)),
+                shouldClearQueue: Boolean(requestIntent?.shouldClearQueue && !requestIntent.shouldExplain),
+              });
         const agentAckText = agentTextResult.hostText;
         introSendCancelled = true;
         store.logPlaybackEvent("song_request", { uid, songId: currentSongId, reason: requestText });

@@ -209,6 +209,78 @@ test("service can execute an explicit direction through the queue adapter", asyn
   assert.deepEqual(calls, ["agent:user_text", "clear", "queue:window-jazz", "host:user_text"]);
 });
 
+test("service repairs the active window after explicit negative feedback", async () => {
+  const calls: string[] = [];
+  const programWindow = radioWindow({
+    id: "window-repaired",
+    stationBrief: "Move away from the rejected artist.",
+    mainDirection: "mellow R&B without Frank Ocean",
+    disallowed: ["Frank Ocean"],
+    candidateTasks: [
+      {
+        query: "SZA Good Days",
+        reason: "Nearby replacement that avoids the rejected artist.",
+        style: "R&B",
+        negativeConstraints: ["Frank Ocean"],
+      },
+    ],
+    hostIntent: {
+      shouldSpeak: true,
+      event: "correction",
+      reason: "listener rejected the current artist",
+      text: "明白，我先避开 Frank Ocean，往旁边更稳的 R&B 收。",
+    },
+  });
+  const service = new RadioAgentService({
+    chooseOpeningTrack: () => null,
+    prepareTrack: async () => null,
+    handleRadioAgentEvent: async (event) => {
+      calls.push(`agent:${event.type}:${event.text}`);
+      return {
+        controlsPlayback: false,
+        event: { uid: "42", sessionId: 7, type: "user_text", priority: "hot", payload: {}, createdAt: "2026-06-11T00:00:00.000Z" },
+        hostDecision: {
+          shouldSpeak: true,
+          event: "correction",
+          reason: "listener rejected the current artist",
+          text: "明白，我先避开 Frank Ocean，往旁边更稳的 R&B 收。",
+        },
+        programWindow,
+      } satisfies RadioAgentHandleResult;
+    },
+    clearReadyQueue: () => {
+      calls.push("clear");
+    },
+    queueProgramWindow: async (window) => {
+      calls.push(`queue:${window.id}`);
+      return true;
+    },
+    hostTextForDelivery: ({ eventType, decision }) => {
+      calls.push(`host:${eventType}:${decision?.event}`);
+      return decision?.text || "";
+    },
+  });
+
+  const result = await service.handleCorrection({
+    uid: "42",
+    sessionId: 7,
+    text: "don't play Frank Ocean tonight",
+    currentTrack: { id: "frank-1", name: "Pink + White", artist: "Frank Ocean" },
+    readyQueue: [{ id: "frank-2", name: "Nights", artist: "Frank Ocean" }],
+  });
+
+  assert.equal(result.programWindow?.id, "window-repaired");
+  assert.equal(result.programQueued, true);
+  assert.equal(result.shouldClearQueue, true);
+  assert.equal(result.hostText, "明白，我先避开 Frank Ocean，往旁边更稳的 R&B 收。");
+  assert.deepEqual(calls, [
+    "agent:user_text:don't play Frank Ocean tonight",
+    "clear",
+    "queue:window-repaired",
+    "host:user_text:correction",
+  ]);
+});
+
 test("service continues from the active contract when a track ends and queue is empty", async () => {
   const calls: string[] = [];
   const programWindow = radioWindow({

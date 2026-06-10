@@ -32,6 +32,16 @@ export interface RadioAgentUserTextResult {
   shouldClearQueue: boolean;
 }
 
+export interface RadioAgentCorrectionArgs {
+  uid: string | null;
+  sessionId: number | null;
+  text: string;
+  currentTrack: Record<string, unknown> | null;
+  readyQueue: Record<string, unknown>[];
+}
+
+export type RadioAgentCorrectionResult = RadioAgentUserTextResult;
+
 export interface RadioAgentTrackEndedArgs {
   uid: string | null;
   sessionId: number | null;
@@ -153,6 +163,17 @@ export class RadioAgentService {
   }
 
   async handleUserText(args: RadioAgentUserTextArgs): Promise<RadioAgentUserTextResult> {
+    return await this.runProgramTextEvent(args, args.shouldClearQueue);
+  }
+
+  async handleCorrection(args: RadioAgentCorrectionArgs): Promise<RadioAgentCorrectionResult> {
+    return await this.runProgramTextEvent(args, true);
+  }
+
+  private async runProgramTextEvent(
+    args: Pick<RadioAgentUserTextArgs, "uid" | "sessionId" | "text" | "currentTrack" | "readyQueue">,
+    shouldClearQueue: boolean,
+  ): Promise<RadioAgentUserTextResult> {
     const agentResult = this.deps.handleRadioAgentEvent
       ? await this.deps.handleRadioAgentEvent({
           type: "user_text",
@@ -164,7 +185,7 @@ export class RadioAgentService {
         })
       : null;
     const programWindow = agentResult?.programWindow;
-    if (programWindow && args.shouldClearQueue) this.deps.clearReadyQueue?.();
+    if (programWindow && shouldClearQueue) this.deps.clearReadyQueue?.();
     const programQueued = programWindow && this.deps.queueProgramWindow ? await this.deps.queueProgramWindow(programWindow) : false;
     const preparedTrack =
       programWindow && !programQueued && !this.deps.queueProgramWindow && this.deps.prepareProgramWindow
@@ -184,7 +205,7 @@ export class RadioAgentService {
       ...(preparedTrack ? { preparedTrack } : {}),
       programQueued,
       hostText,
-      shouldClearQueue: args.shouldClearQueue,
+      shouldClearQueue,
     };
   }
 

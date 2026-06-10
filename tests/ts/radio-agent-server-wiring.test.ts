@@ -221,6 +221,7 @@ test("server serializes next-track promotion requests", () => {
 test("server executes explicit user direction with radio agent program window before legacy request planning", () => {
   const source = fs.readFileSync("src/server.ts", "utf8");
   const songRequestHandler = source.indexOf('if (type === "song_request")');
+  const agentResultDeclaration = source.indexOf("const agentTextResult =", songRequestHandler);
   const serviceDirection = source.indexOf("await radioAgentService.handleUserText", songRequestHandler);
   const agentAcknowledgement = source.indexOf("const agentAckText = agentTextResult.hostText", serviceDirection);
   const agentProgramQueue = source.indexOf("agentTextResult.programQueued", agentAcknowledgement);
@@ -229,6 +230,8 @@ test("server executes explicit user direction with radio agent program window be
   const legacyBrainRequest = source.indexOf("radioBrain.handleUserText", serviceDirection);
 
   assert.ok(songRequestHandler >= 0);
+  assert.ok(agentResultDeclaration > songRequestHandler);
+  assert.ok(agentResultDeclaration < serviceDirection);
   assert.ok(serviceDirection > songRequestHandler);
   assert.ok(agentAcknowledgement > serviceDirection);
   assert.ok(agentAcknowledgement < agentProgramQueue);
@@ -236,7 +239,7 @@ test("server executes explicit user direction with radio agent program window be
   assert.ok(agentAckSpeech > agentProgramQueue);
   assert.ok(agentAckSpeech < legacyBrainRequest);
   assert.ok(legacyBrainRequest > agentProgramQueue);
-  assert.match(source.slice(serviceDirection - 80, serviceDirection), /const\s+agentTextResult\s*=/);
+  assert.match(source.slice(agentResultDeclaration, serviceDirection), /const\s+agentTextResult\s*=/);
   assert.match(source.slice(serviceDirection, agentAcknowledgement), /currentTrack:\s*currentTrack\s*\?\s*trackInfo\(currentTrack\)\s*:\s*null/);
   assert.match(source.slice(serviceDirection, agentAcknowledgement), /readyQueue:\s*queue\.readyItems\(\)\.map\(\(readyItem\)\s*=>\s*trackInfo\(readyItem\.track\)\)/);
   assert.match(source.slice(agentProgramQueue, legacyBrainRequest), /agentTextResult\.programQueued/);
@@ -253,6 +256,7 @@ test("server executes explicit user direction with radio agent program window be
 test("server clears stale ready queue after explicit listener direction before planning replacement", () => {
   const source = fs.readFileSync("src/server.ts", "utf8");
   const songRequestHandler = source.indexOf('if (type === "song_request")');
+  const intentDecision = source.indexOf("requestIntent = intentRouter.classify(requestText)", songRequestHandler);
   const serviceDirection = source.indexOf("await radioAgentService.handleUserText", songRequestHandler);
   const clearDecision = source.indexOf("shouldClearQueue:", serviceDirection);
   const readyBeforeRequest = source.indexOf("const readyBeforeRequest = snapshotReadyItems(queue)", clearDecision);
@@ -260,14 +264,36 @@ test("server clears stale ready queue after explicit listener direction before p
   const legacyBrainRequest = source.indexOf("radioBrain.handleUserText", readyBeforeRequest);
 
   assert.ok(songRequestHandler >= 0);
+  assert.ok(intentDecision > songRequestHandler);
   assert.ok(serviceDirection > songRequestHandler);
   assert.ok(clearDecision > serviceDirection);
   assert.ok(readyBeforeRequest > clearDecision);
   assert.ok(agentProgramQueue > readyBeforeRequest);
   assert.ok(legacyBrainRequest > agentProgramQueue);
-  assert.match(source.slice(clearDecision, readyBeforeRequest), /intentRouter\.classify\(requestText\)/);
-  assert.match(source.slice(clearDecision, readyBeforeRequest), /intent\.shouldClearQueue\s*&&\s*!intent\.shouldExplain/);
+  assert.match(source.slice(clearDecision, readyBeforeRequest), /requestIntent\?\.shouldClearQueue\s*&&\s*!requestIntent\.shouldExplain/);
   assert.doesNotMatch(source.slice(serviceDirection, readyBeforeRequest), /agentTextResult\.shouldClearQueue\)\s*queue\.clearReady/);
+});
+
+test("server delegates explicit correction requests to the radio agent correction API", () => {
+  const source = fs.readFileSync("src/server.ts", "utf8");
+  const songRequestHandler = source.indexOf('if (type === "song_request")');
+  const intentDeclaration = source.indexOf("let requestIntent:", songRequestHandler);
+  const intentDecision = source.indexOf("requestIntent = intentRouter.classify(requestText)", intentDeclaration);
+  const correctionBranch = source.indexOf("requestIntent?.type === \"correction\"", intentDecision);
+  const serviceCorrection = source.indexOf("await radioAgentService.handleCorrection", correctionBranch);
+  const serviceDirection = source.indexOf("await radioAgentService.handleUserText", serviceCorrection);
+  const agentAcknowledgement = source.indexOf("const agentAckText = agentTextResult.hostText", serviceCorrection);
+
+  assert.ok(songRequestHandler >= 0);
+  assert.ok(intentDecision > songRequestHandler);
+  assert.ok(correctionBranch > intentDecision);
+  assert.ok(serviceCorrection > correctionBranch);
+  assert.ok(serviceDirection > serviceCorrection);
+  assert.ok(agentAcknowledgement > serviceDirection);
+  assert.match(source.slice(correctionBranch, serviceDirection), /requestIntent\?\.type\s*===\s*"negative_feedback"/);
+  assert.match(source.slice(serviceCorrection, serviceDirection), /currentTrack:\s*currentTrack\s*\?\s*trackInfo\(currentTrack\)\s*:\s*null/);
+  assert.match(source.slice(serviceCorrection, serviceDirection), /readyQueue:\s*queue\.readyItems\(\)\.map\(\(readyItem\)\s*=>\s*trackInfo\(readyItem\.track\)\)/);
+  assert.match(source.slice(serviceCorrection, serviceDirection), /\}\)\s*:\s*$/);
 });
 
 test("server injects radio agent runtime, executor, and host policy into RadioAgentService", () => {
