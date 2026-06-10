@@ -249,9 +249,11 @@ function selectionText(candidate: RadioAgentCandidateTask, window: RadioAgentPro
 
 function decisionReason(candidate: RadioAgentCandidateTask, window: RadioAgentProgramWindow): string {
   const reason = sanitizedListenerText(candidate.reason, 180);
+  const hostIntent = sanitizedListenerText(window.hostIntent.text, 180);
   const brief = sanitizedListenerText(window.stationBrief, 220);
   const mainDirection = sanitizedListenerText(window.mainDirection, 160);
-  const parts = dedupe([reason, brief, mainDirection].filter(Boolean));
+  const returnRequirement = sanitizedListenerText(window.returnRequirement, 160);
+  const parts = dedupe([reason, hostIntent, brief, mainDirection, returnRequirement].filter(Boolean));
   return parts.join(" ") || GENERIC_REASON;
 }
 

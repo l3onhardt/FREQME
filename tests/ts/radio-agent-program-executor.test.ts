@@ -137,6 +137,50 @@ test("program executor leaves segue text empty when host intent should not speak
   assert.equal(prepared?.decisionTrace.hostText, "");
 });
 
+test("program executor keeps silent host decisions explainable without speaking", async () => {
+  const verifier = {
+    verify: async (): Promise<SearchVerification> => ({
+      status: "verified",
+      selectedSong: { id: "s1", name: "Good Days", artist: "SZA" },
+      url: "/api/radio/audio/s1",
+      verification: { confidence: 0.8, versionNote: "matched" },
+      fallbackCandidates: [],
+      recoveryOptions: [],
+      usedQuery: "SZA Good Days",
+    }),
+  };
+  const executor = new RadioAgentProgramExecutor(verifier as any, () => "trace-silent-explain");
+
+  const prepared = await executor.prepareFirstPlayable(
+    programWindow({
+      stationBrief: "Listener has repeated library evidence for SZA.",
+      mainDirection: "Continue from SZA while respecting the current station contract.",
+      returnRequirement: "Stay inside late-night R&B.",
+      candidateTasks: [
+        {
+          query: "SZA Good Days",
+          reason: "model candidate trace verification selected this from JSON",
+          style: "R&B",
+          negativeConstraints: [],
+        },
+      ],
+      hostIntent: {
+        shouldSpeak: false,
+        event: "silent",
+        reason: "ordinary continuation",
+        text: "This keeps the late-night R&B lane moving without interrupting the run.",
+      },
+    }),
+  );
+
+  assert.equal(prepared?.segueText, "");
+  assert.equal(prepared?.decisionTrace.hostText, "");
+  assert.match(prepared?.decisionTrace.reason ?? "", /late-night R&B/i);
+  assert.match(prepared?.decisionTrace.reason ?? "", /without interrupting/i);
+  assert.notEqual(prepared?.decisionTrace.reason, "Selected for the current radio program.");
+  assert.doesNotMatch(prepared?.decisionTrace.reason ?? "", internalTerms);
+});
+
 test("program executor does not expose diagnostic fallback wording in listener-facing reasons", async () => {
   const verifier = {
     verify: async (): Promise<SearchVerification> => ({

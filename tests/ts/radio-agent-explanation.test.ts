@@ -108,3 +108,16 @@ test("agent-owned explanations keep natural music language that resembles intern
     assert.doesNotMatch(text, /Known taste anchor/i);
   }
 });
+
+test("agent-owned explanations can use silent transition reasons", () => {
+  const responder = new HostResponder();
+  const text = responder.explainCurrentTrack(explanationIntent, {
+    ...agentTrace,
+    reason: "This keeps the late-night R&B lane moving without interrupting the run.",
+    hostText: "",
+  });
+
+  assert.match(text, /late-night R&B/i);
+  assert.match(text, /without interrupting/i);
+  assert.doesNotMatch(text, /candidate|trace|verification|model|JSON|prompt|tool call/i);
+});
