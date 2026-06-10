@@ -113,3 +113,15 @@ test("server gives assisted radio agent first chance to continue an empty queue"
   assert.ok(fillQueueCall > queueLowEvent);
   assert.ok(legacyContinuation > fillQueueCall);
 });
+
+test("server waits for explicit user direction to refresh radio agent context before legacy request planning", () => {
+  const source = fs.readFileSync("src/server.ts", "utf8");
+  const songRequestHandler = source.indexOf('if (type === "song_request")');
+  const userTextEvent = source.indexOf('type: "user_text"', songRequestHandler);
+  const legacyBrainRequest = source.indexOf("radioBrain.handleUserText", userTextEvent);
+
+  assert.ok(songRequestHandler >= 0);
+  assert.ok(userTextEvent > songRequestHandler);
+  assert.ok(legacyBrainRequest > userTextEvent);
+  assert.match(source.slice(userTextEvent - 120, userTextEvent), /await\s+mirrorRadioAgentImmediate\(\{\s*$/);
+});

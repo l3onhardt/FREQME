@@ -349,7 +349,11 @@ async function handleHttpRequest(req: http.IncomingMessage, res: http.ServerResp
 }
 
 function mirrorRadioAgent(event: Record<string, unknown>): void {
-  void radioAgent.handle(event).catch((error) => {
+  void mirrorRadioAgentImmediate(event);
+}
+
+async function mirrorRadioAgentImmediate(event: Record<string, unknown>): Promise<void> {
+  await radioAgent.handle(event).catch((error) => {
     store.logPlaybackEvent("radio_agent_error", {
       uid: typeof event.uid === "string" ? event.uid : null,
       reason: error instanceof Error ? error.message : String(error),
@@ -1072,7 +1076,7 @@ async function handleRadioSocket(socket: WebSocketType): Promise<void> {
       if (type === "song_request") {
         const requestText = compactText(message.text || "", 120);
         if (!requestText) return;
-        mirrorRadioAgent({
+        await mirrorRadioAgentImmediate({
           type: "user_text",
           uid,
           sessionId,
