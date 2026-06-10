@@ -364,6 +364,66 @@ test("fallback planning honors structured session avoid evidence even without re
   assert.ok(window.candidateTasks.every((task) => task.negativeConstraints.some((item) => /Frank Ocean|SZA/i.test(item))));
 });
 
+test("fallback planning honors durable avoided artists from taste facts", async () => {
+  const director = new RadioAgentProgramDirector(null, () => NOW);
+
+  const window = await director.plan({
+    ...contextSnapshot(),
+    profile: [
+      "# User Profile",
+      "",
+      "## Stable Taste Facts",
+      "- artist:SZA: Listener has repeated library evidence for SZA. (confidence: 0.91, evidence: 5)",
+      "- avoid_artist:SZA: Listener repeatedly asked to avoid SZA; treat SZA as a conservative durable avoid unless the listener asks for it again. (confidence: 0.74, evidence: 2)",
+      "- artist:Daniel Caesar: Listener has repeated library evidence for Daniel Caesar. (confidence: 0.82, evidence: 3)",
+    ].join("\n"),
+    memoryFacts: [
+      {
+        uid: "42",
+        key: "artist:SZA",
+        kind: "taste_fact",
+        value: "Listener has repeated library evidence for SZA.",
+        confidence: 0.91,
+        evidenceCount: 5,
+        evidenceRefs: ["track:sza-1"],
+        updatedAt: NOW,
+      },
+      {
+        uid: "42",
+        key: "avoid_artist:SZA",
+        kind: "taste_fact",
+        value:
+          "Listener repeatedly asked to avoid SZA; treat SZA as a conservative durable avoid unless the listener asks for it again.",
+        confidence: 0.74,
+        evidenceCount: 2,
+        evidenceRefs: ["event:38", "event:41"],
+        updatedAt: NOW,
+      },
+      {
+        uid: "42",
+        key: "artist:Daniel Caesar",
+        kind: "taste_fact",
+        value: "Listener has repeated library evidence for Daniel Caesar.",
+        confidence: 0.82,
+        evidenceCount: 3,
+        evidenceRefs: ["track:daniel-1"],
+        updatedAt: NOW,
+      },
+    ],
+    memoryHypotheses: [],
+    sessionEvidence: [],
+    reflection: "",
+    currentTrack: { id: "sza-1", name: "Snooze", artist: "SZA" },
+    readyQueue: [{ id: "sza-2", name: "Broken Clocks", artist: "SZA" }],
+    contract: "# Program Contract\nstation_goal: mellow personal radio\navoid: high-energy EDM",
+  });
+
+  assert.ok(window.candidateTasks.length > 0);
+  assert.ok(window.candidateTasks.every((task) => !/SZA/i.test(task.query)));
+  assert.match(window.candidateTasks[0]?.query ?? "", /Daniel Caesar/i);
+  assert.ok(window.candidateTasks.every((task) => task.negativeConstraints.some((item) => /^SZA$/i.test(item))));
+});
+
 test("fallback planning avoids a skipped track from structured session evidence without blocking its artist", async () => {
   const director = new RadioAgentProgramDirector(null, () => NOW);
 

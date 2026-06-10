@@ -508,10 +508,21 @@ function extractDisallowed(contract: string): string[] {
 function fallbackNegativeConstraints(context: RadioAgentContextSnapshot): string[] {
   return uniqueStrings([
     ...extractDisallowed(context.contract),
+    ...durableAvoids(context.memoryFacts),
     ...reflectionTemporaryAvoids(context.reflection),
     ...reflectionSkippedAvoids(context.reflection),
     ...sessionEvidenceAvoids(context.sessionEvidence),
   ]);
+}
+
+function durableAvoids(memories: RadioAgentMemory[]): string[] {
+  return memories.map(durableAvoidAnchor).filter(Boolean);
+}
+
+function durableAvoidAnchor(memory: RadioAgentMemory | undefined): string {
+  if (!memory || memory.kind !== "taste_fact") return "";
+  if (memory.key.startsWith("avoid_artist:")) return memory.key.split(":").slice(1).join(":").trim();
+  return "";
 }
 
 function contractBlockedMoves(contract: string): string[] {
@@ -668,6 +679,7 @@ function isRnbText(text: string): boolean {
 
 function memoryAnchor(memory: RadioAgentMemory | undefined): string {
   if (!memory) return "";
+  if (/^avoid_/i.test(memory.key)) return "";
   const keyed = memory.key.includes(":") ? memory.key.split(":").slice(1).join(":") : memory.key;
   if (keyed.trim()) return keyed.trim();
   const artistMatch = memory.value.match(/\bfor\s+([A-Z][A-Za-z0-9 .+'&-]+)/);
