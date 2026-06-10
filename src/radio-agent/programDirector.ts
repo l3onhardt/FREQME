@@ -218,6 +218,7 @@ function isAllowedCandidateTask(task: RadioAgentCandidateTask): boolean {
 
 function taskFitsContract(context: RadioAgentContextSnapshot, task: RadioAgentCandidateTask): boolean {
   const goal = contractAnchor(context.contract);
+  if (taskMatchesContractMoves(task, [...contractBlockedMoves(context.contract), ...contractBridgeOnlyMoves(context.contract)])) return false;
   if (!isRnbContractGoal(goal)) return true;
 
   const taskText = [
@@ -527,8 +528,17 @@ function taskMatchesAvoids(task: RadioAgentCandidateTask, avoids: string[]): boo
   return queryMatchesAvoids([task.query, task.reason, task.style, ...(task.negativeConstraints || [])].join(" "), avoids);
 }
 
+function taskMatchesContractMoves(task: RadioAgentCandidateTask, moves: string[]): boolean {
+  return queryMatchesAvoids([task.query, task.reason, task.style].join(" "), moves);
+}
+
 function normalizeQueryForRepair(query: string): string {
-  return query.toLowerCase().replace(/[^a-z0-9&.+ ]/g, " ").replace(/\s+/g, " ").trim();
+  return query
+    .toLocaleLowerCase()
+    .normalize("NFKC")
+    .replace(/[^\p{L}\p{N}&.+ ]/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function parseJsonObject(raw: string): Record<string, unknown> {
@@ -609,6 +619,10 @@ function durableAvoidAnchor(memory: RadioAgentMemory | undefined): string {
 
 function contractBlockedMoves(contract: string): string[] {
   return reflectionSectionLines(contract, "Blocked Moves").filter(Boolean).slice(0, 12);
+}
+
+function contractBridgeOnlyMoves(contract: string): string[] {
+  return reflectionSectionLines(contract, "Bridge-Only Moves").filter(Boolean).slice(0, 12);
 }
 
 function sessionEvidenceAvoids(memories: RadioAgentMemory[]): string[] {
