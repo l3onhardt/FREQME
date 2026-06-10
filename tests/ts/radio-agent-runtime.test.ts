@@ -878,6 +878,75 @@ test("runtime plans an agent-owned program window on queue low", async () => {
   assert.equal(((receivedSnapshot?.recentEvents as RadioAgentEvent[] | undefined)?.[0]?.payload ?? {}).raw_json, undefined);
 });
 
+test("runtime plans an agent-owned program window immediately for explicit listener direction", async () => {
+  const store = runtimeStore();
+  let receivedSnapshot: Record<string, unknown> | null = null;
+  const runtime = new RadioAgentRuntime({
+    mode: "assisted",
+    store,
+    programDirector: {
+      plan: async (snapshot: Record<string, unknown>) => {
+        receivedSnapshot = snapshot;
+        return programWindow({
+          candidateTasks: [
+            {
+              query: "Daniel Caesar Japanese Denim",
+              reason: "Fits the explicit R&B lane.",
+              style: "R&B",
+              negativeConstraints: [],
+            },
+          ],
+          source: "model",
+        });
+      },
+    },
+    now: () => "2026-06-03T01:02:03.000Z",
+  });
+
+  const result = await runtime.handle({
+    type: "user_text",
+    uid: "42",
+    sessionId: 9,
+    text: "放点 rnb，不要电子，不要古典",
+    currentTrack: { id: "old-1", name: "Says", artist: "Nils Frahm" },
+    readyQueue: [{ id: "stale-1", name: "Says", artist: "Nils Frahm" }],
+  });
+
+  assert.equal(result.controlsPlayback, false);
+  assert.equal(result.programWindow?.candidateTasks[0]?.query, "Daniel Caesar Japanese Denim");
+  assert.equal(receivedSnapshot?.eventType, "user_text");
+  assert.match(String(receivedSnapshot?.contract), /R&B/i);
+  assert.match(String(receivedSnapshot?.session), /active_request: R&B/i);
+  assert.match(String(receivedSnapshot?.session), /generic electronic|classical chamber music/i);
+  assert.equal(store.decisions.some((decision) => decision.decisionType === "program_window"), true);
+});
+
+test("runtime does not plan a program window for explanation-only listener text", async () => {
+  const store = runtimeStore();
+  let planCalls = 0;
+  const runtime = new RadioAgentRuntime({
+    mode: "assisted",
+    store,
+    programDirector: {
+      plan: async () => {
+        planCalls += 1;
+        return programWindow();
+      },
+    },
+    now: () => "2026-06-03T01:02:03.000Z",
+  });
+
+  const result = await runtime.handle({
+    type: "user_text",
+    uid: "42",
+    sessionId: 9,
+    text: "为什么放这首？",
+  });
+
+  assert.equal(result.programWindow, undefined);
+  assert.equal(planCalls, 0);
+});
+
 test("runtime writes an agent journal after planning a program window", async () => {
   const store = runtimeStore({
     memories: (uid: string, kind: string, limit: number) =>

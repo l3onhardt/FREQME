@@ -1037,6 +1037,7 @@ function shouldRefreshProfileFromBehavior(event: RadioAgentEvent): boolean {
 }
 
 function shouldPlanProgramWindow(event: RadioAgentEvent): boolean {
+  if (event.type === "user_text") return shouldPlanFromUserText(stringValue(event.payload.text));
   if (event.type === "queue_low") return true;
   if (event.type === "program_repair_needed") return true;
   if (event.type !== "track_completed") return false;
@@ -1044,6 +1045,23 @@ function shouldPlanProgramWindow(event: RadioAgentEvent): boolean {
 
   const readyQueueCount = readyQueueCountFromPayload(event.payload);
   return readyQueueCount === 0;
+}
+
+function shouldPlanFromUserText(text: string): boolean {
+  if (!text) return false;
+  if (isExplanationQuestion(text)) return false;
+  if (isRnbRequest(text)) return true;
+  if (negativeArtistMovesFromText(text).length > 0) return true;
+  if (positiveArtistRequestFromText(text)) return true;
+  return looksLikeMusicDirection(text);
+}
+
+function isExplanationQuestion(text: string): boolean {
+  return /为什么|为啥|哪里适合|怎么理解|理由|原因|why\s+(?:this|that|the)\s+(?:song|track)|why\s+did\s+you\s+(?:play|choose)/iu.test(text);
+}
+
+function looksLikeMusicDirection(text: string): boolean {
+  return /(?:放点|播放|来点|想听|听点|听些|换成|换点|more\s+|play\s+|put on\s+|queue\s+|give me\s+).{1,80}|r\s*&?\s*b|rnb|jazz|hip[-\s]?hop|soul|pop|rock|ambient|classical|city\s*pop|shoegaze|edm|electronic|古典|爵士|电子|氛围|民谣|摇滚|流行|说唱|人声|律动/iu.test(text);
 }
 
 function readyQueueCountFromPayload(payload: Record<string, unknown>): number | null {
