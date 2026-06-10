@@ -3,6 +3,8 @@ import type { MemoryStore } from "../storage/memoryStore.js";
 import type { NeteaseService } from "../services/neteaseService.js";
 import type { ListeningIntent, SelectionReason, TasteProfile, Track, UserSettings } from "../types.js";
 import { normalizeMatchText } from "../utils/text.js";
+import type { BoundaryGuard } from "./boundaryGuard.js";
+import type { DecisionTrace, StationContract } from "./radioBrainTypes.js";
 
 const fallbackPlaylist: Track[] = [
   { id: "186016", name: "晴天", artist: "周杰伦", source: "fallback" },
@@ -31,6 +33,7 @@ export class StreamScheduler {
     private readonly netease: NeteaseService,
     private readonly store: MemoryStore,
     private readonly audioResolver: AudioResolver,
+    private readonly boundaryGuard?: Pick<BoundaryGuard, "evaluate">,
   ) {}
 
   newSessionState(): SchedulerSessionState {
@@ -52,6 +55,7 @@ export class StreamScheduler {
     userSettings: Partial<UserSettings>;
     sessionState: SchedulerSessionState;
     uid: string | null;
+    stationContract?: StationContract | null;
   }): Promise<Track | null> {
     const state = args.sessionState;
     const recent = new Set([...this.store.getRecentTrackIds(args.uid, 200), ...state.playedSongIds]);
@@ -59,31 +63,31 @@ export class StreamScheduler {
     const recentArtists = new Set([...state.artistNames.slice(-6), ...(args.profile?.recentTracks || []).slice(0, 10).map((track) => track.artist)]);
     const avoid = this.avoidMatchers(args.profile, args.userSettings, state);
 
-    const activePick = await this.pickFromActiveIntent(args, recent, recentArtists, avoid);
+    const activePick = await this.pickFromActiveIntent(args, recent, recentArtists, avoid, args.stationContract);
     if (activePick) return activePick;
 
     if ((!args.currentSongId || state.pickCount % 4 === 0) && args.profile?.anchorTracks.length) {
-      const anchor = this.chooseCandidate(args.profile.anchorTracks, recent, recentArtists, avoid, args.uid);
+      const anchor = this.chooseCandidate(args.profile.anchorTracks, recent, recentArtists, avoid, args.uid, args.stationContract, "profile_anchor", "familiar anchor");
       if (anchor) return this.select(anchor, state, "familiar_anchor", `${anchor.name} 是熟悉的锚点，先把电台拉回亲近的听感。`);
     }
 
     if (args.currentSongId) {
       const similar = await this.netease.similarSongs(args.currentSongId);
-      const picked = this.chooseCandidate(similar, recent, recentArtists, avoid, args.uid);
+      const picked = this.chooseCandidate(similar, recent, recentArtists, avoid, args.uid, args.stationContract, "scheduler", "similar song");
       if (picked) return this.select(picked, state, "discovery_similar", "顺着上一首的气质往外走一步。");
     }
 
     const daily = await this.netease.recommendSongs();
     this.shuffle(daily);
-    const dailyPick = this.chooseCandidate(daily, recent, recentArtists, avoid, args.uid);
+    const dailyPick = this.chooseCandidate(daily, recent, recentArtists, avoid, args.uid, args.stationContract, "scheduler", "daily recommendation");
     if (dailyPick) return this.select(dailyPick, state, "daily_personal", "来自今天的私人推荐，和此刻的听感比较贴近。");
 
     const fm = await this.netease.personalFm();
-    const fmPick = this.chooseCandidate(fm, recent, recentArtists, avoid, args.uid);
+    const fmPick = this.chooseCandidate(fm, recent, recentArtists, avoid, args.uid, args.stationContract, "scheduler", "personal FM");
     if (fmPick) return this.select(fmPick, state, "personal_fm", "来自私人 FM，像熟悉口味里的一个新转角。");
 
     if (!this.fallbackQueue.length) this.fallbackQueue = this.shuffle([...fallbackPlaylist]);
-    const fallback = this.chooseCandidate(this.fallbackQueue, recent, recentArtists, avoid, args.uid) || this.fallbackQueue[0];
+    const fallback = this.chooseCandidate(this.fallbackQueue, recent, recentArtists, avoid, args.uid, args.stationContract, "scheduler", "fallback playlist");
     if (fallback) {
       this.fallbackQueue = this.fallbackQueue.filter((track) => track.id !== fallback.id);
       return this.select(fallback, state, "fallback", "先用一首稳妥的歌把电台接住。");
@@ -110,6 +114,7 @@ export class StreamScheduler {
     recent: Set<string>,
     recentArtists: Set<string>,
     avoid: (track: Track) => boolean,
+    stationContract: StationContract | null | undefined = null,
   ): Promise<Track | null> {
     const intent = args.sessionState.activeIntent || args.userSettings.listeningIntent;
     if (!intent || intent.expiresAfterTracks <= 0) return null;
@@ -123,6 +128,9 @@ export class StreamScheduler {
       recentArtists,
       avoid,
       args.uid,
+      stationContract,
+      "scheduler",
+      intent.label,
     );
     if (profilePick) {
       intent.expiresAfterTracks -= 1;
@@ -134,7 +142,7 @@ export class StreamScheduler {
     ].find(Boolean);
     if (query) {
       const found = await this.netease.search(query, 8);
-      const searchPick = this.chooseCandidate(found, recent, recentArtists, avoid, args.uid);
+      const searchPick = this.chooseCandidate(found, recent, recentArtists, avoid, args.uid, stationContract, "scheduler", query);
       if (searchPick) {
         intent.expiresAfterTracks -= 1;
         return this.select(searchPick, args.sessionState, "active_mode_search", `继续沿着 ${intent.label} 找一首贴近的。`);
@@ -149,15 +157,36 @@ export class StreamScheduler {
     recentArtists: Set<string>,
     avoid: (track: Track) => boolean,
     uid: string | null,
+    stationContract: StationContract | null | undefined = null,
+    fallbackLevel: DecisionTrace["fallbackLevel"] = "scheduler",
+    query = "",
   ): Track | null {
     const good = tracks.filter((track) => {
       if (!track?.id || recentIds.has(track.id)) return false;
       if (avoid(track)) return false;
       if (this.store.wasTrackRecentlyFailed(track.id, uid)) return false;
+      if (this.violatesStationContract(track, stationContract, fallbackLevel, query)) return false;
       return true;
     });
     if (!good.length) return null;
     return good.find((track) => !track.artist || !recentArtists.has(track.artist)) || good[0] || null;
+  }
+
+  private violatesStationContract(
+    track: Track,
+    stationContract: StationContract | null | undefined,
+    fallbackLevel: DecisionTrace["fallbackLevel"],
+    query: string,
+  ): boolean {
+    if (!stationContract || !this.boundaryGuard) return false;
+    const decision = this.boundaryGuard.evaluate({
+      contract: stationContract,
+      query,
+      candidate: track,
+      fallbackLevel,
+      itemStyle: track.source || "",
+    });
+    return decision.status.startsWith("reject_");
   }
 
   private select(track: Track, state: SchedulerSessionState, reasonType: string, text: string): Track {

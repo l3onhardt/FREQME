@@ -37,6 +37,7 @@ import { ReflectionLoop } from "./radio/reflectionLoop.js";
 import { StationContractManager } from "./radio/stationContract.js";
 import { BoundaryGuard } from "./radio/boundaryGuard.js";
 import { HostNarrationLayer } from "./radio/hostNarrationLayer.js";
+import type { StationContract } from "./radio/radioBrainTypes.js";
 import { LibraryCensus } from "./radio-agent/libraryCensus.js";
 import { RadioAgentRuntime } from "./radio-agent/radioAgentRuntime.js";
 import { queueRadioAgentProgramWindow, tryQueueRadioAgentAssistedTrack } from "./radio-agent/assistedQueue.js";
@@ -114,7 +115,6 @@ const radioAgent = new RadioAgentRuntime({
   readiness: radioAgentReadinessFromConfig(),
 });
 const stationDirector = new AIStationDirector(llm, djRequestAgent, searchVerifyAgent, djMemory);
-const scheduler = new StreamScheduler(netease, store, audioResolver);
 const djEngine = new DJEngine(llm);
 const weatherService = new WeatherService();
 const intentRouter = new IntentRouter();
@@ -124,6 +124,7 @@ const episodePlanner = new EpisodePlanner(llm);
 const reflectionLoop = new ReflectionLoop();
 const stationContractManager = new StationContractManager();
 const boundaryGuard = new BoundaryGuard();
+const scheduler = new StreamScheduler(netease, store, audioResolver, boundaryGuard);
 const hostNarrationLayer = new HostNarrationLayer();
 const queueWarmer = new QueueWarmer(searchVerifyAgent, traceStore, boundaryGuard, hostNarrationLayer);
 const radioBrain = new RadioBrain({
@@ -455,6 +456,73 @@ function stationEnvironment(scene: string, settings: Partial<UserSettings>, weat
     weather,
     summary: [scene, settings.regionHint || "", settings.localTimeBlock || "", weatherText].filter(Boolean).join("，"),
   };
+}
+
+function schedulerStationContract(uid: string | null, sessionId: number | null): StationContract | null {
+  if (uid) {
+    const agentContract = stationContractFromAgentArtifact(uid);
+    if (agentContract) return agentContract;
+  }
+  const sessionContract = uid && sessionId ? store.getDjSessionMemory(uid, sessionId).stationContract : null;
+  if (isStationContract(sessionContract)) return sessionContract;
+  return null;
+}
+
+function stationContractFromAgentArtifact(uid: string): StationContract | null {
+  const content = radioAgentStore.artifact(uid, "program_contract.md")?.content || "";
+  const stationGoal = markdownField(content, "station_goal");
+  if (!stationGoal || !isRnbContractText(stationGoal)) return null;
+  const blocked = markdownSectionItems(content, "Blocked Moves");
+  return {
+    id: `radio-agent-artifact-${uid}`,
+    mainDirection: stationGoal,
+    rawUserText: stationGoal,
+    allowedAdjacent: markdownSectionItems(content, "Allowed Moves"),
+    softBridge: [],
+    disallowed: blocked.length ? blocked : ["classical", "electronic", "ambient", "piano"],
+    positiveSeeds: ["R&B"],
+    negativeConstraints: blocked.length ? blocked : ["classical", "electronic", "ambient", "piano"],
+    driftBudget: 1,
+    bridgeCount: 0,
+    mustReturnToContract: false,
+    hostStyle: "standard",
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+function isStationContract(value: unknown): value is StationContract {
+  return Boolean(
+    value &&
+      typeof value === "object" &&
+      "mainDirection" in value &&
+      typeof (value as { mainDirection?: unknown }).mainDirection === "string",
+  );
+}
+
+function markdownField(markdown: string, key: string): string {
+  const match = markdown.match(new RegExp(`^${key}\\s*:\\s*(.+)$`, "imu"));
+  return match?.[1]?.trim() || "";
+}
+
+function markdownSectionItems(markdown: string, heading: string): string[] {
+  const lines = markdown.split(/\r?\n/u);
+  const items: string[] = [];
+  let active = false;
+  for (const line of lines) {
+    if (/^##\s+/u.test(line)) {
+      active = line.replace(/^##\s+/u, "").trim().toLowerCase() === heading.toLowerCase();
+      continue;
+    }
+    if (!active) continue;
+    const item = line.replace(/^\s*-\s*/u, "").trim();
+    if (item && item.toLowerCase() !== "none") items.push(item);
+  }
+  return items.slice(0, 12);
+}
+
+function isRnbContractText(text: string): boolean {
+  return /\br\s*&?\s*b\b|\brnb\b/i.test(text);
 }
 
 async function pickBridgeTrack(uid: string | null, profile: TasteProfile | null): Promise<BridgePick | null> {
@@ -809,6 +877,7 @@ async function handleRadioSocket(socket: WebSocketType): Promise<void> {
         userSettings: settings,
         sessionState: schedulerState,
         uid,
+        stationContract: schedulerStationContract(uid, sessionId),
       });
       if (!track) break;
       const prepared = await scheduler.prepareTrack(track, uid);

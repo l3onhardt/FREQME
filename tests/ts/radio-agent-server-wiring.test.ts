@@ -31,6 +31,20 @@ test("server wires assisted radio agent planning before legacy station director 
   assert.match(source, /readyQueue:\s*queue\.readyItems\(\)\.map\(\(item\)\s*=>\s*\(\{[\s\S]*selectionReason:\s*item\.selectionReason/);
 });
 
+test("server passes the active station contract into degraded scheduler fallback", () => {
+  const source = fs.readFileSync("src/server.ts", "utf8");
+  const schedulerConstruction = source.indexOf("new StreamScheduler(netease, store, audioResolver, boundaryGuard)");
+  const degradedFallback = source.indexOf('store.logPlaybackEvent("ai_station_degraded_fallback"');
+  const schedulerPick = source.indexOf("scheduler.pickNext", degradedFallback);
+
+  assert.ok(schedulerConstruction >= 0);
+  assert.ok(degradedFallback >= 0);
+  assert.ok(schedulerPick > degradedFallback);
+  assert.match(source.slice(schedulerPick, schedulerPick + 450), /stationContract:\s*schedulerStationContract\(uid,\s*sessionId\)/);
+  assert.match(source, /function schedulerStationContract\(uid:\s*string\s*\|\s*null,\s*sessionId:\s*number\s*\|\s*null\):\s*StationContract\s*\|\s*null/);
+  assert.match(source, /radioAgentStore\.artifact\(uid,\s*"program_contract\.md"\)/);
+});
+
 test("server keeps assisted fallback logging best effort", () => {
   const source = fs.readFileSync("src/server.ts", "utf8");
   const assistedQueueSource = fs.readFileSync("src/radio-agent/assistedQueue.ts", "utf8");
