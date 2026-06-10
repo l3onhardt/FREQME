@@ -72,44 +72,73 @@ export async function tryQueueRadioAgentAssistedTrack(args: RadioAgentAssistedQu
       return false;
     }
 
-    let prepared: RadioAgentPreparedTrack | null = null;
-    try {
-      prepared = await args.executor.prepareFirstPlayable(result.programWindow);
-    } catch {
-      await reportRepairNeeded(args, result.programWindow, "assisted_queue_failed", attemptedQueriesFromExecutor(args, result.programWindow));
-      logFallback(args, "assisted_queue_failed");
-      return false;
-    }
-    if (!prepared) {
-      await reportRepairNeeded(args, result.programWindow, "program_executor_no_track", attemptedQueriesFromExecutor(args, result.programWindow));
-      logFallback(args, "program_executor_no_track");
-      return false;
+    const firstAttempt = await prepareAndQueueProgramWindow(args, result.programWindow);
+    if (firstAttempt.status === "queued") return true;
+
+    const repair = await reportRepairNeeded(args, result.programWindow, firstAttempt.reason, firstAttempt.attemptedQueries);
+    if (firstAttempt.reason === "program_executor_no_track" && repair?.programWindow) {
+      const repairedAttempt = await prepareAndQueueProgramWindow(args, repair.programWindow);
+      if (repairedAttempt.status === "queued") return true;
     }
 
-    try {
-      await args.traceStore.save(prepared.decisionTrace);
-    } catch {
-      await reportRepairNeeded(args, result.programWindow, "trace_save_failed", prepared.decisionTrace.verificationAttempts);
-      logFallback(args, "trace_save_failed");
-      return false;
-    }
-
-    const ttsHash = prepared.segueText ? await args.synthesize(prepared.segueText).catch(() => "") : "";
-    try {
-      args.queue.addReady(prepared.track, prepared.url, prepared.selectionReason, {
-        segueText: prepared.segueText,
-        ttsHash,
-      });
-    } catch {
-      await reportRepairNeeded(args, result.programWindow, "assisted_queue_failed", prepared.decisionTrace.verificationAttempts);
-      logFallback(args, "assisted_queue_failed");
-      return false;
-    }
-    return true;
+    logFallback(args, firstAttempt.reason);
+    return false;
   } catch {
     logFallback(args, "assisted_queue_failed");
     return false;
   }
+}
+
+type ProgramQueueAttemptResult =
+  | { status: "queued" }
+  | { status: "failed"; reason: Exclude<RadioAgentAssistedFallbackReason, "program_window_missing">; attemptedQueries: string[] };
+
+async function prepareAndQueueProgramWindow(
+  args: RadioAgentAssistedQueueDeps,
+  programWindow: RadioAgentProgramWindow,
+): Promise<ProgramQueueAttemptResult> {
+  let prepared: RadioAgentPreparedTrack | null = null;
+  try {
+    prepared = await args.executor.prepareFirstPlayable(programWindow);
+  } catch {
+    return {
+      status: "failed",
+      reason: "assisted_queue_failed",
+      attemptedQueries: attemptedQueriesFromExecutor(args, programWindow),
+    };
+  }
+  if (!prepared) {
+    return {
+      status: "failed",
+      reason: "program_executor_no_track",
+      attemptedQueries: attemptedQueriesFromExecutor(args, programWindow),
+    };
+  }
+
+  try {
+    await args.traceStore.save(prepared.decisionTrace);
+  } catch {
+    return {
+      status: "failed",
+      reason: "trace_save_failed",
+      attemptedQueries: prepared.decisionTrace.verificationAttempts,
+    };
+  }
+
+  const ttsHash = prepared.segueText ? await args.synthesize(prepared.segueText).catch(() => "") : "";
+  try {
+    args.queue.addReady(prepared.track, prepared.url, prepared.selectionReason, {
+      segueText: prepared.segueText,
+      ttsHash,
+    });
+  } catch {
+    return {
+      status: "failed",
+      reason: "assisted_queue_failed",
+      attemptedQueries: prepared.decisionTrace.verificationAttempts,
+    };
+  }
+  return { status: "queued" };
 }
 
 function logFallback(args: RadioAgentAssistedQueueDeps, reason: RadioAgentAssistedFallbackReason): void {
@@ -124,9 +153,9 @@ async function reportRepairNeeded(
   programWindow: RadioAgentProgramWindow,
   reason: RadioAgentAssistedFallbackReason,
   attemptedQueries = programWindow.candidateTasks.map((task) => task.query).filter(Boolean),
-): Promise<void> {
+): Promise<RadioAgentHandleResult | null> {
   try {
-    await args.radioAgent.handle({
+    return await args.radioAgent.handle({
       type: "program_repair_needed",
       uid: args.uid,
       sessionId: args.sessionId,
@@ -137,6 +166,7 @@ async function reportRepairNeeded(
       readyQueue: args.readyQueue,
     });
   } catch {
+    return null;
   }
 }
 

@@ -1155,6 +1155,55 @@ test("runtime records executor failure feedback as an agent repair", async () =>
   assert.match(repair?.sourceVersion ?? "", /agent-repair\/v1/);
 });
 
+test("runtime replans immediately after program execution repair", async () => {
+  const store = runtimeStore();
+  const snapshots: Array<{ eventType?: string; repair?: string }> = [];
+  const runtime = new RadioAgentRuntime({
+    mode: "assisted",
+    store,
+    programDirector: {
+      plan: async (snapshot: { eventType?: string; repair?: string }) => {
+        snapshots.push(snapshot);
+        return programWindow({
+          id: "window-repaired",
+          stationBrief: "late-night R&B recovery",
+          mainDirection: "Return to late-night R&B.",
+          candidateTasks: [
+            {
+              query: "Daniel Caesar Get You",
+              reason: "Concrete R&B recovery after the failed query.",
+              style: "R&B",
+              negativeConstraints: [],
+            },
+          ],
+        });
+      },
+    },
+    now: () => "2026-06-03T01:02:03.000Z",
+  });
+
+  const result = await runtime.handle({
+    type: "program_repair_needed",
+    uid: "42",
+    sessionId: 9,
+    reason: "program_executor_no_track",
+    attemptedQueries: ["SZA Good Days"],
+    programWindow: programWindow({
+      id: "window-1",
+      stationBrief: "late-night R&B",
+      mainDirection: "Keep late-night R&B coherent.",
+      candidateTasks: [
+        { query: "SZA Good Days", reason: "Known anchor.", style: "R&B", negativeConstraints: [] },
+      ],
+    }),
+  });
+
+  assert.equal(result.programWindow?.id, "window-repaired");
+  assert.equal(snapshots[0]?.eventType, "program_repair_needed");
+  assert.match(snapshots[0]?.repair ?? "", /SZA Good Days/);
+  assert.match(snapshots[0]?.repair ?? "", /program_executor_no_track/);
+});
+
 test("runtime records playback recovery failure as agent repair evidence", async () => {
   const store = runtimeStore();
   const runtime = new RadioAgentRuntime({

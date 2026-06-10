@@ -191,6 +191,51 @@ test("assisted queue reports actual verifier attempts when no playable track ver
   assert.deepEqual(reported[1]?.attemptedQueries, ["SZA Good Days live", "SZA Good Days acoustic", "SZA Good Days"]);
 });
 
+test("assisted queue retries once with agent repair before falling back", async () => {
+  const reported: Record<string, unknown>[] = [];
+  const { deps, calls, fallbackReasons } = assistedDeps({
+    radioAgent: {
+      handle: async (input: Record<string, unknown>) => {
+        reported.push(input);
+        return {
+          controlsPlayback: false,
+          event: { uid: "42", sessionId: 9, type: input.type as "queue_low", priority: "warm", payload: {}, createdAt: "" },
+          programWindow: {
+            ...window,
+            id: input.type === "program_repair_needed" ? "window-repaired" : "window-1",
+            candidateTasks:
+              input.type === "program_repair_needed"
+                ? [{ query: "Daniel Caesar Get You", reason: "Repaired concrete R&B candidate.", style: "R&B", negativeConstraints: [] }]
+                : window.candidateTasks,
+          },
+        };
+      },
+    },
+    executor: {
+      prepareFirstPlayable: async (programWindow: RadioAgentProgramWindow) => {
+        calls.push(`executor:${programWindow.id}`);
+        if (programWindow.id === "window-1") return null;
+        return {
+          ...preparedTrack(),
+          track: { id: "s2", name: "Get You", artist: "Daniel Caesar" },
+          url: "/audio/s2",
+          selectionReason: { type: "radio_agent_program", text: "Repaired concrete R&B candidate.", traceId: "trace-2" },
+        };
+      },
+      latestAttemptedQueries: () => ["SZA Good Days"],
+    },
+  });
+
+  const queued = await tryQueueRadioAgentAssistedTrack(deps as any);
+
+  assert.equal(queued, true);
+  assert.equal(reported[0]?.type, "queue_low");
+  assert.equal(reported[1]?.type, "program_repair_needed");
+  assert.deepEqual(reported[1]?.attemptedQueries, ["SZA Good Days"]);
+  assert.deepEqual(calls, ["executor:window-1", "executor:window-repaired", "trace", "tts", "queue:tts-hash"]);
+  assert.deepEqual(fallbackReasons, []);
+});
+
 test("assisted queue logs and falls back before queueing when trace save fails", async () => {
   const reported: Record<string, unknown>[] = [];
   const { deps, calls, fallbackReasons } = assistedDeps({
