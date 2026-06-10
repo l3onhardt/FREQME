@@ -40,6 +40,9 @@ export class RadioAgentService {
       avoidArtists: args.avoidArtists,
     });
     const opening = pick ? await this.deps.prepareTrack(pick.track, args, pick) : null;
+    if (pick && !opening) {
+      args.avoidTrackIds.add(pick.track.id);
+    }
     const backgroundStarted = this.startBackgroundPlanning(args, opening);
 
     if (opening) {

@@ -12,20 +12,29 @@ test("server wires long-term radio agent from configured mode", () => {
   assert.match(source, /\/api\/radio\/agent\/status/);
 });
 
-test("server gives radio agent opening selector the first playback attempt with durable avoids", () => {
+test("server delegates the first playback attempt to RadioAgentService with durable avoids", () => {
   const source = fs.readFileSync("src/server.ts", "utf8");
   const handshake = source.indexOf('if (type === "handshake")');
   const startSession = source.indexOf("await radioBrain.startSession", handshake);
   const openingAttempt = source.indexOf("tryQueueRadioAgentOpeningTrack", handshake);
+  const openingHelper = source.indexOf("const tryQueueRadioAgentOpeningTrack =");
+  const serviceConstruction = source.indexOf("new RadioAgentService", openingHelper - 2500);
   const firstPromote = source.indexOf("const item = queue.promoteNext()", handshake);
 
-  assert.match(source, /chooseOpeningTrack/);
+  assert.match(source, /RadioAgentService/);
+  assert.doesNotMatch(source, /import\s*\{\s*chooseOpeningTrack/);
+  assert.doesNotMatch(source, /chooseOpeningTrack\(\{/);
   assert.match(source, /durableAvoidedArtists\(uid\)/);
   assert.ok(handshake >= 0);
   assert.ok(openingAttempt > handshake);
   assert.ok(startSession > openingAttempt);
   assert.ok(firstPromote > startSession);
+  assert.ok(openingHelper >= 0);
+  assert.ok(serviceConstruction >= 0);
+  assert.ok(serviceConstruction < openingHelper);
   assert.match(source.slice(openingAttempt, startSession), /avoidArtists:\s*durableAvoidedArtists\(uid\)/);
+  assert.match(source.slice(serviceConstruction, openingHelper), /new RadioAgentService/);
+  assert.match(source.slice(openingHelper, openingAttempt), /radioAgentService\.startSession/);
   assert.match(source, /likedOpeningTracks/);
   assert.match(source.slice(openingAttempt, startSession), /likedTracks:\s*likedOpeningTracks\(\{\s*uid,\s*profile,\s*libraryTracks:\s*uid\s*\?\s*radioAgentStore\.libraryTracks\(uid,\s*5000\)\s*:\s*\[\],\s*\}\)/);
   assert.doesNotMatch(source.slice(openingAttempt, startSession), /likedTracks:\s*\[\]/);

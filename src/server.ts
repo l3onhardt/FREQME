@@ -42,10 +42,11 @@ import { LibraryCensus } from "./radio-agent/libraryCensus.js";
 import { RadioAgentRuntime } from "./radio-agent/radioAgentRuntime.js";
 import { queueRadioAgentProgramWindow, tryQueueRadioAgentAssistedTrack } from "./radio-agent/assistedQueue.js";
 import { hostTextForRadioAgentDelivery } from "./radio-agent/hostDelivery.js";
-import { chooseOpeningTrack, likedOpeningTracks } from "./radio-agent/openingTrack.js";
+import { likedOpeningTracks } from "./radio-agent/openingTrack.js";
 import { RadioAgentProgramDirector } from "./radio-agent/programDirector.js";
 import { RadioAgentProgramExecutor } from "./radio-agent/programExecutor.js";
-import type { RadioAgentCapabilityState, RadioAgentHandleResult } from "./radio-agent/types.js";
+import { RadioAgentService, type RadioAgentSessionStartArgs } from "./radio-agent/radioAgentService.js";
+import type { RadioAgentCapabilityState, RadioAgentHandleResult, RadioAgentPreparedTrack } from "./radio-agent/types.js";
 import {
   CONTINUATION_BRAIN_READY_TIMEOUT_MS,
   USER_REQUEST_BRAIN_READY_TIMEOUT_MS,
@@ -840,10 +841,56 @@ async function handleRadioSocket(socket: WebSocketType): Promise<void> {
       programWindow,
     );
 
+  const radioAgentService = new RadioAgentService({
+    prepareTrack: async (track, startArgs, pick) => preparedOpeningFromScheduler(track, startArgs, pick),
+  });
+
+  const preparedOpeningFromScheduler = async (
+    track: Track,
+    startArgs: RadioAgentSessionStartArgs,
+    pick: { reason: { type: string } },
+  ): Promise<RadioAgentPreparedTrack | null> => {
+    const prepared = await scheduler.prepareTrack(track, startArgs.uid).catch(() => null);
+    if (!prepared) return null;
+    const selectionReason = {
+      type: pick.reason.type,
+      text: "Agent opening: start from a verified familiar track while the long-term radio profile warms in the background.",
+    };
+    return {
+      track: prepared.track,
+      url: prepared.url,
+      selectionReason,
+      segueText: "",
+      decisionTrace: {
+        id: `radio-agent-opening-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        uid: startArgs.uid,
+        sessionId: startArgs.sessionId,
+        episodeId: "opening",
+        intentType: "autoplay",
+        profileQuality: {
+          level: "usable",
+          score: 0.7,
+          reasons: ["opening evidence"],
+        },
+        environment,
+        selectedTrack: prepared.track,
+        reason: selectionReason.text,
+        rejectedCandidates: [],
+        verificationAttempts: [track.name, track.artist].filter(Boolean),
+        fallbackLevel: "recent_verified",
+        latencyMs: { radioAgentOpening: 0 },
+        hostText: "",
+        createdAt: new Date().toISOString(),
+      },
+    };
+  };
+
   const tryQueueRadioAgentOpeningTrack = async (args: { likedTracks: Track[]; avoidArtists: Set<string> }): Promise<boolean> => {
     const avoidTrackIds = new Set(profile?.learned.skippedTrackIds || []);
     for (let attempt = 0; attempt < 8; attempt += 1) {
-      const pick = chooseOpeningTrack({
+      const result = await radioAgentService.startSession({
+        uid,
+        sessionId,
         recentPlayableTracks: store.getRecentPlayableTracks(uid, 20),
         profileAnchorTracks: profile?.anchorTracks || [],
         likedTracks: args.likedTracks,
@@ -851,14 +898,11 @@ async function handleRadioSocket(socket: WebSocketType): Promise<void> {
         avoidTrackIds,
         avoidArtists: args.avoidArtists,
       });
-      if (!pick) return false;
-      avoidTrackIds.add(pick.track.id);
-      const prepared = await scheduler.prepareTrack(pick.track, uid).catch(() => null);
-      if (!prepared) continue;
-      queue.addReady(prepared.track, prepared.url, {
-        type: pick.reason.type,
-        text: "Agent opening: start from a verified familiar track while the long-term radio profile warms in the background.",
-      });
+      if (!result.opening) {
+        if (result.fallbackReason === "opening_track_prepare_failed") continue;
+        return false;
+      }
+      queue.addReady(result.opening.track, result.opening.url, result.opening.selectionReason);
       return true;
     }
     return false;

@@ -52,6 +52,48 @@ test("service starts a session with an opening track before background planning"
   releaseBackgroundPlanning?.();
 });
 
+test("service marks an unprepared opening candidate so the next attempt can advance", async () => {
+  const attempts: string[] = [];
+  const failedTrack: Track = { id: "bad-url", name: "Bad URL", artist: "A" };
+  const nextTrack: Track = { id: "good-url", name: "Good URL", artist: "B" };
+  const avoidTrackIds = new Set<string>();
+  const service = new RadioAgentService({
+    chooseOpeningTrack: ({ avoidTrackIds }) => {
+      const track = avoidTrackIds.has(failedTrack.id) ? nextTrack : failedTrack;
+      attempts.push(track.id);
+      return {
+        track,
+        reason: { type: "radio_agent_opening_recent", sourceRank: 1 },
+      } satisfies OpeningTrackPick;
+    },
+    prepareTrack: async (track) => (track.id === failedTrack.id ? null : prepared(track)),
+  });
+
+  const first = await service.startSession({
+    uid: "42",
+    sessionId: 7,
+    recentPlayableTracks: [failedTrack, nextTrack],
+    profileAnchorTracks: [],
+    likedTracks: [],
+    fallbackTracks: [],
+    avoidTrackIds,
+  });
+  const second = await service.startSession({
+    uid: "42",
+    sessionId: 7,
+    recentPlayableTracks: [failedTrack, nextTrack],
+    profileAnchorTracks: [],
+    likedTracks: [],
+    fallbackTracks: [],
+    avoidTrackIds,
+  });
+
+  assert.equal(first.opening, undefined);
+  assert.equal(first.fallbackReason, "opening_track_prepare_failed");
+  assert.equal(second.opening?.track.id, "good-url");
+  assert.deepEqual(attempts, ["bad-url", "good-url"]);
+});
+
 function prepared(track: Track): RadioAgentPreparedTrack {
   return {
     track,
