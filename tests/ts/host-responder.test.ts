@@ -117,6 +117,20 @@ test("uses host text when reason is only whitespace", () => {
   assert.doesNotMatch(text, /是因为\s*$/);
 });
 
+test("does not read internal trace reasons as a DJ explanation", () => {
+  const responder = new HostResponder();
+  const text = responder.explainCurrentTrack(explanationIntent, {
+    ...trace,
+    reason: "Chosen from listener profile because it matches the program contract and fallback policy.",
+    hostText: "Keeping the listener profile aligned with the program contract.",
+  });
+
+  assert.match(text, /Says/);
+  assert.match(text, /Nils Frahm/);
+  assert.match(text, /接|方向|顺|贴合|合适/);
+  assert.doesNotMatch(text, /profile|contract|candidate|verification|fallback|model|trace|program|listener/i);
+});
+
 test("uses generic explanation fallback when reason and host text are empty", () => {
   const responder = new HostResponder();
   const text = responder.explainCurrentTrack(explanationIntent, {
