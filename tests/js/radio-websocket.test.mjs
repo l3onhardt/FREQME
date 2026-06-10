@@ -1078,6 +1078,11 @@ test('radio agent status is shown as safe listener-facing context', async () => 
           ok: true,
           json: async () => ({
             explainability: {
+              contract: {
+                stationGoal: 'Keep the current radio session centered on R&B until the listener asks to move elsewhere.',
+                allowedMoves: ['Prefer verified R&B, alt-R&B, neo-soul, and soft vocal tracks.'],
+                blockedMoves: ['Do not fall back to EDM, classical, ambient piano, or old profile anchors.'],
+              },
               journal: {
                 observation: 'Queue is low after the listener asked for R&B.',
                 interpretation: 'prompt JSON trace should never be shown.',
@@ -1105,9 +1110,10 @@ test('radio agent status is shown as safe listener-facing context', async () => 
   await flushAsyncWork();
 
   assert.equal(elements.get('agent-status-panel').hidden, false);
-  assert.match(elements.get('agent-status-observation').textContent, /Queue is low/);
+  assert.match(elements.get('agent-status-observation').textContent, /R&B/);
+  assert.match(elements.get('agent-status-observation').textContent, /neo-soul/);
   assert.match(elements.get('agent-status-action').textContent, /Nick Drake/);
-  assert.match(elements.get('agent-status-repair').textContent, /guardrails/);
+  assert.match(elements.get('agent-status-repair').textContent, /EDM|guardrails/);
   const visibleStatus = [
     elements.get('agent-status-observation').textContent,
     elements.get('agent-status-action').textContent,

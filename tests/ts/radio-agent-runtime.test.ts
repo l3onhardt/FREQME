@@ -917,6 +917,23 @@ test("runtime status exposes safe agent journal and repair summaries", () => {
   const store = runtimeStore();
   store.saveArtifact(
     "42",
+    "program_contract.md",
+    [
+      "# Program Contract",
+      "",
+      "station_goal: Keep the current radio session centered on R&B until the listener asks to move elsewhere.",
+      "",
+      "## Allowed Moves",
+      "- Prefer verified R&B, alt-R&B, neo-soul, and soft vocal tracks.",
+      "",
+      "## Blocked Moves",
+      "- Do not fall back to EDM, classical, ambient piano, or old profile anchors unless they clearly support the R&B request.",
+      "- do not expose prompt or JSON trace",
+    ].join("\n"),
+    "program-contract/v1",
+  );
+  store.saveArtifact(
+    "42",
     "agent_journal.md",
     [
       "# Agent Journal",
@@ -980,6 +997,9 @@ test("runtime status exposes safe agent journal and repair summaries", () => {
   assert.match(status.explainability?.journal?.action ?? "", /Nick Drake Pink Moon/);
   assert.match(status.explainability?.repair?.issue ?? "", /guardrails/);
   assert.match(status.explainability?.repair?.nextAttempt ?? "", /Nick Drake Pink Moon/);
+  assert.match(status.explainability?.contract?.stationGoal ?? "", /R&B/);
+  assert.match(status.explainability?.contract?.allowedMoves?.[0] ?? "", /neo-soul/);
+  assert.match(status.explainability?.contract?.blockedMoves?.[0] ?? "", /EDM/);
   assert.doesNotMatch(JSON.stringify(status.explainability), /prompt|JSON trace/i);
 });
 

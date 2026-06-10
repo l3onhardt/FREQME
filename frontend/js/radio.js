@@ -622,6 +622,26 @@ function renderAgentStatus(status) {
   if (!agentStatusPanel) return;
   const readiness = status?.readiness || {};
   const explainability = status?.explainability || {};
+  const contract = explainability?.contract || {};
+  const contractLine = [
+    contract.stationGoal,
+    Array.isArray(contract.allowedMoves) ? contract.allowedMoves[0] : '',
+  ].filter(Boolean).join(' ');
+  if (contractLine) {
+    const repair = explainability?.repair || {};
+    const guardrailLine = [
+      Array.isArray(contract.blockedMoves) ? contract.blockedMoves[0] : '',
+      repair.nextAttempt || repair.correction || repair.issue,
+    ].filter(Boolean).join(' ');
+    const journal = explainability?.journal || {};
+    const shown = [
+      setAgentStatusLine(agentStatusObservation, '主线：', contractLine),
+      setAgentStatusLine(agentStatusAction, '下一步：', journal.action || journal.nextCheck),
+      setAgentStatusLine(agentStatusRepair, '边界：', guardrailLine),
+    ];
+    agentStatusPanel.hidden = !shown.some(Boolean);
+    return;
+  }
   const journal = explainability?.journal || {};
   const repair = explainability?.repair || {};
   const shown = [

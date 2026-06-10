@@ -148,6 +148,7 @@ export class RadioAgentRuntime {
         }
       }
       explainability = agentExplainabilityStatus(
+        this.deps.store.artifact(uid, "program_contract.md")?.content,
         this.deps.store.artifact(uid, "agent_journal.md")?.content,
         this.deps.store.artifact(uid, "agent_repair.md")?.content,
       );
@@ -853,9 +854,17 @@ function executionRepairGuardrails(programWindow: unknown): string[] {
 }
 
 function agentExplainabilityStatus(
+  contractMarkdown: string | undefined,
   journalMarkdown: string | undefined,
   repairMarkdown: string | undefined,
 ): RadioAgentStatus["explainability"] | undefined {
+  const contract = contractMarkdown
+    ? {
+        stationGoal: markdownFieldLine(contractMarkdown, "station_goal"),
+        allowedMoves: markdownSectionItemsSafe(contractMarkdown, "Allowed Moves", 2),
+        blockedMoves: markdownSectionItemsSafe(contractMarkdown, "Blocked Moves", 2),
+      }
+    : undefined;
   const journal = journalMarkdown
     ? {
         observation: markdownSectionFirstItem(journalMarkdown, "Observation"),
@@ -872,11 +881,35 @@ function agentExplainabilityStatus(
       }
     : undefined;
 
-  if (!journal && !repair) return undefined;
+  if (!contract && !journal && !repair) return undefined;
   return {
+    ...(contract && (contract.stationGoal || contract.allowedMoves.length || contract.blockedMoves.length) ? { contract } : {}),
     ...(journal && Object.values(journal).some(Boolean) ? { journal } : {}),
     ...(repair && Object.values(repair).some(Boolean) ? { repair } : {}),
   };
+}
+
+function markdownFieldLine(markdown: string, field: string): string {
+  const escapedField = field.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = markdown.match(new RegExp(`^${escapedField}:\\s*(.+)$`, "im"));
+  return safeExplainabilityLine(match?.[1] || "");
+}
+
+function markdownSectionItemsSafe(markdown: string, heading: string, limit: number): string[] {
+  const lines = markdown.split(/\r?\n/u);
+  const items: string[] = [];
+  let inSection = false;
+  for (const line of lines) {
+    if (/^##\s+/u.test(line)) {
+      inSection = line.replace(/^##\s+/u, "").trim().toLowerCase() === heading.toLowerCase();
+      continue;
+    }
+    if (!inSection) continue;
+    const item = safeExplainabilityLine(line.replace(/^\s*-\s*/u, ""));
+    if (item && item.toLowerCase() !== "none") items.push(item);
+    if (items.length >= limit) break;
+  }
+  return items;
 }
 
 function markdownSectionFirstItem(markdown: string, heading: string): string {

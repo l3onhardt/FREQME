@@ -165,6 +165,11 @@ export interface RadioAgentStatus {
   recentDecisions: RadioShadowDecision[];
   artifacts: Record<string, { updatedAt: string; sourceVersion: string }>;
   explainability?: {
+    contract?: {
+      stationGoal: string;
+      allowedMoves: string[];
+      blockedMoves: string[];
+    };
     journal?: {
       observation: string;
       interpretation: string;
