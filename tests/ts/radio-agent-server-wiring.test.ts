@@ -12,6 +12,25 @@ test("server wires long-term radio agent from configured mode", () => {
   assert.match(source, /\/api\/radio\/agent\/status/);
 });
 
+test("server gives radio agent opening selector the first playback attempt with durable avoids", () => {
+  const source = fs.readFileSync("src/server.ts", "utf8");
+  const handshake = source.indexOf('if (type === "handshake")');
+  const startSession = source.indexOf("await radioBrain.startSession", handshake);
+  const openingAttempt = source.indexOf("tryQueueRadioAgentOpeningTrack", handshake);
+  const firstPromote = source.indexOf("const item = queue.promoteNext()", handshake);
+
+  assert.match(source, /chooseOpeningTrack/);
+  assert.match(source, /durableAvoidedArtists\(uid\)/);
+  assert.ok(handshake >= 0);
+  assert.ok(openingAttempt > handshake);
+  assert.ok(startSession > openingAttempt);
+  assert.ok(firstPromote > startSession);
+  assert.match(source.slice(openingAttempt, startSession), /avoidArtists:\s*durableAvoidedArtists\(uid\)/);
+  assert.match(source, /likedOpeningTracks/);
+  assert.match(source.slice(openingAttempt, startSession), /likedTracks:\s*likedOpeningTracks\(\{\s*uid,\s*profile,\s*libraryTracks:\s*uid\s*\?\s*radioAgentStore\.libraryTracks\(uid,\s*5000\)\s*:\s*\[\],\s*\}\)/);
+  assert.doesNotMatch(source.slice(openingAttempt, startSession), /likedTracks:\s*\[\]/);
+});
+
 test("server wires assisted radio agent planning before legacy station director fallback", () => {
   const source = fs.readFileSync("src/server.ts", "utf8");
 
@@ -153,6 +172,22 @@ test("server gives assisted radio agent first chance to continue an empty queue"
   assert.ok(queueLowEvent >= 0);
   assert.ok(fillQueueCall > queueLowEvent);
   assert.ok(legacyContinuation > fillQueueCall);
+});
+
+test("server continuation prompt is grounded in the active station contract", () => {
+  const source = fs.readFileSync("src/server.ts", "utf8");
+  const helper = source.indexOf("function continuationPromptFromContract");
+  const kickContinuation = source.indexOf("const kickBrainContinuation =");
+  const continuationPrompt = source.indexOf("const continuationPrompt = continuationPromptFromContract", kickContinuation);
+
+  assert.ok(helper >= 0);
+  assert.ok(kickContinuation >= 0);
+  assert.ok(continuationPrompt > kickContinuation);
+  assert.match(source.slice(kickContinuation, kickContinuation + 600), /handleUserText\(\{\s*\.\.\.brainArgs\(continuationPrompt\),\s*text:\s*continuationPrompt\s*\}\)/);
+  assert.doesNotMatch(source.slice(kickContinuation, kickContinuation + 600), /继续保持这个感觉/);
+  assert.match(source.slice(helper, kickContinuation), /Continue the active R&B station contract with vocals and groove forward/);
+  assert.match(source.slice(helper, kickContinuation), /Continue the active station contract:/);
+  assert.match(source.slice(helper, kickContinuation), /Continue the current personal radio direction with a coherent next track/);
 });
 
 test("server serializes next-track promotion requests", () => {

@@ -529,6 +529,66 @@ test("runtime turns explicit negative artist feedback into session-only avoids",
   assert.equal(store.memoryRows.some((memory) => memory.kind === "taste_fact" && /Frank Ocean|SZA/.test(memory.value)), false);
 });
 
+test("runtime promotes repeated explicit artist avoids from session evidence into durable taste facts", async () => {
+  const store = runtimeStore();
+  store.memoryRows.push({
+    uid: "42",
+    key: "session_avoid:SZA",
+    kind: "session_evidence",
+    value: "Listener asked for a session-only avoid of SZA.",
+    confidence: 0.83,
+    evidenceCount: 1,
+    evidenceRefs: ["event:38"],
+    updatedAt: "2026-06-02T23:00:00.000Z",
+  });
+  const runtime = new RadioAgentRuntime({ mode: "assisted", store, now: () => "2026-06-03T02:05:00.000Z" });
+
+  await runtime.handle({
+    type: "user_text",
+    uid: "42",
+    sessionId: 10,
+    text: "don't play SZA tonight",
+  });
+
+  const durableAvoid = store.memoryRows.find((memory) => memory.key === "avoid_artist:SZA");
+  assert.ok(durableAvoid);
+  assert.equal(durableAvoid?.kind, "taste_fact");
+  assert.ok((durableAvoid?.evidenceRefs || []).includes("event:38"));
+  assert.ok((durableAvoid?.evidenceRefs || []).some((ref) => /^event:\d+$/.test(ref) && ref !== "event:38"));
+  assert.match(durableAvoid?.value ?? "", /repeatedly asked to avoid SZA/i);
+
+  const profile = store.artifact("42", "user_profile.md");
+  assert.match(profile?.content ?? "", /avoid SZA/i);
+  assert.match(profile?.sourceVersion ?? "", /taste-distiller\/v3-memory-merge/);
+});
+
+test("runtime writes durable artist avoids into the current program contract", async () => {
+  const store = runtimeStore();
+  store.memoryRows.push({
+    uid: "42",
+    key: "avoid_artist:SZA",
+    kind: "taste_fact",
+    value: "Listener repeatedly asked to avoid SZA; treat SZA as a conservative durable avoid unless the listener asks for it again.",
+    confidence: 0.74,
+    evidenceCount: 2,
+    evidenceRefs: ["event:38", "event:41"],
+    updatedAt: "2026-06-02T23:00:00.000Z",
+  });
+  const runtime = new RadioAgentRuntime({ mode: "assisted", store, now: () => "2026-06-03T02:05:00.000Z" });
+
+  await runtime.handle({
+    type: "session_restored",
+    uid: "42",
+    sessionId: 10,
+    payload: { timezoneName: "Asia/Hong_Kong", localTimeBlock: "late_night" },
+  });
+
+  const contract = store.artifact("42", "program_contract.md");
+  assert.match(contract?.content ?? "", /Blocked Moves/);
+  assert.match(contract?.content ?? "", /SZA/);
+  assert.doesNotMatch(contract?.content ?? "", /station_goal:.*SZA/i);
+});
+
 test("runtime keeps an explicit R&B request in the program contract across later playback refreshes", async () => {
   const store = runtimeStore({
     memories: (uid: string, kind: string, limit: number) =>

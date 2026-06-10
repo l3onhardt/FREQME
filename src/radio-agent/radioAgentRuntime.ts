@@ -270,6 +270,7 @@ export class RadioAgentRuntime {
     const existingMemories = [
       ...this.deps.store.memories(event.uid, "taste_fact", 24),
       ...this.deps.store.memories(event.uid, "taste_hypothesis", 24),
+      ...this.deps.store.memories(event.uid, "session_evidence", 24),
     ];
     const result = distillTasteFacts({
       uid: event.uid,
@@ -390,6 +391,7 @@ export class RadioAgentRuntime {
 
     const tasteFacts = this.deps.store.memories(event.uid, "taste_fact", 5);
     const tasteHypotheses = this.deps.store.memories(event.uid, "taste_hypothesis", 5);
+    const durableAvoids = durableAvoidMoves(tasteFacts);
     this.deps.store.saveArtifact(
       event.uid,
       "program_contract.md",
@@ -400,6 +402,7 @@ export class RadioAgentRuntime {
           "Do not drift without a deliberate bridge.",
           "Do not treat one skip as permanent long-term dislike.",
           ...(activeDirection?.blockedMoves || []),
+          ...durableAvoids,
         ],
         hostStyle: "short, warm, low-interruption, and grounded in real listening evidence",
       }),
@@ -1476,7 +1479,7 @@ function isRnbRequest(text: string): boolean {
 }
 
 function stationGoalFromMemory(facts: RadioAgentMemory[], localTimeBlock: string): string {
-  const anchors = facts.slice(0, 3).map(memoryLabel).filter(Boolean);
+  const anchors = positiveTasteMemories(facts).slice(0, 3).map(memoryLabel).filter(Boolean);
   if (!anchors.length) return `Build a coherent ${localTimeBlock || "current"} radio session while profile confidence warms.`;
   return `Keep the radio close to familiar anchors like ${humanList(anchors)} while shaping a coherent ${
     localTimeBlock || "current"
@@ -1484,7 +1487,9 @@ function stationGoalFromMemory(facts: RadioAgentMemory[], localTimeBlock: string
 }
 
 function allowedMovesFromMemory(facts: RadioAgentMemory[], hypotheses: RadioAgentMemory[]): string[] {
-  const moves = [...facts.slice(0, 3), ...hypotheses.slice(0, 2)].map(listenerFacingMoveFromMemory).filter(Boolean);
+  const moves = [...positiveTasteMemories(facts).slice(0, 3), ...positiveTasteMemories(hypotheses).slice(0, 2)]
+    .map(listenerFacingMoveFromMemory)
+    .filter(Boolean);
   return moves.length ? moves : ["Stay close to the current track until stronger profile evidence is available."];
 }
 
@@ -1495,6 +1500,20 @@ function listenerFacingMoveFromMemory(memory: RadioAgentMemory): string {
   if (memory.key.startsWith("album:")) return `Use ${label} as a familiar album texture when it fits the moment.`;
   if (memory.key.startsWith("theme:")) return `Treat ${label} as a tentative listening theme and verify it against the current session.`;
   return `Keep ${label} available as a soft programming clue.`;
+}
+
+function durableAvoidMoves(facts: RadioAgentMemory[]): string[] {
+  return facts.map(durableAvoidMove).filter(Boolean);
+}
+
+function durableAvoidMove(memory: RadioAgentMemory): string {
+  if (!memory.key.startsWith("avoid_artist:")) return "";
+  const label = memoryLabel(memory);
+  return label ? `Do not play ${label} unless the listener asks for it again.` : "";
+}
+
+function positiveTasteMemories(memories: RadioAgentMemory[]): RadioAgentMemory[] {
+  return memories.filter((memory) => !memory.key.startsWith("avoid_"));
 }
 
 function memoryLabel(memory: RadioAgentMemory): string {

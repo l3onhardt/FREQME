@@ -42,6 +42,7 @@ import { LibraryCensus } from "./radio-agent/libraryCensus.js";
 import { RadioAgentRuntime } from "./radio-agent/radioAgentRuntime.js";
 import { queueRadioAgentProgramWindow, tryQueueRadioAgentAssistedTrack } from "./radio-agent/assistedQueue.js";
 import { hostTextForRadioAgentDelivery } from "./radio-agent/hostDelivery.js";
+import { chooseOpeningTrack, likedOpeningTracks } from "./radio-agent/openingTrack.js";
 import { RadioAgentProgramDirector } from "./radio-agent/programDirector.js";
 import { RadioAgentProgramExecutor } from "./radio-agent/programExecutor.js";
 import type { RadioAgentCapabilityState, RadioAgentHandleResult } from "./radio-agent/types.js";
@@ -468,6 +469,19 @@ function schedulerStationContract(uid: string | null, sessionId: number | null):
   return null;
 }
 
+function durableAvoidedArtists(uid: string | null): Set<string> {
+  if (!uid) return new Set();
+  return new Set(
+    radioAgentStore
+      .memories(uid, "taste_fact", 48)
+      .map((memory) => {
+        if (!memory.key.startsWith("avoid_artist:")) return "";
+        return memory.key.split(":").slice(1).join(":").trim().toLowerCase();
+      })
+      .filter(Boolean),
+  );
+}
+
 function stationContractFromAgentArtifact(uid: string): StationContract | null {
   const content = radioAgentStore.artifact(uid, "program_contract.md")?.content || "";
   const stationGoal = markdownField(content, "station_goal");
@@ -520,6 +534,16 @@ function markdownSectionItems(markdown: string, heading: string): string[] {
     if (item && item.toLowerCase() !== "none") items.push(item);
   }
   return items.slice(0, 12);
+}
+
+function continuationPromptFromContract(uid: string | null, sessionId: number | null): string {
+  const contract = schedulerStationContract(uid, sessionId);
+  const direction = compactText(contract?.mainDirection || contract?.rawUserText || "", 160);
+  if (/\br\s*&?\s*b\b|\brnb\b/i.test(direction)) {
+    return "Continue the active R&B station contract with vocals and groove forward.";
+  }
+  if (direction) return `Continue the active station contract: ${direction}`;
+  return "Continue the current personal radio direction with a coherent next track.";
 }
 
 async function pickBridgeTrack(uid: string | null, profile: TasteProfile | null): Promise<BridgePick | null> {
@@ -735,8 +759,9 @@ async function handleRadioSocket(socket: WebSocketType): Promise<void> {
 
   const kickBrainContinuation = (): ReadyItemSnapshot => {
     const beforeContinuation = snapshotReadyItems(queue);
+    const continuationPrompt = continuationPromptFromContract(uid, sessionId);
     void radioBrain
-      .handleUserText({ ...brainArgs("继续保持这个感觉"), text: "继续保持这个感觉" })
+      .handleUserText({ ...brainArgs(continuationPrompt), text: continuationPrompt })
       .then(() => undefined)
       .catch(() => undefined);
     return beforeContinuation;
@@ -814,6 +839,30 @@ async function handleRadioSocket(socket: WebSocketType): Promise<void> {
       },
       programWindow,
     );
+
+  const tryQueueRadioAgentOpeningTrack = async (args: { likedTracks: Track[]; avoidArtists: Set<string> }): Promise<boolean> => {
+    const avoidTrackIds = new Set(profile?.learned.skippedTrackIds || []);
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      const pick = chooseOpeningTrack({
+        recentPlayableTracks: store.getRecentPlayableTracks(uid, 20),
+        profileAnchorTracks: profile?.anchorTracks || [],
+        likedTracks: args.likedTracks,
+        fallbackTracks: profile?.recentTracks || [],
+        avoidTrackIds,
+        avoidArtists: args.avoidArtists,
+      });
+      if (!pick) return false;
+      avoidTrackIds.add(pick.track.id);
+      const prepared = await scheduler.prepareTrack(pick.track, uid).catch(() => null);
+      if (!prepared) continue;
+      queue.addReady(prepared.track, prepared.url, {
+        type: pick.reason.type,
+        text: "Agent opening: start from a verified familiar track while the long-term radio profile warms in the background.",
+      });
+      return true;
+    }
+    return false;
+  };
 
   const fillQueue = async (maxItems?: number, allowProgramBreak = true): Promise<void> => {
     let added = 0;
@@ -1152,6 +1201,14 @@ async function handleRadioSocket(socket: WebSocketType): Promise<void> {
         });
         const defaultHash = await defaultTtsTask;
         send({ type: "intro", text: defaultIntro, tts_ready: Boolean(defaultHash), tts_hash: defaultHash });
+        await tryQueueRadioAgentOpeningTrack({
+          likedTracks: likedOpeningTracks({
+            uid,
+            profile,
+            libraryTracks: uid ? radioAgentStore.libraryTracks(uid, 5000) : [],
+          }),
+          avoidArtists: durableAvoidedArtists(uid),
+        });
         await radioBrain.startSession(brainArgs("startup")).catch(() => undefined);
         if (!queue.readyItems().length) {
           await fillQueue(1, false);
