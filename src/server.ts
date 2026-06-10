@@ -60,6 +60,7 @@ import {
   snapshotReadyItems,
   type ReadyItemSnapshot,
 } from "./radio/requestReadySelector.js";
+import { ensureTrackEndReadyItem } from "./radio/trackEndRecovery.js";
 
 const require = createRequire(import.meta.url);
 
@@ -1123,12 +1124,19 @@ async function handleRadioSocket(socket: WebSocketType): Promise<void> {
       currentTrack: currentTrack ? trackInfo(currentTrack) : null,
       readyQueue: queue.readyItems().map((readyItem) => trackInfo(readyItem.track)),
     });
-    if (!queue.readyItems().length && trackEndResult.action === "legacy_fallback") await fillQueue(1, false);
-    if (!queue.readyItems().length && allowContinuation && activeRequestToken == null) {
-      const beforeContinuation = kickBrainContinuation();
-      const ready = await waitForNewBrainReadyItem(beforeContinuation, CONTINUATION_BRAIN_READY_TIMEOUT_MS);
-      if (ready) prepareFreshBrainReadyForPromotion(queue, beforeContinuation);
-    }
+    const recovery = await ensureTrackEndReadyItem({
+      readyCount: () => queue.readyItems().length,
+      trackEndAction: trackEndResult.action,
+      allowContinuation,
+      hasActiveRequest: activeRequestToken != null,
+      fillLegacyQueue: () => fillQueue(1, false),
+      addRecentPlayableFallback,
+      kickBrainContinuation,
+      waitForNewBrainReadyItem: (beforeContinuation) =>
+        waitForNewBrainReadyItem(beforeContinuation, CONTINUATION_BRAIN_READY_TIMEOUT_MS),
+      prepareFreshBrainReadyForPromotion: (beforeContinuation) =>
+        prepareFreshBrainReadyForPromotion(queue, beforeContinuation),
+    });
     const item = queue.promoteNext(previousEvent);
     if (!item) {
       const recoveryText = trackEndResult.hostText;
@@ -1136,7 +1144,12 @@ async function handleRadioSocket(socket: WebSocketType): Promise<void> {
       store.logPlaybackEvent("radio_agent_track_end_fallback", {
         uid,
         songId: currentSongId,
-        reason: trackEndResult.fallbackReason || "queue_empty_after_all_recovery",
+        reason: trackEndResult.fallbackReason || recovery.source || "queue_empty_after_all_recovery",
+        payload: {
+          recoverySource: recovery.source,
+          legacyFillTimedOut: recovery.legacyFillTimedOut,
+          trackEndAction: trackEndResult.action,
+        },
       });
       send({ type: "error", message: "暂时没有更多歌曲，请稍后再试。" });
       return;

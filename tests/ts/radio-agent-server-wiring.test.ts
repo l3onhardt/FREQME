@@ -100,28 +100,32 @@ test("server keeps assisted fallback logging best effort", () => {
   assert.match(assistedQueueSource, /assisted_queue_failed/);
 });
 
-test("server gives the radio agent a final recovery window before reporting playback exhaustion", () => {
+test("server gives track-end playback a bounded no-stall recovery path before reporting exhaustion", () => {
   const source = fs.readFileSync("src/server.ts", "utf8");
   const sendPreparedNext = source.indexOf("const runSendPreparedNext =");
   const serviceRecovery = source.indexOf("await radioAgentService.handleTrackEnded", sendPreparedNext);
   const promoteNext = source.indexOf("const item = queue.promoteNext(previousEvent)");
   const missingItem = source.indexOf("if (!item)", promoteNext);
-  const fallbackAction = source.indexOf('trackEndResult.action === "legacy_fallback"', serviceRecovery);
+  const recoveryBoundary = source.indexOf("await ensureTrackEndReadyItem", serviceRecovery);
   const fallbackLog = source.indexOf('store.logPlaybackEvent("radio_agent_track_end_fallback"', missingItem);
   const listenerError = source.indexOf('send({ type: "error"', missingItem);
 
   assert.ok(sendPreparedNext >= 0);
   assert.ok(serviceRecovery > sendPreparedNext);
   assert.ok(promoteNext >= 0);
-  assert.ok(promoteNext > serviceRecovery);
+  assert.ok(recoveryBoundary > serviceRecovery);
+  assert.ok(promoteNext > recoveryBoundary);
   assert.ok(missingItem > promoteNext);
-  assert.ok(fallbackAction > serviceRecovery);
   assert.ok(fallbackLog > missingItem);
   assert.ok(listenerError > fallbackLog);
   const recoveryBlock = source.slice(serviceRecovery, listenerError);
   assert.match(recoveryBlock, /currentTrack:\s*currentTrack\s*\?\s*trackInfo\(currentTrack\)\s*:\s*null/);
   assert.match(recoveryBlock, /readyQueue:\s*queue\.readyItems\(\)\.map\(\(readyItem\)\s*=>\s*trackInfo\(readyItem\.track\)\)/);
   assert.match(recoveryBlock, /fallbackReason/);
+  assert.match(recoveryBlock, /ensureTrackEndReadyItem/);
+  assert.match(recoveryBlock, /fillLegacyQueue:\s*\(\)\s*=>\s*fillQueue\(1,\s*false\)/);
+  assert.match(recoveryBlock, /addRecentPlayableFallback/);
+  assert.match(recoveryBlock, /recoverySource:\s*recovery\.source/);
   assert.match(source.slice(promoteNext, missingItem), /queue\.promoteNext\(previousEvent\)/);
   assert.doesNotMatch(source.slice(missingItem, listenerError), /queue\.promoteNext\(previousEvent\)/);
   assert.match(source.slice(listenerError, listenerError + 220), /return;/);
@@ -174,13 +178,17 @@ test("server gives RadioAgentService first chance to continue an empty queue", (
   const sendPreparedNextEnd = source.indexOf('socket.on("message"', sendPreparedNextStart);
   const sendPreparedNextSource = source.slice(sendPreparedNextStart, sendPreparedNextEnd);
   const serviceContinuation = sendPreparedNextSource.indexOf("const trackEndResult = await radioAgentService.handleTrackEnded");
-  const fillQueueCall = sendPreparedNextSource.indexOf("await fillQueue(1, false)", serviceContinuation);
-  const legacyContinuation = sendPreparedNextSource.indexOf("kickBrainContinuation()", serviceContinuation);
+  const recoveryBoundary = sendPreparedNextSource.indexOf("await ensureTrackEndReadyItem", serviceContinuation);
+  const fillQueueCall = sendPreparedNextSource.indexOf("fillLegacyQueue: () => fillQueue(1, false)", recoveryBoundary);
+  const recentFallback = sendPreparedNextSource.indexOf("addRecentPlayableFallback", recoveryBoundary);
+  const legacyContinuation = sendPreparedNextSource.indexOf("kickBrainContinuation", recoveryBoundary);
 
   assert.ok(sendPreparedNextStart >= 0);
   assert.ok(sendPreparedNextEnd > sendPreparedNextStart);
   assert.ok(serviceContinuation >= 0);
-  assert.ok(fillQueueCall > serviceContinuation);
+  assert.ok(recoveryBoundary > serviceContinuation);
+  assert.ok(fillQueueCall > recoveryBoundary);
+  assert.ok(recentFallback > recoveryBoundary);
   assert.ok(legacyContinuation > fillQueueCall);
   assert.doesNotMatch(sendPreparedNextSource, /const trackEndResult = !queue\.readyItems\(\)\.length/);
 });

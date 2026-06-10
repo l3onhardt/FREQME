@@ -402,6 +402,36 @@ test("service returns an explicit fallback when track end continuation cannot qu
   assert.deepEqual(calls, ["agent:queue_low", "host:queue_low"]);
 });
 
+test("service track-end continuation times out instead of blocking playback recovery", async () => {
+  const calls: string[] = [];
+  const service = new RadioAgentService({
+    chooseOpeningTrack: () => null,
+    prepareTrack: async () => null,
+    handleRadioAgentEvent: async () => {
+      calls.push("agent");
+      return await new Promise<RadioAgentHandleResult>(() => undefined);
+    },
+    queueProgramWindow: async () => {
+      calls.push("queue");
+      return true;
+    },
+    trackEndTimeoutMs: 1,
+  });
+
+  const result = await service.handleTrackEnded({
+    uid: "42",
+    sessionId: 7,
+    previousEvent: "played",
+    currentTrack: { id: "current", name: "Blue in Green", artist: "Miles Davis" },
+    readyQueue: [],
+  });
+
+  assert.equal(result.action, "legacy_fallback");
+  assert.equal(result.programQueued, false);
+  assert.equal(result.fallbackReason, "radio_agent_track_end_timeout");
+  assert.deepEqual(calls, ["agent"]);
+});
+
 function prepared(
   track: Track,
   selectionReason: SelectionReason = { type: "radio_agent_opening_liked", text: "Started from a liked track." },

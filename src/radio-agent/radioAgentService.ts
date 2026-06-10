@@ -74,7 +74,10 @@ export interface RadioAgentServiceDeps {
   queueProgramWindow?: (programWindow: RadioAgentProgramWindow) => Promise<boolean>;
   prepareProgramWindow?: (programWindow: RadioAgentProgramWindow) => Promise<RadioAgentPreparedTrack | null>;
   hostTextForDelivery?: (args: RadioAgentHostTextArgs) => string;
+  trackEndTimeoutMs?: number;
 }
+
+const DEFAULT_TRACK_END_TIMEOUT_MS = 2500;
 
 export class RadioAgentService {
   private readonly deps: Required<Pick<RadioAgentServiceDeps, "chooseOpeningTrack">> & Omit<RadioAgentServiceDeps, "chooseOpeningTrack">;
@@ -124,6 +127,10 @@ export class RadioAgentService {
       };
     }
 
+    return await this.withTrackEndTimeout(this.runTrackEndContinuation(args));
+  }
+
+  private async runTrackEndContinuation(args: RadioAgentTrackEndedArgs): Promise<RadioAgentTrackEndedResult> {
     const agentResult = this.deps.handleRadioAgentEvent
       ? await this.deps.handleRadioAgentEvent({
           type: "queue_low",
@@ -158,6 +165,27 @@ export class RadioAgentService {
       hostText,
       fallbackReason: programWindow ? "program_window_queue_failed" : "program_window_missing",
     };
+  }
+
+  private async withTrackEndTimeout(work: Promise<RadioAgentTrackEndedResult>): Promise<RadioAgentTrackEndedResult> {
+    const timeoutMs = Math.max(0, this.deps.trackEndTimeoutMs ?? DEFAULT_TRACK_END_TIMEOUT_MS);
+    if (timeoutMs === 0) return await work;
+    return await Promise.race([
+      work,
+      new Promise<RadioAgentTrackEndedResult>((resolve) =>
+        setTimeout(
+          () =>
+            resolve({
+              action: "legacy_fallback",
+              agentResult: null,
+              programQueued: false,
+              hostText: "",
+              fallbackReason: "radio_agent_track_end_timeout",
+            }),
+          timeoutMs,
+        ),
+      ),
+    ]);
   }
 
   async handleUserText(args: RadioAgentUserTextArgs): Promise<RadioAgentUserTextResult> {

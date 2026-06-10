@@ -2,7 +2,7 @@
 
 **Date:** 2026-06-11
 **Branch:** `codex/hermes-radio-agent-service`
-**Status:** Checked with failures
+**Status:** Partial pass, remaining v1 gates open
 
 This checklist records live browser and websocket evidence for the bounded Hermes-style AI DJ v1 gates. Unit tests are not enough for v1 status; playback and websocket behavior must be checked in the running app.
 
@@ -33,15 +33,18 @@ This checklist records live browser and websocket evidence for the bounded Herme
 
 ### No End Stall
 
-- Status: Fail
+- Status: Pass for anonymous websocket smoke on 2026-06-11; keep under observation for logged-in browser playback
 - Evidence:
-  - After a websocket `track_ended` message, the server recorded:
-    - `track_completed` for track id `1932620174`.
-    - two `queue_low` events with an empty ready queue.
-    - host decisions with a listener-facing recovery handoff meaning "I will connect one stable song and keep the station going."
-  - In the 15 second smoke window after `track_ended`, no new `play_track` message arrived.
+  - Earlier smoke failed: after a websocket `track_ended` message, the server recorded `track_completed` and `queue_low`, but no new `play_track` arrived within 15 seconds.
+  - After the bounded no-stall recovery fix, a fresh websocket smoke produced:
+    - First `play_track`: track id `2023945522`, observed title `SZA-good days (SiLENTMOON remix)`.
+    - Sent websocket `{ "type": "track_ended" }`.
+    - Next `play_track` arrived about 2.5 seconds after handshake / about 2.2 seconds after the first track: track id `1932620174`, observed title `Daniel Caesar-Best Part (Vinahouse Edit) (A Sen remix)`, observed artist `A Sen`.
+    - No websocket `error` message was observed.
+  - `GET /api/radio/audio/1932620174` with `Range: bytes=0-1023` returned `206`, `audio/mpeg`, and `1024` bytes.
 - Failure notes:
-  - This does not satisfy the v1 no-stall gate. The agent noticed queue pressure and produced host intent, but no playable next item reached the websocket.
+  - This satisfies the anonymous websocket no-stall gate for the tested path.
+  - It does not yet prove logged-in browser playback, direction-retention continuity, or correction playback continuity.
 
 ### User Direction
 
@@ -89,9 +92,8 @@ This checklist records live browser and websocket evidence for the bounded Herme
 
 ## Summary
 
-- Current live gate result: Failed v1 live gate.
+- Current live gate result: Improved but not v1 complete.
 - Remaining gaps:
-  - No-stall failed: `track_ended` did not produce a new `play_track` within 15 seconds.
   - User direction and correction produced acknowledgements, but replacement playback was not observed.
   - Full browser playback UX remains unverified because the visible page stayed on the QR login screen.
   - Persistent memory and logged-in library ingestion still require a logged-in NetEase session.
