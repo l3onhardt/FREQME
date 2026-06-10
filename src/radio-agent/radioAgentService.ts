@@ -1,4 +1,5 @@
 import type { Track } from "../types.js";
+import { hostTextForRadioAgentDelivery } from "./hostDelivery.js";
 import { chooseOpeningTrack as defaultChooseOpeningTrack, type OpeningTrackArgs, type OpeningTrackPick } from "./openingTrack.js";
 import type { RadioAgentHandleResult, RadioAgentPreparedTrack, RadioAgentProgramWindow, RadioAgentEventType, RadioHostDecision } from "./types.js";
 
@@ -136,10 +137,7 @@ export class RadioAgentService {
     const programQueued = programWindow && this.deps.queueProgramWindow ? await this.deps.queueProgramWindow(programWindow) : false;
     const hostText =
       agentResult && this.deps.hostTextForDelivery
-        ? this.deps.hostTextForDelivery({
-            eventType: agentResult.event.type,
-            decision: agentResult.hostDecision,
-          })
+        ? this.deliverableHostText(agentResult)
         : "";
 
     if (programQueued) {
@@ -193,10 +191,7 @@ export class RadioAgentService {
         : null;
     const hostText =
       agentResult && this.deps.hostTextForDelivery
-        ? this.deps.hostTextForDelivery({
-            eventType: agentResult.event.type,
-            decision: agentResult.hostDecision,
-          })
+        ? this.deliverableHostText(agentResult)
         : "";
 
     return {
@@ -213,5 +208,22 @@ export class RadioAgentService {
     if (!this.deps.startBackgroundPlanning) return false;
     void Promise.resolve(this.deps.startBackgroundPlanning(args, opening)).catch(() => undefined);
     return true;
+  }
+
+  private deliverableHostText(agentResult: RadioAgentHandleResult): string {
+    const text = this.deps.hostTextForDelivery?.({
+      eventType: agentResult.event.type,
+      decision: agentResult.hostDecision,
+    });
+    if (!text) return "";
+    return hostTextForRadioAgentDelivery({
+      eventType: agentResult.event.type,
+      decision: {
+        shouldSpeak: true,
+        event: agentResult.hostDecision?.event || "service_delivery",
+        reason: agentResult.hostDecision?.reason || "service host delivery",
+        text,
+      },
+    });
   }
 }

@@ -228,7 +228,7 @@ test("service repairs the active window after explicit negative feedback", async
       shouldSpeak: true,
       event: "correction",
       reason: "listener rejected the current artist",
-      text: "明白，我先避开 Frank Ocean，往旁边更稳的 R&B 收。",
+      text: "明白，我先避开 Frank Ocean，换成更稳的 R&B。",
     },
   });
   const service = new RadioAgentService({
@@ -243,7 +243,7 @@ test("service repairs the active window after explicit negative feedback", async
           shouldSpeak: true,
           event: "correction",
           reason: "listener rejected the current artist",
-          text: "明白，我先避开 Frank Ocean，往旁边更稳的 R&B 收。",
+          text: "明白，我先避开 Frank Ocean，换成更稳的 R&B。",
         },
         programWindow,
       } satisfies RadioAgentHandleResult;
@@ -272,13 +272,46 @@ test("service repairs the active window after explicit negative feedback", async
   assert.equal(result.programWindow?.id, "window-repaired");
   assert.equal(result.programQueued, true);
   assert.equal(result.shouldClearQueue, true);
-  assert.equal(result.hostText, "明白，我先避开 Frank Ocean，往旁边更稳的 R&B 收。");
+  assert.equal(result.hostText, "明白，我先避开 Frank Ocean，换成更稳的 R&B。");
   assert.deepEqual(calls, [
     "agent:user_text:don't play Frank Ocean tonight",
     "clear",
     "queue:window-repaired",
     "host:user_text:correction",
   ]);
+});
+
+test("service does not return unsafe host text from its delivery boundary", async () => {
+  const service = new RadioAgentService({
+    chooseOpeningTrack: () => null,
+    prepareTrack: async () => null,
+    handleRadioAgentEvent: async () =>
+      ({
+        controlsPlayback: false,
+        event: { uid: "42", sessionId: 7, type: "user_text", priority: "hot", payload: {}, createdAt: "2026-06-11T00:00:00.000Z" },
+        hostDecision: {
+          shouldSpeak: true,
+          event: "request_ack",
+          reason: "listener changed direction",
+          text: "The current station direction contract says this candidate fits the pipeline.",
+        },
+        programWindow: radioWindow({ id: "unsafe-host-window" }),
+      }) satisfies RadioAgentHandleResult,
+    queueProgramWindow: async () => true,
+    hostTextForDelivery: () => "The current station direction contract says this candidate fits the pipeline.",
+  });
+
+  const result = await service.handleUserText({
+    uid: "42",
+    sessionId: 7,
+    text: "play quiet jazz",
+    currentTrack: null,
+    readyQueue: [],
+    shouldClearQueue: true,
+  });
+
+  assert.equal(result.programQueued, true);
+  assert.equal(result.hostText, "");
 });
 
 test("service continues from the active contract when a track ends and queue is empty", async () => {

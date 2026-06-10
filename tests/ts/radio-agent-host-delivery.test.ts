@@ -63,6 +63,24 @@ test("host delivery does not speak internal or broken planning text", () => {
   assert.equal(text, "");
 });
 
+test("host delivery does not speak service-level planning jargon", () => {
+  const unsafeLines = [
+    "The current station direction should follow the main line.",
+    "This contract will keep the candidate inside the pipeline.",
+    "I verified the tool call and trace for the next song.",
+    "This texture is beside it, so it fits.",
+  ];
+
+  for (const line of unsafeLines) {
+    const text = hostTextForRadioAgentDelivery({
+      eventType: "user_text",
+      decision: decision({ event: "request_ack", text: line }),
+    });
+
+    assert.equal(text, "");
+  }
+});
+
 test("host delivery does not speak mojibake fallback text", () => {
   const text = hostTextForRadioAgentDelivery({
     eventType: "track_skipped",
