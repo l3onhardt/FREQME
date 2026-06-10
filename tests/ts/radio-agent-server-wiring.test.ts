@@ -118,15 +118,24 @@ test("server executes explicit user direction with radio agent program window be
   const source = fs.readFileSync("src/server.ts", "utf8");
   const songRequestHandler = source.indexOf('if (type === "song_request")');
   const userTextEvent = source.indexOf('type: "user_text"', songRequestHandler);
+  const agentAcknowledgement = source.indexOf("hostTextForRadioAgentDelivery", userTextEvent);
   const agentProgramQueue = source.indexOf("queueRadioAgentWindow(agentTextResult.programWindow)", userTextEvent);
+  const agentAckSpeech = source.indexOf("synthesizeAndSendDjMessage(agentAckText)", agentProgramQueue);
   const legacyBrainRequest = source.indexOf("radioBrain.handleUserText", userTextEvent);
 
   assert.ok(songRequestHandler >= 0);
   assert.ok(userTextEvent > songRequestHandler);
+  assert.ok(agentAcknowledgement > userTextEvent);
+  assert.ok(agentAcknowledgement < agentProgramQueue);
   assert.ok(agentProgramQueue > userTextEvent);
+  assert.ok(agentAckSpeech > agentProgramQueue);
+  assert.ok(agentAckSpeech < legacyBrainRequest);
   assert.ok(legacyBrainRequest > agentProgramQueue);
   assert.match(source.slice(userTextEvent - 120, userTextEvent), /await\s+mirrorRadioAgentImmediate\(\{\s*$/);
   assert.match(source.slice(userTextEvent - 120, userTextEvent), /const\s+agentTextResult\s*=/);
+  assert.match(source.slice(agentAcknowledgement, agentProgramQueue), /eventType:\s*agentTextResult\.event\.type/);
+  assert.match(source.slice(agentAcknowledgement, agentProgramQueue), /decision:\s*agentTextResult\.hostDecision/);
+  assert.match(source.slice(agentProgramQueue, legacyBrainRequest), /synthesizeAndSendDjMessage\(agentAckText\)/);
   assert.match(source.slice(agentProgramQueue, legacyBrainRequest), /agentTextResult\.programWindow/);
   assert.match(source.slice(agentProgramQueue, legacyBrainRequest), /sendPreparedNext\("played",\s*\{\s*allowContinuation:\s*false,\s*skipPrewarmWait:\s*true\s*\}\)/);
   assert.match(source.slice(agentProgramQueue, legacyBrainRequest), /return;/);

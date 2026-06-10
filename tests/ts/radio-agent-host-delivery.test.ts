@@ -23,13 +23,13 @@ test("host delivery speaks agent correction decisions for real-time playback fee
   assert.equal(text, "明白，这首先避开，我把方向收回来。");
 });
 
-test("host delivery suppresses direct user text because the request path already speaks", () => {
+test("host delivery speaks safe direct user text acknowledgements from the agent path", () => {
   const text = hostTextForRadioAgentDelivery({
     eventType: "user_text",
     decision: decision({ event: "user_ack", text: "收到，我按这个方向调整。" }),
   });
 
-  assert.equal(text, "");
+  assert.equal(text, "收到，我按这个方向调整。");
 });
 
 test("host delivery keeps ordinary silent decisions off the speaker", () => {

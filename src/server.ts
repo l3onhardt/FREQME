@@ -1114,6 +1114,12 @@ async function handleRadioSocket(socket: WebSocketType): Promise<void> {
           currentTrack: currentTrack ? trackInfo(currentTrack) : null,
           readyQueue: queue.readyItems().map((readyItem) => trackInfo(readyItem.track)),
         });
+        const agentAckText = agentTextResult
+          ? hostTextForRadioAgentDelivery({
+              eventType: agentTextResult.event.type,
+              decision: agentTextResult.hostDecision,
+            })
+          : "";
         clearReadyQueueForExplicitDirection(requestText);
         introSendCancelled = true;
         store.logPlaybackEvent("song_request", { uid, songId: currentSongId, reason: requestText });
@@ -1126,6 +1132,7 @@ async function handleRadioSocket(socket: WebSocketType): Promise<void> {
             if (!isCurrentRequestToken(activeRequestToken, requestToken)) return;
             const ready = queue.readyItems()[0];
             if (ready) {
+              if (agentAckText) synthesizeAndSendDjMessage(agentAckText);
               send({
                 type: "request_status",
                 status: "ready",

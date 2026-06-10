@@ -1,6 +1,7 @@
 import type { RadioAgentEventType, RadioHostDecision } from "./types.js";
 
 const DELIVERABLE_EVENTS = new Set<RadioAgentEventType>([
+  "user_text",
   "track_skipped",
   "playback_recovery_needed",
   "program_repair_needed",
