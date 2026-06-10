@@ -1383,7 +1383,7 @@ function positiveArtistRequestFromText(text: string): string {
   const normalized = text.replace(/\s+/g, " ").trim();
   if (!normalized) return "";
   if (/^\s*(less|avoid|skip|no|don't|dont|do not|dislike)\b/i.test(normalized)) return "";
-  if (/涓嶈|鍒珅涓嶆兂|灏戞潵/.test(normalized.slice(0, 8))) return "";
+  if (/不要|别放|别播|不想|少来点/.test(normalized.slice(0, 12))) return "";
 
   const patterns = [
     /\b(?:play|queue|put on|give me|want|need|like|love|prefer)\s+(?:some\s+|more\s+|tracks?\s+by\s+|songs?\s+by\s+)?([A-Z][A-Za-z0-9 .+'&-]{1,48}?)(?:\s+(?:lately|tonight|today|please|pls|now|next|tracks?|songs?|music|radio|vibes?))?(?:[.!?]|$)/i,
@@ -1405,7 +1405,10 @@ function negativeArtistMovesFromText(text: string): string[] {
   if (!normalized) return [];
 
   return dedupeStrings([
-    ...matchesForPattern(normalized, /(?:不要|别放|别播|不想听|少来点)\s*([A-Z][A-Za-z0-9 .+'&-]{1,48})(?=[，,。.!?]|$)/gu),
+    ...matchesForPattern(
+      normalized,
+      /(?:不要|别放|别播|不想(?:要|听|放|播)?|少来点)\s*([A-Z][A-Za-z0-9 .+'&-]{1,48})(?=\s*(?:了|啦|吧|嘛|呀|今晚|今天|现在|下一首|tonight|today|please|pls|now|next|tracks?|songs?|music|radio|vibes?)?(?:[，,。.!?]|$))/giu,
+    ),
     ...matchesForPattern(normalized, /\b(?:less|avoid|skip|no)\s+([A-Z][A-Za-z0-9 .+'&-]{1,48}?)(?=\s+(?:tonight|today|please|pls|now|next|tracks?|songs?|music|radio|vibes?)|[,.!?]|$)/gi),
     ...matchesForPattern(normalized, /\b(?:don't|dont|do not)\s+(?:play|queue|put on|give me)?\s*([A-Z][A-Za-z0-9 .+'&-]{1,48}?)(?=\s+(?:tonight|today|please|pls|now|next|tracks?|songs?|music|radio|vibes?)|[,.!?]|$)/gi),
   ]).filter((artist) => !isGenericAvoidMove(artist));

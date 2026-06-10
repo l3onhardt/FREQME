@@ -676,6 +676,38 @@ test("runtime lets the newest negative artist correction replace an older artist
   assert.doesNotMatch(contract?.content ?? "", /station_goal: Keep the current radio session centered on Frank Ocean/i);
 });
 
+test("runtime treats Chinese negative artist corrections as avoids instead of positive anchors", async () => {
+  const store = runtimeStore();
+  const runtime = new RadioAgentRuntime({ mode: "assisted", store, now: () => "2026-06-03T01:02:03.000Z" });
+
+  await runtime.handle({
+    type: "user_text",
+    uid: "42",
+    sessionId: 9,
+    text: "more Frank Ocean tonight",
+  });
+  await runtime.handle({
+    type: "user_text",
+    uid: "42",
+    sessionId: 9,
+    text: "我不想 Frank Ocean 了",
+  });
+  await runtime.handle({
+    type: "playback_started",
+    uid: "42",
+    sessionId: 9,
+    track: { id: "s1", name: "Pink + White", artist: "Frank Ocean" },
+  });
+
+  const session = store.artifact("42", "listener_session.md");
+  const contract = store.artifact("42", "program_contract.md");
+  assert.match(session?.content ?? "", /active_request: Avoid Frank Ocean/i);
+  assert.match(session?.content ?? "", /## Rejected Moves[\s\S]*- Frank Ocean/);
+  assert.match(contract?.content ?? "", /station_goal: Move the current radio session away from Frank Ocean/i);
+  assert.match(contract?.content ?? "", /Do not play Frank Ocean unless the listener asks for it again/i);
+  assert.doesNotMatch(contract?.content ?? "", /station_goal: Keep the current radio session centered on Frank Ocean/i);
+});
+
 test("runtime writes current listener session memory for explicit R&B boundaries", async () => {
   const store = runtimeStore({
     memories: (uid: string, kind: string, limit: number) =>
