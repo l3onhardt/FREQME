@@ -1104,7 +1104,7 @@ test("runtime status exposes safe agent journal and repair summaries", () => {
   assert.doesNotMatch(JSON.stringify(status.explainability), /prompt|JSON trace/i);
 });
 
-test("runtime status exposes whether assisted agent planning is fully available", () => {
+test("runtime readiness summary is listener-facing even when planning is degraded", () => {
   const store = runtimeStore();
   const runtime = new RadioAgentRuntime({
     mode: "assisted",
@@ -1122,8 +1122,8 @@ test("runtime status exposes whether assisted agent planning is fully available"
   assert.equal(status.readiness.mode, "assisted");
   assert.equal(status.readiness.planner, "degraded");
   assert.equal(status.readiness.speech, "degraded");
-  assert.match(status.readiness.summary, /assisted/i);
-  assert.match(status.readiness.summary, /fallback/i);
+  assert.match(status.readiness.summary, /接歌|电台|播放|声音|稳/u);
+  assert.doesNotMatch(status.readiness.summary, /agent|assisted|deterministic|fallback|degraded|LLM|TTS|model|prompt|JSON/i);
   assert.doesNotMatch(JSON.stringify(status.readiness), /tp-|api[_-]?key|secret/i);
 });
 

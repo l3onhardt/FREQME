@@ -1009,16 +1009,23 @@ function readinessSummary(
   speech: RadioAgentReadiness["speech"],
   reason: string,
 ): string {
+  void reason;
   if (mode === "shadow") {
-    return "Agent is in shadow mode, so it is learning and explaining without steering playback.";
+    return "我会先听和记录，不急着接管播放。";
   }
   if (planner === "degraded" || speech === "degraded") {
-    return reason || `Agent is in ${mode} mode, but planning or speech is degraded; using deterministic fallback where needed.`;
+    if (planner === "degraded" && speech === "degraded") {
+      return "我先用保守方式接歌，声音和后面的播放都会尽量稳住。";
+    }
+    if (planner === "degraded") {
+      return "我先用保守方式接歌，继续把电台稳住。";
+    }
+    return "我会继续接歌，主播声音可能少一点。";
   }
   if (planner === "disabled") {
-    return `Agent is in ${mode} mode, but autonomous planning is disabled.`;
+    return "我会先跟住当前播放，不强行改方向。";
   }
-  return `Agent is in ${mode} mode and can plan the station with assisted intelligence.`;
+  return "我在看当前方向，提前准备后面的歌。";
 }
 
 function safeReadinessReason(value: string): string {
