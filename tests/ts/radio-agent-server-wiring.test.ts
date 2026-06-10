@@ -114,16 +114,22 @@ test("server gives assisted radio agent first chance to continue an empty queue"
   assert.ok(legacyContinuation > fillQueueCall);
 });
 
-test("server waits for explicit user direction to refresh radio agent context before legacy request planning", () => {
+test("server executes explicit user direction with radio agent program window before legacy request planning", () => {
   const source = fs.readFileSync("src/server.ts", "utf8");
   const songRequestHandler = source.indexOf('if (type === "song_request")');
   const userTextEvent = source.indexOf('type: "user_text"', songRequestHandler);
+  const agentProgramQueue = source.indexOf("queueRadioAgentWindow(agentTextResult.programWindow)", userTextEvent);
   const legacyBrainRequest = source.indexOf("radioBrain.handleUserText", userTextEvent);
 
   assert.ok(songRequestHandler >= 0);
   assert.ok(userTextEvent > songRequestHandler);
-  assert.ok(legacyBrainRequest > userTextEvent);
+  assert.ok(agentProgramQueue > userTextEvent);
+  assert.ok(legacyBrainRequest > agentProgramQueue);
   assert.match(source.slice(userTextEvent - 120, userTextEvent), /await\s+mirrorRadioAgentImmediate\(\{\s*$/);
+  assert.match(source.slice(userTextEvent - 120, userTextEvent), /const\s+agentTextResult\s*=/);
+  assert.match(source.slice(agentProgramQueue, legacyBrainRequest), /agentTextResult\.programWindow/);
+  assert.match(source.slice(agentProgramQueue, legacyBrainRequest), /sendPreparedNext\("played",\s*\{\s*allowContinuation:\s*false,\s*skipPrewarmWait:\s*true\s*\}\)/);
+  assert.match(source.slice(agentProgramQueue, legacyBrainRequest), /return;/);
 });
 
 test("server clears stale ready queue after explicit listener direction before planning replacement", () => {
@@ -132,13 +138,15 @@ test("server clears stale ready queue after explicit listener direction before p
   const agentRefresh = source.indexOf("await mirrorRadioAgentImmediate", songRequestHandler);
   const staleClear = source.indexOf("clearReadyQueueForExplicitDirection(requestText)", agentRefresh);
   const readyBeforeRequest = source.indexOf("const readyBeforeRequest = snapshotReadyItems(queue)", staleClear);
+  const agentProgramQueue = source.indexOf("queueRadioAgentWindow(agentTextResult.programWindow)", readyBeforeRequest);
   const legacyBrainRequest = source.indexOf("radioBrain.handleUserText", readyBeforeRequest);
 
   assert.ok(songRequestHandler >= 0);
   assert.ok(agentRefresh > songRequestHandler);
   assert.ok(staleClear > agentRefresh);
   assert.ok(readyBeforeRequest > staleClear);
-  assert.ok(legacyBrainRequest > readyBeforeRequest);
+  assert.ok(agentProgramQueue > readyBeforeRequest);
+  assert.ok(legacyBrainRequest > agentProgramQueue);
   assert.match(source, /const clearReadyQueueForExplicitDirection\s*=\s*\(requestText:\s*string\):\s*void\s*=>/);
   assert.match(source, /queue\.clearReady\(\)/);
 });

@@ -100,6 +100,30 @@ export async function tryQueueRadioAgentAssistedTrack(args: RadioAgentAssistedQu
   }
 }
 
+export async function queueRadioAgentProgramWindow(
+  args: RadioAgentAssistedQueueDeps,
+  programWindow: RadioAgentProgramWindow,
+): Promise<boolean> {
+  if (args.mode !== "assisted" && args.mode !== "active") return false;
+
+  try {
+    const firstAttempt = await prepareAndQueueProgramWindow(args, programWindow);
+    if (firstAttempt.status === "queued") return true;
+
+    const repair = await reportRepairNeeded(args, programWindow, firstAttempt.reason, firstAttempt.attemptedQueries);
+    if (firstAttempt.reason === "program_executor_no_track" && repair?.programWindow) {
+      const repairedAttempt = await prepareAndQueueProgramWindow(args, repair.programWindow);
+      if (repairedAttempt.status === "queued") return true;
+    }
+
+    logFallback(args, firstAttempt.reason);
+    return false;
+  } catch {
+    logFallback(args, "assisted_queue_failed");
+    return false;
+  }
+}
+
 type ProgramQueueAttemptResult =
   | { status: "queued" }
   | { status: "failed"; reason: Exclude<RadioAgentAssistedFallbackReason, "program_window_missing">; attemptedQueries: string[] };

@@ -39,11 +39,11 @@ import { BoundaryGuard } from "./radio/boundaryGuard.js";
 import { HostNarrationLayer } from "./radio/hostNarrationLayer.js";
 import { LibraryCensus } from "./radio-agent/libraryCensus.js";
 import { RadioAgentRuntime } from "./radio-agent/radioAgentRuntime.js";
-import { tryQueueRadioAgentAssistedTrack } from "./radio-agent/assistedQueue.js";
+import { queueRadioAgentProgramWindow, tryQueueRadioAgentAssistedTrack } from "./radio-agent/assistedQueue.js";
 import { hostTextForRadioAgentDelivery } from "./radio-agent/hostDelivery.js";
 import { RadioAgentProgramDirector } from "./radio-agent/programDirector.js";
 import { RadioAgentProgramExecutor } from "./radio-agent/programExecutor.js";
-import type { RadioAgentCapabilityState } from "./radio-agent/types.js";
+import type { RadioAgentCapabilityState, RadioAgentHandleResult } from "./radio-agent/types.js";
 import {
   CONTINUATION_BRAIN_READY_TIMEOUT_MS,
   USER_REQUEST_BRAIN_READY_TIMEOUT_MS,
@@ -352,13 +352,14 @@ function mirrorRadioAgent(event: Record<string, unknown>): void {
   void mirrorRadioAgentImmediate(event);
 }
 
-async function mirrorRadioAgentImmediate(event: Record<string, unknown>): Promise<void> {
-  await radioAgent.handle(event).catch((error) => {
+async function mirrorRadioAgentImmediate(event: Record<string, unknown>): Promise<RadioAgentHandleResult | null> {
+  return await radioAgent.handle(event).catch((error) => {
     store.logPlaybackEvent("radio_agent_error", {
       uid: typeof event.uid === "string" ? event.uid : null,
       reason: error instanceof Error ? error.message : String(error),
       payload: { eventType: event.type },
     });
+    return null;
   });
 }
 
@@ -728,6 +729,27 @@ async function handleRadioSocket(socket: WebSocketType): Promise<void> {
       logFallback: logRadioAgentAssistedFallback,
     });
 
+  const queueRadioAgentWindow = async (programWindow: NonNullable<RadioAgentHandleResult["programWindow"]>): Promise<boolean> =>
+    queueRadioAgentProgramWindow(
+      {
+        mode: config.radioAgentMode,
+        uid,
+        sessionId,
+        currentTrack: currentTrack ? trackInfo(currentTrack) : null,
+        readyQueue: queue.readyItems().map((item) => ({
+          ...trackInfo(item.track),
+          selectionReason: item.selectionReason,
+        })),
+        radioAgent,
+        executor: radioAgentProgramExecutor,
+        traceStore,
+        queue,
+        synthesize,
+        logFallback: logRadioAgentAssistedFallback,
+      },
+      programWindow,
+    );
+
   const fillQueue = async (maxItems?: number, allowProgramBreak = true): Promise<void> => {
     let added = 0;
     let attempts = 0;
@@ -1084,12 +1106,13 @@ async function handleRadioSocket(socket: WebSocketType): Promise<void> {
       if (type === "song_request") {
         const requestText = compactText(message.text || "", 120);
         if (!requestText) return;
-        await mirrorRadioAgentImmediate({
+        const agentTextResult = await mirrorRadioAgentImmediate({
           type: "user_text",
           uid,
           sessionId,
           text: requestText,
           currentTrack: currentTrack ? trackInfo(currentTrack) : null,
+          readyQueue: queue.readyItems().map((readyItem) => trackInfo(readyItem.track)),
         });
         clearReadyQueueForExplicitDirection(requestText);
         introSendCancelled = true;
@@ -1099,6 +1122,21 @@ async function handleRadioSocket(socket: WebSocketType): Promise<void> {
         let shouldKickAfterRequest = false;
         const readyBeforeRequest = snapshotReadyItems(queue);
         try {
+          if (agentTextResult?.programWindow && (await queueRadioAgentWindow(agentTextResult.programWindow))) {
+            if (!isCurrentRequestToken(activeRequestToken, requestToken)) return;
+            const ready = queue.readyItems()[0];
+            if (ready) {
+              send({
+                type: "request_status",
+                status: "ready",
+                text: ready.selectionReason.text || agentTextResult.programWindow.stationBrief || "下一首准备好了。",
+                next_track: trackInfo(ready.track),
+              });
+              await sendPreparedNext("played", { allowContinuation: false, skipPrewarmWait: true });
+              return;
+            }
+          }
+
           const args = brainArgs(requestText);
           const result = await radioBrain.handleUserText({ ...args, text: requestText }).catch(() => null);
           if (!isCurrentRequestToken(activeRequestToken, requestToken)) return;

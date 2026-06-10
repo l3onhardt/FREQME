@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { tryQueueRadioAgentAssistedTrack } from "../../src/radio-agent/assistedQueue.js";
+import { queueRadioAgentProgramWindow, tryQueueRadioAgentAssistedTrack } from "../../src/radio-agent/assistedQueue.js";
 import type { RadioAgentProgramWindow } from "../../src/radio-agent/types.js";
 import type { Track } from "../../src/types.js";
 
@@ -115,6 +115,31 @@ test("assisted queue does not run in shadow mode", async () => {
   assert.equal(queued, false);
   assert.deepEqual(calls, []);
   assert.deepEqual(fallbackReasons, []);
+});
+
+test("assisted queue can execute an already planned user text program window", async () => {
+  const reported: Record<string, unknown>[] = [];
+  const { deps, calls, fallbackReasons } = assistedDeps({
+    radioAgent: {
+      handle: async (input: Record<string, unknown>) => {
+        reported.push(input);
+        return {
+          controlsPlayback: false,
+          event: { uid: "42", sessionId: 9, type: input.type as "program_track_queued", priority: "warm", payload: {}, createdAt: "" },
+        };
+      },
+    },
+  });
+
+  const queued = await queueRadioAgentProgramWindow(deps as any, window);
+  await flushAsyncWork();
+
+  assert.equal(queued, true);
+  assert.deepEqual(calls, ["executor", "trace", "tts", "queue:tts-hash"]);
+  assert.deepEqual(fallbackReasons, []);
+  assert.equal(reported[0]?.type, "program_track_queued");
+  assert.equal(reported[0]?.programWindowId, "window-1");
+  assert.deepEqual(reported[0]?.track, track);
 });
 
 test("assisted queue saves trace before queueing and survives TTS failure", async () => {
