@@ -1392,6 +1392,14 @@ test("runtime records assisted program track execution without replanning", asyn
   assert.equal(planCalls, 0);
   assert.ok(store.events.some((event) => event.type === "program_track_queued"));
   assert.equal(runtime.status("42", 9).recentEvents[0]?.type, "program_track_queued");
+
+  const journal = store.artifact("42", "agent_journal.md");
+  assert.match(journal?.content ?? "", /program_track_queued/);
+  assert.match(journal?.content ?? "", /Good Days - SZA/);
+  assert.match(journal?.content ?? "", /Known anchor/);
+  assert.match(journal?.content ?? "", /decision id 1/);
+  assert.match(journal?.content ?? "", /Watch whether the queued track plays, completes, or gets skipped/i);
+  assert.doesNotMatch(journal?.content ?? "", /prompt|JSON|tool call|shadow decision|model trace|\btrace\b/i);
 });
 
 test("active mode controls playback when it produces an agent program window", async () => {

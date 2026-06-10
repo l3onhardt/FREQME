@@ -100,6 +100,10 @@ export class RadioAgentRuntime {
       this.saveExecutionRepair(persistedEvent);
     }
 
+    if (event.type === "program_track_queued") {
+      this.saveProgramTrackQueued(persistedEvent);
+    }
+
     if (shouldRefreshProfileFromBehavior(persistedEvent)) {
       this.refreshProfileArtifacts(persistedEvent);
     }
@@ -510,6 +514,42 @@ export class RadioAgentRuntime {
     );
   }
 
+  private saveProgramTrackQueued(event: RadioAgentEvent): void {
+    if (!event.uid) return;
+    const track = extractTrack(event.payload.track);
+    const trackText = track ? `${track.name || "unknown track"} - ${track.artist || "unknown artist"}` : "the prepared track";
+    const programWindowId = stringValue(event.payload.programWindowId);
+    const traceId = stringValue(event.payload.traceId);
+    const selectionReason = stringValue(event.payload.selectionReason);
+    const hostText = stringValue(event.payload.hostText);
+    const guardrails = dedupeStrings([
+      programWindowId ? `program window ${programWindowId}` : "",
+      traceId ? `decision id ${listenerFacingDecisionId(traceId)}` : "",
+    ]);
+
+    this.saveDecision(event, "program_track_queued", {
+      track,
+      programWindowId,
+      traceId,
+      selectionReason,
+      hostText,
+    });
+    this.deps.store.saveArtifact(
+      event.uid,
+      "agent_journal.md",
+      buildAgentJournalMarkdown({
+        updatedAt: this.now(),
+        eventType: event.type,
+        observation: `Agent queued ${trackText} from its current program window.`,
+        interpretation: selectionReason || "The queued track is the next concrete execution of the current radio program.",
+        action: `Handed ${trackText} to the playback queue.${hostText ? ` Host handoff: ${hostText}` : ""}`,
+        guardrails,
+        nextCheck: "Watch whether the queued track plays, completes, or gets skipped before updating the station direction.",
+      }),
+      `${AGENT_JOURNAL_SOURCE_VERSION} session=${event.sessionId ?? "none"} source=execution`,
+    );
+  }
+
   private selfRepairProgramWindow(event: RadioAgentEvent, window: RadioAgentProgramWindow): RadioAgentProgramWindow {
     if (!event.uid) return window;
     const repair = planProgramRepair(window);
@@ -652,6 +692,16 @@ function journalNextCheck(event: RadioAgentEvent): string {
     return "Check whether the next played track satisfies the listener request.";
   }
   return "Check the next listener action before promoting any new memory.";
+}
+
+function listenerFacingDecisionId(traceId: string): string {
+  const compact = traceId
+    .replace(/\btrace\b/gi, "")
+    .replace(/^[._\-\s]+/u, "")
+    .replace(/[^A-Za-z0-9._-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return compact || "latest";
 }
 
 interface ProgramRepairPlan {
