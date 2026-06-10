@@ -245,6 +245,18 @@ function silentHostIntent(reason: string): RadioAgentHostIntent {
 function fallbackHostIntent(context: RadioAgentContextSnapshot): RadioAgentHostIntent {
   if (!shouldFallbackHostSpeak(context)) return silentHostIntent("fallback_low_interruption");
 
+  if (hasExecutionRepair(context.repair)) {
+    const text = recoveryHostText(context);
+    if (text) {
+      return {
+        shouldSpeak: true,
+        event: "recovery",
+        reason: "recovering from the last failed queue attempt",
+        text,
+      };
+    }
+  }
+
   const anchor = fallbackHostAnchor(context);
   const text = sanitizeHostText(
     anchor
@@ -268,6 +280,25 @@ function shouldFallbackHostSpeak(context: RadioAgentContextSnapshot): boolean {
 
 function hasReadyAgentProgramItem(context: RadioAgentContextSnapshot): boolean {
   return context.readyQueue.some((track) => track.selectionReason?.type === "radio_agent_program");
+}
+
+function hasExecutionRepair(repair: string): boolean {
+  return /\b(Execution could not prepare|Playback recovery could not continue|program_executor_no_track|queue_empty_after_all_recovery|trace_save_failed|assisted_queue_failed)\b/i.test(repair);
+}
+
+function recoveryHostText(context: RadioAgentContextSnapshot): string {
+  const anchor = fallbackRecoveryAnchor(context);
+  const direction = isRnbContractGoal(contractAnchor(context.contract)) ? "R&B" : "the station";
+  return sanitizeHostText(
+    anchor
+      ? `Recovering from that last miss; I will steady this back into ${direction} with ${anchor}.`
+      : `Recovering from that last miss; I will steady this back into ${direction} with a safer playable song.`,
+  );
+}
+
+function fallbackRecoveryAnchor(context: RadioAgentContextSnapshot): string {
+  const failedQueries = repairFailedQueries(context.repair);
+  return fallbackCandidateTasks(context).find((task) => !queryWasRecentlyFailed(task.query, failedQueries))?.query || fallbackHostAnchor(context);
 }
 
 function fallbackHostAnchor(context: RadioAgentContextSnapshot): string {

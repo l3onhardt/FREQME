@@ -41,6 +41,19 @@ test("host delivery keeps ordinary silent decisions off the speaker", () => {
   assert.equal(text, "");
 });
 
+test("host delivery speaks recovery decisions after agent repair", () => {
+  const text = hostTextForRadioAgentDelivery({
+    eventType: "queue_low",
+    decision: decision({
+      event: "recovery",
+      reason: "recovering from the last failed queue attempt",
+      text: "Recovering from that last miss; I will steady this back into R&B with Daniel Caesar Japanese Denim.",
+    }),
+  });
+
+  assert.equal(text, "Recovering from that last miss; I will steady this back into R&B with Daniel Caesar Japanese Denim.");
+});
+
 test("host delivery does not speak internal or broken planning text", () => {
   const text = hostTextForRadioAgentDelivery({
     eventType: "track_skipped",

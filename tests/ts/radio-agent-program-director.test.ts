@@ -749,6 +749,37 @@ test("fallback planning avoids queries that just failed execution", async () => 
   assert.ok(window.candidateTasks.some((task) => /Daniel Caesar|H\.E\.R\.|Brent Faiyaz/i.test(task.query)));
 });
 
+test("fallback planning treats the next move after execution repair as recovery", async () => {
+  const director = new RadioAgentProgramDirector(null, () => NOW);
+
+  const window = await director.plan({
+    ...contextSnapshot(),
+    readyQueue: [],
+    repair: [
+      "# Agent Repair",
+      "",
+      "## Issue",
+      "- Execution could not prepare a playable track: program_executor_no_track.",
+      "",
+      "## Evidence",
+      "- SZA",
+      "- Frank Ocean",
+      "",
+      "## Correction",
+      "- Treat the failed queries as weak negative evidence for this pass, then replan with safer concrete songs.",
+      "",
+      "## Next Attempt",
+      "- Replan with safer concrete R&B songs.",
+    ].join("\n"),
+  });
+
+  assert.equal(window.hostIntent.shouldSpeak, true);
+  assert.equal(window.hostIntent.event, "recovery");
+  assert.match(window.hostIntent.text, /recover|steady|back|R&B|Daniel Caesar|H\.E\.R\.|Brent Faiyaz/i);
+  assert.doesNotMatch(window.hostIntent.text, listenerUnsafeProgramTerms);
+  assert.ok(window.candidateTasks.every((task) => !/^SZA$|^Frank Ocean$/i.test(task.query)));
+});
+
 function contextSnapshot(): RadioAgentContextSnapshot {
   const memoryFacts: RadioAgentMemory[] = [
     {
