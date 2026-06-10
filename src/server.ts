@@ -1043,6 +1043,9 @@ async function handleRadioSocket(socket: WebSocketType): Promise<void> {
           uid,
           sessionId,
           track: currentTrack ? trackInfo(currentTrack) : null,
+          readyQueue: queue.readyItems().map((readyItem) => trackInfo(readyItem.track)),
+          readyQueueCount: queue.readyItems().length,
+          queueLow: queue.readyItems().length === 0,
         });
         await sendPreparedNext("played");
       }

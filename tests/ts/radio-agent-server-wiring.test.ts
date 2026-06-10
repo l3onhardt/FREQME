@@ -60,6 +60,21 @@ test("server reports exhausted playback recovery back to the radio agent", () =>
   assert.match(source.slice(recoveryEvent, listenerError), /currentTrack:\s*currentTrack\s*\?\s*trackInfo\(currentTrack\)\s*:\s*null/);
 });
 
+test("server reports queue pressure when playback completion is mirrored to the radio agent", () => {
+  const source = fs.readFileSync("src/server.ts", "utf8");
+  const endedHandler = source.indexOf('if (type === "track_ended")');
+  const completedEvent = source.indexOf('type: "track_completed"', endedHandler);
+  const sendNext = source.indexOf('await sendPreparedNext("played")', completedEvent);
+
+  assert.ok(endedHandler >= 0);
+  assert.ok(completedEvent > endedHandler);
+  assert.ok(sendNext > completedEvent);
+  const completionMirror = source.slice(completedEvent, sendNext);
+  assert.match(completionMirror, /readyQueue:\s*queue\.readyItems\(\)\.map\(\(readyItem\)\s*=>\s*trackInfo\(readyItem\.track\)\)/);
+  assert.match(completionMirror, /readyQueueCount:\s*queue\.readyItems\(\)\.length/);
+  assert.match(completionMirror, /queueLow:\s*queue\.readyItems\(\)\.length\s*===\s*0/);
+});
+
 test("server delivers safe radio agent host speech into the live DJ message channel", () => {
   const source = fs.readFileSync("src/server.ts", "utf8");
 
