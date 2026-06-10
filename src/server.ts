@@ -664,14 +664,6 @@ async function handleRadioSocket(socket: WebSocketType): Promise<void> {
     });
   };
 
-  const clearReadyQueueForExplicitDirection = (requestText: string): void => {
-    try {
-      const intent = intentRouter.classify(requestText);
-      if (intent.shouldClearQueue && !intent.shouldExplain) queue.clearReady();
-    } catch {
-    }
-  };
-
   const sendLateSegueTts = (segueId: string, text: string, track: Track, url: string): void => {
     if (!text) return;
     void (async () => {
@@ -843,6 +835,11 @@ async function handleRadioSocket(socket: WebSocketType): Promise<void> {
 
   const radioAgentService = new RadioAgentService({
     prepareTrack: async (track, startArgs, pick) => preparedOpeningFromScheduler(track, startArgs, pick),
+    handleRadioAgentEvent: mirrorRadioAgentImmediate,
+    clearReadyQueue: () => queue.clearReady(),
+    queueProgramWindow: queueRadioAgentWindow,
+    prepareProgramWindow: (programWindow) => radioAgentProgramExecutor.prepareFirstPlayable(programWindow),
+    hostTextForDelivery: hostTextForRadioAgentDelivery,
   });
 
   const preparedOpeningFromScheduler = async (
@@ -1303,21 +1300,22 @@ async function handleRadioSocket(socket: WebSocketType): Promise<void> {
       if (type === "song_request") {
         const requestText = compactText(message.text || "", 120);
         if (!requestText) return;
-        const agentTextResult = await mirrorRadioAgentImmediate({
-          type: "user_text",
+        const agentTextResult = await radioAgentService.handleUserText({
           uid,
           sessionId,
           text: requestText,
           currentTrack: currentTrack ? trackInfo(currentTrack) : null,
           readyQueue: queue.readyItems().map((readyItem) => trackInfo(readyItem.track)),
+          shouldClearQueue: (() => {
+            try {
+              const intent = intentRouter.classify(requestText);
+              return intent.shouldClearQueue && !intent.shouldExplain;
+            } catch {
+              return false;
+            }
+          })(),
         });
-        const agentAckText = agentTextResult
-          ? hostTextForRadioAgentDelivery({
-              eventType: agentTextResult.event.type,
-              decision: agentTextResult.hostDecision,
-            })
-          : "";
-        clearReadyQueueForExplicitDirection(requestText);
+        const agentAckText = agentTextResult.hostText;
         introSendCancelled = true;
         store.logPlaybackEvent("song_request", { uid, songId: currentSongId, reason: requestText });
         const requestToken = ++nextRequestToken;
@@ -1325,7 +1323,13 @@ async function handleRadioSocket(socket: WebSocketType): Promise<void> {
         let shouldKickAfterRequest = false;
         const readyBeforeRequest = snapshotReadyItems(queue);
         try {
-          if (agentTextResult?.programWindow && (await queueRadioAgentWindow(agentTextResult.programWindow))) {
+          const agentProgramWindow = agentTextResult.programWindow;
+          if (agentProgramWindow && (agentTextResult.programQueued || agentTextResult.preparedTrack)) {
+            if (!agentTextResult.programQueued && agentTextResult.preparedTrack) {
+              queue.addReady(agentTextResult.preparedTrack.track, agentTextResult.preparedTrack.url, agentTextResult.preparedTrack.selectionReason, {
+                segueText: agentTextResult.preparedTrack.segueText,
+              });
+            }
             if (!isCurrentRequestToken(activeRequestToken, requestToken)) return;
             const ready = queue.readyItems()[0];
             if (ready) {
@@ -1333,7 +1337,7 @@ async function handleRadioSocket(socket: WebSocketType): Promise<void> {
               send({
                 type: "request_status",
                 status: "ready",
-                text: ready.selectionReason.text || agentTextResult.programWindow.stationBrief || "下一首准备好了。",
+                text: ready.selectionReason.text || agentProgramWindow.stationBrief || "下一首准备好了。",
                 next_track: trackInfo(ready.track),
               });
               await sendPreparedNext("played", { allowContinuation: false, skipPrewarmWait: true });

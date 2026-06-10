@@ -3,7 +3,7 @@ import test from "node:test";
 
 import { RadioAgentService } from "../../src/radio-agent/radioAgentService.js";
 import type { OpeningTrackPick } from "../../src/radio-agent/openingTrack.js";
-import type { RadioAgentPreparedTrack } from "../../src/radio-agent/types.js";
+import type { RadioAgentHandleResult, RadioAgentPreparedTrack, RadioAgentProgramWindow } from "../../src/radio-agent/types.js";
 import type { SelectionReason, Track } from "../../src/types.js";
 
 test("service starts a session with an opening track before background planning", async () => {
@@ -94,18 +94,156 @@ test("service marks an unprepared opening candidate so the next attempt can adva
   assert.deepEqual(attempts, ["bad-url", "good-url"]);
 });
 
-function prepared(track: Track): RadioAgentPreparedTrack {
+test("service turns explicit listener direction into a program window and host acknowledgement", async () => {
+  const calls: string[] = [];
+  const jazzTrack: Track = { id: "jazz-1", name: "Blue in Green", artist: "Miles Davis" };
+  const programWindow = radioWindow({
+    stationBrief: "Quiet jazz for reading.",
+    mainDirection: "quiet jazz for reading",
+    candidateTasks: [{ query: "Miles Davis Blue in Green", reason: "Quiet jazz reading anchor.", style: "jazz", negativeConstraints: [] }],
+  });
+  const service = new RadioAgentService({
+    chooseOpeningTrack: () => null,
+    prepareTrack: async () => null,
+    handleRadioAgentEvent: async (event) => {
+      calls.push(`agent:${event.type}:${event.text}`);
+      return {
+        controlsPlayback: false,
+        event: { uid: "42", sessionId: 7, type: "user_text", priority: "hot", payload: {}, createdAt: "2026-06-11T00:00:00.000Z" },
+        hostDecision: {
+          shouldSpeak: true,
+          event: "request_ack",
+          reason: "listener changed direction",
+          text: "好，接下来收进安静一点的 jazz。",
+        },
+        programWindow,
+      } satisfies RadioAgentHandleResult;
+    },
+    prepareProgramWindow: async (window) => {
+      calls.push(`executor:${window.mainDirection}`);
+      return prepared(jazzTrack, { type: "radio_agent_program", text: "Quiet jazz reading anchor." });
+    },
+    clearReadyQueue: () => {
+      calls.push("clear");
+    },
+    hostTextForDelivery: ({ eventType, decision }) => {
+      calls.push(`host:${eventType}`);
+      return decision?.text || "";
+    },
+  });
+
+  const result = await service.handleUserText({
+    uid: "42",
+    sessionId: 7,
+    text: "play quiet jazz for reading",
+    currentTrack: null,
+    readyQueue: [],
+    shouldClearQueue: true,
+  });
+
+  assert.equal(result.preparedTrack?.track.id, "jazz-1");
+  assert.equal(result.programWindow?.mainDirection, "quiet jazz for reading");
+  assert.equal(result.hostText, "好，接下来收进安静一点的 jazz。");
+  assert.equal(result.shouldClearQueue, true);
+  assert.deepEqual(calls, [
+    "agent:user_text:play quiet jazz for reading",
+    "clear",
+    "executor:quiet jazz for reading",
+    "host:user_text",
+  ]);
+});
+
+test("service can execute an explicit direction through the queue adapter", async () => {
+  const calls: string[] = [];
+  const programWindow = radioWindow({
+    id: "window-jazz",
+    stationBrief: "Quiet jazz for reading.",
+    mainDirection: "quiet jazz for reading",
+  });
+  const service = new RadioAgentService({
+    chooseOpeningTrack: () => null,
+    prepareTrack: async () => null,
+    handleRadioAgentEvent: async (event) => {
+      calls.push(`agent:${event.type}`);
+      return {
+        controlsPlayback: false,
+        event: { uid: "42", sessionId: 7, type: "user_text", priority: "hot", payload: {}, createdAt: "2026-06-11T00:00:00.000Z" },
+        hostDecision: {
+          shouldSpeak: true,
+          event: "request_ack",
+          reason: "listener changed direction",
+          text: "好，接下来收进安静一点的 jazz。",
+        },
+        programWindow,
+      } satisfies RadioAgentHandleResult;
+    },
+    prepareProgramWindow: async () => {
+      throw new Error("queue adapter should own program execution when available");
+    },
+    queueProgramWindow: async (window) => {
+      calls.push(`queue:${window.id}`);
+      return true;
+    },
+    clearReadyQueue: () => {
+      calls.push("clear");
+    },
+    hostTextForDelivery: ({ eventType, decision }) => {
+      calls.push(`host:${eventType}`);
+      return decision?.text || "";
+    },
+  });
+
+  const result = await service.handleUserText({
+    uid: "42",
+    sessionId: 7,
+    text: "play quiet jazz for reading",
+    currentTrack: null,
+    readyQueue: [],
+    shouldClearQueue: true,
+  });
+
+  assert.equal(result.programWindow?.id, "window-jazz");
+  assert.equal(result.preparedTrack, undefined);
+  assert.equal(result.programQueued, true);
+  assert.equal(result.hostText, "好，接下来收进安静一点的 jazz。");
+  assert.deepEqual(calls, ["agent:user_text", "clear", "queue:window-jazz", "host:user_text"]);
+});
+
+function prepared(
+  track: Track,
+  selectionReason: SelectionReason = { type: "radio_agent_opening_liked", text: "Started from a liked track." },
+): RadioAgentPreparedTrack {
   return {
     track,
     url: `/audio/${track.id}`,
     segueText: "",
-    selectionReason: { type: "radio_agent_opening_liked", text: "Started from a liked track." } satisfies SelectionReason,
+    selectionReason,
     decisionTrace: {
       id: "trace-1",
       trackId: track.id,
       source: "radio_agent",
-      reason: "Started from a liked track.",
+      reason: selectionReason.text,
       createdAt: "2026-06-11T00:00:00.000Z",
     },
+  };
+}
+
+function radioWindow(overrides: Partial<RadioAgentProgramWindow>): RadioAgentProgramWindow {
+  return {
+    id: "window-1",
+    uid: "42",
+    sessionId: 7,
+    stationBrief: "Station brief.",
+    mainDirection: "quiet jazz",
+    allowedAdjacent: [],
+    bridgeBudget: 0,
+    disallowed: [],
+    returnRequirement: "Stay on the requested direction.",
+    candidateTasks: [],
+    hostIntent: { shouldSpeak: true, event: "request_ack", reason: "listener direction", text: "好。" },
+    traceBasis: { profile: "", now: "", contract: "", eventType: "user_text" },
+    source: "model",
+    createdAt: "2026-06-11T00:00:00.000Z",
+    ...overrides,
   };
 }
