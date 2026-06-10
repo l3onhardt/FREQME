@@ -900,6 +900,47 @@ test("model planning under an explicit R&B contract rejects ambient and classica
   assert.match(window.candidateTasks[0]?.query ?? "", /R&B|Daniel Caesar|Frank Ocean|SZA|H\.E\.R\.|Brent Faiyaz/i);
 });
 
+test("model planning rejects candidates blocked by generic program contract moves", async () => {
+  const model: ProgramPlanningModel = {
+    chat: async () =>
+      JSON.stringify({
+        station_brief: "Quiet folk recovery.",
+        main_direction: "Stay acoustic and intimate.",
+        candidate_tasks: [
+          { query: "Martin Garrix Animals", reason: "high-energy festival drops", style: "festival EDM" },
+          { query: "Nick Drake Pink Moon", reason: "quiet acoustic center", style: "quiet folk" },
+        ],
+      }),
+  };
+  const director = new RadioAgentProgramDirector(model, () => NOW);
+
+  const window = await director.plan({
+    ...contextSnapshot(),
+    profile: "# User Profile\n- Nick Drake is a quiet folk anchor.",
+    memoryFacts: [],
+    memoryHypotheses: [],
+    currentTrack: null,
+    readyQueue: [],
+    contract: [
+      "# Program Contract",
+      "",
+      "station_goal: quiet folk for a low-energy evening",
+      "",
+      "## Allowed Moves",
+      "- acoustic folk",
+      "- soft singer-songwriter",
+      "",
+      "## Blocked Moves",
+      "- high-energy EDM",
+      "- festival drops",
+    ].join("\n"),
+  });
+
+  assert.deepEqual(window.candidateTasks.map((task) => task.query), ["Nick Drake Pink Moon"]);
+  assert.ok(window.disallowed.some((item) => /high-energy EDM/i.test(item)));
+  assert.ok(window.disallowed.some((item) => /festival drops/i.test(item)));
+});
+
 test("fallback planning rewrites raw memory-evidence station goals into listener-facing language", async () => {
   const director = new RadioAgentProgramDirector(null, () => NOW);
 

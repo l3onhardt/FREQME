@@ -106,7 +106,7 @@ function buildWindowFromParsed(
     .filter((task): task is RadioAgentCandidateTask => task !== null);
   const safeModelTasks = parsedCandidateTasks
     .filter((task) => !queryWasRecentlyFailed(task.query, repairFailedQueries(context.repair)))
-    .filter((task) => !queryMatchesAvoids(task.query, fallbackNegativeConstraints(context)))
+    .filter((task) => !taskMatchesAvoids(task, fallbackNegativeConstraints(context)))
     .filter((task) => taskFitsContract(context, task))
     .slice(0, MAX_CANDIDATE_TASKS);
   const candidateTasks =
@@ -122,7 +122,7 @@ function buildWindowFromParsed(
     mainDirection: stringValue(valueFor(parsed, "mainDirection")) || fallbackMainDirection(context),
     allowedAdjacent: stringArray(valueFor(parsed, "allowedAdjacent")),
     bridgeBudget: numberValue(valueFor(parsed, "bridgeBudget"), 1),
-    disallowed: stringArray(valueFor(parsed, "disallowed")),
+    disallowed: uniqueStrings([...stringArray(valueFor(parsed, "disallowed")), ...contractBlockedMoves(context.contract)]),
     returnRequirement: stringValue(valueFor(parsed, "returnRequirement")) || "Return to the station brief after adjacent exploration.",
     candidateTasks,
     hostIntent: toHostIntent(valueFor(parsed, "hostIntent")),
@@ -441,6 +441,10 @@ function queryMatchesAvoids(query: string, avoids: string[]): boolean {
   });
 }
 
+function taskMatchesAvoids(task: RadioAgentCandidateTask, avoids: string[]): boolean {
+  return queryMatchesAvoids([task.query, task.reason, task.style, ...(task.negativeConstraints || [])].join(" "), avoids);
+}
+
 function normalizeQueryForRepair(query: string): string {
   return query.toLowerCase().replace(/[^a-z0-9&.+ ]/g, " ").replace(/\s+/g, " ").trim();
 }
@@ -498,8 +502,7 @@ function firstContractLine(contract: string, key: string): string {
 
 function extractDisallowed(contract: string): string[] {
   const avoid = firstContractLine(contract, "avoid");
-  if (!avoid) return [];
-  return avoid.split(",").map((item) => item.trim()).filter(Boolean);
+  return uniqueStrings([...avoid.split(",").map((item) => item.trim()).filter(Boolean), ...contractBlockedMoves(contract)]);
 }
 
 function fallbackNegativeConstraints(context: RadioAgentContextSnapshot): string[] {
@@ -509,6 +512,10 @@ function fallbackNegativeConstraints(context: RadioAgentContextSnapshot): string
     ...reflectionSkippedAvoids(context.reflection),
     ...sessionEvidenceAvoids(context.sessionEvidence),
   ]);
+}
+
+function contractBlockedMoves(contract: string): string[] {
+  return reflectionSectionLines(contract, "Blocked Moves").filter(Boolean).slice(0, 12);
 }
 
 function sessionEvidenceAvoids(memories: RadioAgentMemory[]): string[] {
