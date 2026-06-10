@@ -346,7 +346,12 @@ export class RadioAgentRuntime {
     const timezoneName = stringValue(event.payload.timezoneName) || stringValue(sessionEvent?.payload.timezoneName);
     const localTimeBlock = stringValue(event.payload.localTimeBlock) || stringValue(sessionEvent?.payload.localTimeBlock);
     const listenerStateHypothesis = listenerStateForEvent(event);
-    const activeDirection = currentSessionDirection(recentEvents);
+    const previousListenerSession =
+      event.type === "session_restored" ? this.deps.store.artifact(event.uid, "listener_session.md")?.content : undefined;
+    const previousProgramContract =
+      event.type === "session_restored" ? this.deps.store.artifact(event.uid, "program_contract.md")?.content : undefined;
+    const activeDirection =
+      currentSessionDirection(recentEvents) || restoredSessionDirectionFromArtifacts(previousListenerSession, previousProgramContract);
 
     this.deps.store.saveArtifact(
       event.uid,
@@ -1065,6 +1070,74 @@ function currentSessionDirection(events: RadioAgentEvent[]): ActiveSessionDirect
   }
 
   return null;
+}
+
+function restoredSessionDirectionFromArtifacts(
+  listenerSessionMarkdown: string | undefined,
+  programContractMarkdown: string | undefined,
+): ActiveSessionDirection | null {
+  const activeRequest = markdownField(listenerSessionMarkdown, "active_request");
+  if (!activeRequest || /^(none|unknown)$/i.test(activeRequest)) return null;
+
+  const stationGoal =
+    markdownField(programContractMarkdown, "station_goal") ||
+    `Keep the current radio session centered on ${activeRequest} until the listener asks to move elsewhere.`;
+  const acceptedDirection =
+    markdownField(listenerSessionMarkdown, "accepted_direction") ||
+    `Continue the restored ${activeRequest} station contract until the listener changes direction.`;
+  const nextPromise =
+    markdownField(listenerSessionMarkdown, "next_promise") ||
+    `Stay close to ${activeRequest} until the listener asks to move elsewhere.`;
+  const allowedMoves = markdownSectionItems(programContractMarkdown, "Allowed Moves");
+  const blockedMoves = markdownSectionItems(programContractMarkdown, "Blocked Moves");
+  const rejectedMoves = markdownSectionItems(listenerSessionMarkdown, "Rejected Moves");
+  const openHypotheses = markdownSectionItems(listenerSessionMarkdown, "Open Hypotheses");
+  const hostGuidance =
+    markdownSectionItems(listenerSessionMarkdown, "DJ Stance").find((item) => !/session requests|promote one skip|internal planning/i.test(item)) ||
+    `If speaking, acknowledge the restored ${activeRequest} lane briefly and keep the next handoff concrete.`;
+
+  return {
+    activeRequest,
+    stationGoal,
+    acceptedDirection,
+    allowedMoves: allowedMoves.length
+      ? allowedMoves
+      : [`Continue the restored ${activeRequest} direction unless the listener changes it.`],
+    blockedMoves: blockedMoves.length
+      ? blockedMoves
+      : ["Do not let a restart erase the active station request."],
+    rejectedMoves,
+    openHypotheses: openHypotheses.length
+      ? openHypotheses
+      : [`The restored session was actively operating inside ${activeRequest}.`],
+    nextPromise,
+    hostGuidance,
+  };
+}
+
+function markdownField(markdown: string | undefined, field: string): string {
+  if (!markdown) return "";
+  const escapedField = field.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = markdown.match(new RegExp(`^${escapedField}:\\s*(.+)$`, "im"));
+  return stringValue(match?.[1]);
+}
+
+function markdownSectionItems(markdown: string | undefined, heading: string): string[] {
+  if (!markdown) return [];
+  const lines = markdown.split(/\r?\n/u);
+  const items: string[] = [];
+  let inSection = false;
+  for (const line of lines) {
+    if (/^##\s+/u.test(line)) {
+      inSection = line.replace(/^##\s+/u, "").trim().toLowerCase() === heading.toLowerCase();
+      continue;
+    }
+    if (!inSection) continue;
+    const item = line.replace(/^\s*-\s*/u, "").trim();
+    if (!item || item.toLowerCase() === "none") continue;
+    items.push(item);
+  }
+  return dedupeStrings(items);
 }
 
 function listenerSessionFromEvents(

@@ -715,6 +715,69 @@ test("runtime writes current listener session memory for explicit R&B boundaries
   assert.doesNotMatch(session?.content ?? "", /active_request:.*Anyma/i);
 });
 
+test("runtime restores the previous active station contract after session restart", async () => {
+  const store = runtimeStore({
+    memories: () => [],
+  });
+  store.saveArtifact(
+    "42",
+    "listener_session.md",
+    [
+      "# Listener Session",
+      "",
+      "updated: 2026-06-03T00:55:00.000Z",
+      "active_request: R&B",
+      "accepted_direction: Keep the current session centered on R&B vocals.",
+      "next_promise: Stay in R&B until the listener asks to move elsewhere.",
+      "",
+      "## Rejected Moves",
+      "- generic electronic",
+      "",
+      "## Recent Corrections",
+      "- User said: play some rnb",
+      "",
+      "## Open Hypotheses",
+      "- The listener wants the current session to stay in R&B.",
+      "",
+      "## DJ Stance",
+      "- Keep vocals and groove forward.",
+    ].join("\n"),
+    "listener-session/v1 session=9",
+  );
+  store.saveArtifact(
+    "42",
+    "program_contract.md",
+    [
+      "# Program Contract",
+      "",
+      "station_goal: Keep the current radio session centered on R&B until the listener asks to move elsewhere.",
+      "",
+      "## Allowed Moves",
+      "- Prefer verified R&B, alt-R&B, neo-soul, and soft vocal tracks.",
+      "",
+      "## Blocked Moves",
+      "- Do not fall back to EDM, classical, ambient piano, or old profile anchors unless they clearly support the R&B request.",
+    ].join("\n"),
+    "program-contract/v1 session=9",
+  );
+  const runtime = new RadioAgentRuntime({ mode: "assisted", store, now: () => "2026-06-03T01:02:03.000Z" });
+
+  await runtime.handle({
+    type: "session_restored",
+    uid: "42",
+    sessionId: 10,
+    payload: { timezoneName: "Asia/Hong_Kong", localTimeBlock: "late_night" },
+  });
+
+  const session = store.artifact("42", "listener_session.md");
+  const contract = store.artifact("42", "program_contract.md");
+  assert.match(session?.content ?? "", /active_request: R&B/i);
+  assert.match(session?.content ?? "", /Stay in R&B until the listener asks to move elsewhere/i);
+  assert.doesNotMatch(session?.content ?? "", /active_request: none/i);
+  assert.match(contract?.content ?? "", /station_goal: Keep the current radio session centered on R&B/i);
+  assert.doesNotMatch(contract?.content ?? "", /Build a coherent late_night radio session/i);
+});
+
 test("runtime plans an agent-owned program window on queue low", async () => {
   const store = runtimeStore({
     memories: (uid: string, kind: string, limit: number) =>
