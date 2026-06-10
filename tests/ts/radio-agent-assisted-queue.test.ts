@@ -100,10 +100,17 @@ function assistedDeps(overrides: Record<string, unknown> = {}) {
   return { deps, calls, fallbackReasons };
 }
 
+async function flushAsyncWork(rounds = 4): Promise<void> {
+  for (let index = 0; index < rounds; index += 1) {
+    await Promise.resolve();
+  }
+}
+
 test("assisted queue does not run in shadow mode", async () => {
   const { deps, calls, fallbackReasons } = assistedDeps({ mode: "shadow" });
 
   const queued = await tryQueueRadioAgentAssistedTrack(deps as any);
+  await flushAsyncWork();
 
   assert.equal(queued, false);
   assert.deepEqual(calls, []);
@@ -111,7 +118,18 @@ test("assisted queue does not run in shadow mode", async () => {
 });
 
 test("assisted queue saves trace before queueing and survives TTS failure", async () => {
+  const reported: Record<string, unknown>[] = [];
   const { deps, calls, fallbackReasons } = assistedDeps({
+    radioAgent: {
+      handle: async (input: Record<string, unknown>) => {
+        reported.push(input);
+        return {
+          controlsPlayback: false,
+          event: { uid: "42", sessionId: 9, type: input.type as "queue_low", priority: "warm", payload: {}, createdAt: "" },
+          programWindow: window,
+        };
+      },
+    },
     synthesize: async () => {
       calls.push("tts");
       throw new Error("tts down");
@@ -119,9 +137,39 @@ test("assisted queue saves trace before queueing and survives TTS failure", asyn
   });
 
   const queued = await tryQueueRadioAgentAssistedTrack(deps as any);
+  await flushAsyncWork();
 
   assert.equal(queued, true);
-  assert.deepEqual(calls, ["agent", "executor", "trace", "tts", "queue:"]);
+  assert.deepEqual(calls, ["executor", "trace", "tts", "queue:"]);
+  assert.deepEqual(fallbackReasons, []);
+  assert.equal(reported[1]?.type, "program_track_queued");
+  assert.deepEqual(reported[1]?.track, track);
+  assert.equal(reported[1]?.programWindowId, "window-1");
+  assert.equal(reported[1]?.traceId, "trace-1");
+  assert.equal(reported[1]?.selectionReason, "Known taste anchor.");
+  assert.equal(reported[1]?.hostText, "Keeping this close.");
+});
+
+test("assisted queue still succeeds when execution event reporting fails", async () => {
+  const reported: Record<string, unknown>[] = [];
+  const { deps, fallbackReasons } = assistedDeps({
+    radioAgent: {
+      handle: async (input: Record<string, unknown>) => {
+        reported.push(input);
+        if (input.type === "program_track_queued") throw new Error("event store down");
+        return {
+          controlsPlayback: false,
+          event: { uid: "42", sessionId: 9, type: input.type as "queue_low", priority: "warm", payload: {}, createdAt: "" },
+          programWindow: window,
+        };
+      },
+    },
+  });
+
+  const queued = await tryQueueRadioAgentAssistedTrack(deps as any);
+
+  assert.equal(queued, true);
+  assert.equal(reported[1]?.type, "program_track_queued");
   assert.deepEqual(fallbackReasons, []);
 });
 

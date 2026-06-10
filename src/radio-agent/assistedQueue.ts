@@ -28,6 +28,17 @@ export interface RadioAgentAssistedQueueDeps {
       currentTrack: Track | null;
       readyQueue: Track[];
     } | {
+      type: "program_track_queued";
+      uid: string | null;
+      sessionId: number | null;
+      track: Track;
+      programWindowId: string;
+      traceId: string;
+      selectionReason: string;
+      hostText: string;
+      currentTrack: Track | null;
+      readyQueue: Track[];
+    } | {
       type: "program_repair_needed";
       uid: string | null;
       sessionId: number | null;
@@ -131,6 +142,7 @@ async function prepareAndQueueProgramWindow(
       segueText: prepared.segueText,
       ttsHash,
     });
+    reportTrackQueued(args, programWindow, prepared);
   } catch {
     return {
       status: "failed",
@@ -139,6 +151,25 @@ async function prepareAndQueueProgramWindow(
     };
   }
   return { status: "queued" };
+}
+
+function reportTrackQueued(
+  args: RadioAgentAssistedQueueDeps,
+  programWindow: RadioAgentProgramWindow,
+  prepared: RadioAgentPreparedTrack,
+): void {
+  void args.radioAgent.handle({
+    type: "program_track_queued",
+    uid: args.uid,
+    sessionId: args.sessionId,
+    track: prepared.track,
+    programWindowId: programWindow.id,
+    traceId: prepared.decisionTrace.id,
+    selectionReason: prepared.selectionReason.text || prepared.decisionTrace.reason || programWindow.stationBrief,
+    hostText: prepared.segueText,
+    currentTrack: args.currentTrack,
+    readyQueue: args.readyQueue,
+  }).catch(() => undefined);
 }
 
 function logFallback(args: RadioAgentAssistedQueueDeps, reason: RadioAgentAssistedFallbackReason): void {

@@ -18,6 +18,7 @@ export type RadioAgentEventType =
   | "track_completed"
   | "track_skipped"
   | "queue_low"
+  | "program_track_queued"
   | "program_repair_needed"
   | "playback_recovery_needed"
   | "user_text"
@@ -219,6 +220,7 @@ const WARM_EVENTS = new Set<RadioAgentEventType>([
   "playback_started",
   "track_completed",
   "queue_low",
+  "program_track_queued",
   "program_repair_needed",
   "playback_recovery_needed",
   "tts_completed",

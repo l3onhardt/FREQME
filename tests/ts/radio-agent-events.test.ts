@@ -19,6 +19,15 @@ test("queue low and track completed are warm events", () => {
   assert.equal(normalizeRadioAgentEvent({ type: "queue_low", uid: "42" }).priority, "warm");
   assert.equal(
     normalizeRadioAgentEvent({
+      type: "program_track_queued",
+      uid: "42",
+      track: { id: "1", name: "A", artist: "B" },
+      programWindowId: "window-1",
+    }).priority,
+    "warm",
+  );
+  assert.equal(
+    normalizeRadioAgentEvent({
       type: "track_completed",
       uid: "42",
       track: { id: "1", name: "A", artist: "B" },

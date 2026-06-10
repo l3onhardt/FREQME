@@ -1361,6 +1361,39 @@ test("runtime keeps host decisions when no program director is configured", asyn
   assert.ok(store.decisions.some((decision) => decision.decisionType === "host"));
 });
 
+test("runtime records assisted program track execution without replanning", async () => {
+  const store = runtimeStore();
+  let planCalls = 0;
+  const runtime = new RadioAgentRuntime({
+    mode: "assisted",
+    store,
+    programDirector: {
+      plan: async () => {
+        planCalls += 1;
+        return programWindow();
+      },
+    },
+    now: () => "2026-06-03T01:02:03.000Z",
+  });
+
+  const result = await runtime.handle({
+    type: "program_track_queued",
+    uid: "42",
+    sessionId: 9,
+    track: { id: "s1", name: "Good Days", artist: "SZA" },
+    programWindowId: "window-1",
+    traceId: "trace-1",
+    selectionReason: "Known anchor.",
+    hostText: "Keeping this close.",
+  });
+
+  assert.equal(result.controlsPlayback, false);
+  assert.equal(result.programWindow, undefined);
+  assert.equal(planCalls, 0);
+  assert.ok(store.events.some((event) => event.type === "program_track_queued"));
+  assert.equal(runtime.status("42", 9).recentEvents[0]?.type, "program_track_queued");
+});
+
 test("active mode controls playback when it produces an agent program window", async () => {
   const store = runtimeStore();
   const runtime = new RadioAgentRuntime({
