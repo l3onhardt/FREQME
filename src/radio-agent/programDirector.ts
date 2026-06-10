@@ -510,9 +510,17 @@ function sessionEvidenceAvoids(memories: RadioAgentMemory[]): string[] {
 
 function sessionAvoidAnchor(memory: RadioAgentMemory | undefined): string {
   if (!memory || memory.kind !== "session_evidence") return "";
+  if (memory.key.startsWith("session_avoid_track:")) return trackAvoidAnchor(memory.value);
   if (memory.key.startsWith("session_avoid:")) return memory.key.split(":").slice(1).join(":").trim();
   const match = memory.value.match(/\bsession-only avoid of\s+([^.;]+)/i)?.[1]?.trim();
   return match || "";
+}
+
+function trackAvoidAnchor(value: string): string {
+  const match = value.match(/\bskipped\s+([^.;]+?)(?:;\s*treat|\.\s*treat|$)/i)?.[1]?.trim() || "";
+  if (!match) return "";
+  const title = match.split(/\s+-\s+/u)[0]?.trim() || "";
+  return title || match;
 }
 
 function reflectionPositiveAnchors(reflection: string): string[] {

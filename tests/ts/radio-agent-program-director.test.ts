@@ -364,6 +364,65 @@ test("fallback planning honors structured session avoid evidence even without re
   assert.ok(window.candidateTasks.every((task) => task.negativeConstraints.some((item) => /Frank Ocean|SZA/i.test(item))));
 });
 
+test("fallback planning avoids a skipped track from structured session evidence without blocking its artist", async () => {
+  const director = new RadioAgentProgramDirector(null, () => NOW);
+
+  const window = await director.plan({
+    ...contextSnapshot(),
+    profile: [
+      "# User Profile",
+      "",
+      "## Stable Taste Facts",
+      "- artist:SZA: Listener has repeated library evidence for SZA. (confidence: 0.91, evidence: 5)",
+      "- artist:Daniel Caesar: Listener has repeated library evidence for Daniel Caesar. (confidence: 0.82, evidence: 3)",
+    ].join("\n"),
+    memoryFacts: [
+      {
+        uid: "42",
+        key: "artist:SZA",
+        kind: "taste_fact",
+        value: "Listener has repeated library evidence for SZA.",
+        confidence: 0.91,
+        evidenceCount: 5,
+        evidenceRefs: ["track:sza-1"],
+        updatedAt: NOW,
+      },
+      {
+        uid: "42",
+        key: "artist:Daniel Caesar",
+        kind: "taste_fact",
+        value: "Listener has repeated library evidence for Daniel Caesar.",
+        confidence: 0.82,
+        evidenceCount: 3,
+        evidenceRefs: ["track:daniel-1"],
+        updatedAt: NOW,
+      },
+    ],
+    memoryHypotheses: [],
+    sessionEvidence: [
+      {
+        uid: "42",
+        key: "session_avoid_track:sza-snooze",
+        kind: "session_evidence",
+        value: "Listener skipped Snooze - SZA; treat this as a session-only track avoid, not a durable artist dislike.",
+        confidence: 0.58,
+        evidenceCount: 1,
+        evidenceRefs: ["event:40"],
+        updatedAt: NOW,
+      },
+    ],
+    reflection: "",
+    currentTrack: { id: "sza-snooze", name: "Snooze", artist: "SZA" },
+    readyQueue: [],
+    contract: "# Program Contract\nstation_goal: mellow R&B radio",
+  });
+
+  assert.ok(window.candidateTasks.length > 0);
+  assert.ok(window.candidateTasks.every((task) => !/Snooze/i.test(task.query)));
+  assert.ok(window.candidateTasks.some((task) => /^SZA$/i.test(task.query)));
+  assert.ok(window.candidateTasks.every((task) => task.negativeConstraints.some((item) => /Snooze/i.test(item))));
+});
+
 test("program director preserves spec-compliant host events and sanitizes internal host text", async () => {
   const events = [
     "station_open",

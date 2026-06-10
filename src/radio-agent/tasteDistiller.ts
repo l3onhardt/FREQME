@@ -96,7 +96,8 @@ export function distillTasteFacts(args: TasteDistillationArgs): TasteDistillatio
 
   for (const event of args.recentEvents) {
     if (event.type === "track_skipped") {
-      const trackId = extractTrackId(event.payload.track);
+      const track = extractTrack(event.payload.track) || extractTrack(event.payload.currentTrack);
+      const trackId = track?.id || extractTrackId(event.payload.track);
       if (!trackId) continue;
       sessionEvidence.push({
         key: `skip:${trackId}`,
@@ -106,6 +107,17 @@ export function distillTasteFacts(args: TasteDistillationArgs): TasteDistillatio
         evidenceCount: 1,
         evidenceRefs: event.id ? [`event:${event.id}`] : [`event:${event.createdAt}`],
       });
+      if (track?.name) {
+        const trackLabel = track.artist ? `${track.name} - ${track.artist}` : track.name;
+        sessionEvidence.push({
+          key: `session_avoid_track:${trackId}`,
+          kind: "session_evidence",
+          value: `Listener skipped ${trackLabel}; treat this as a session-only track avoid, not a durable artist dislike.`,
+          confidence: 0.58,
+          evidenceCount: 1,
+          evidenceRefs: event.id ? [`event:${event.id}`] : [`event:${event.createdAt}`],
+        });
+      }
     }
 
     if (event.type === "user_text") {

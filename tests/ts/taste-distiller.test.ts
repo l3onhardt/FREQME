@@ -339,6 +339,33 @@ test("taste distiller treats one skip as session evidence only", () => {
   assert.ok(result.sessionEvidence.some((item) => item.key === "skip:bad-1"));
 });
 
+test("taste distiller turns one skip into a session-only track avoid without blocking the artist", () => {
+  const result = distillTasteFacts({
+    uid: "42",
+    libraryTracks: [],
+    playlists: [],
+    recentEvents: [
+      {
+        id: 40,
+        uid: "42",
+        sessionId: 7,
+        type: "track_skipped",
+        priority: "hot",
+        payload: { track: { id: "sza-snooze", name: "Snooze", artist: "SZA" } },
+        createdAt: "2026-06-03T01:02:03.000Z",
+      },
+    ],
+  });
+
+  const avoid = result.sessionEvidence.find((item) => item.key === "session_avoid_track:sza-snooze");
+  assert.ok(avoid);
+  assert.match(avoid?.value ?? "", /Snooze - SZA/);
+  assert.match(avoid?.value ?? "", /session-only track avoid/i);
+  assert.equal(result.facts.some((item) => /SZA|Snooze/.test(`${item.key} ${item.value}`)), false);
+  assert.equal(result.hypotheses.some((item) => /SZA|Snooze/.test(`${item.key} ${item.value}`)), false);
+  assert.equal(result.sessionEvidence.some((item) => item.key === "session_avoid:SZA"), false);
+});
+
 test("taste distiller gives explicit preference corrections higher confidence", () => {
   const result = distillTasteFacts({
     uid: "42",
