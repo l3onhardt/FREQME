@@ -7,6 +7,8 @@ import type { RadioAgentContextSnapshot, RadioAgentMemory, RadioAgentProgramWind
 const NOW = "2026-06-03T01:02:03.000Z";
 const listenerUnsafeProgramTerms =
   /deterministic|radio memory|current (?:station )?contract|station contract|model-selected|model selected|candidate|trace|verification|prompt|tool call|listener has|library evidence|playlist titles repeatedly/i;
+const unsafeHostSpeechText =
+  /旁边|质感|当前电台方向|继续保持这个感觉|主线还是|鎴|銆|鐨|涓|杩|俙|閹|娑|鐢|鍙|姘|绋|濂|鏀|浣/u;
 
 test("model JSON planning creates an agent-owned radio window from compact context", async () => {
   const prompts: string[] = [];
@@ -513,6 +515,37 @@ test("program director preserves spec-compliant host events and sanitizes intern
 
     assert.equal(window.hostIntent.event, event === "explanation" ? "silent" : event);
     assert.equal(window.hostIntent.text, event === "explanation" || event === "silent" ? "" : "Keeping the thread warm.");
+  }
+});
+
+test("program director does not pass model mojibake or awkward host text downstream", async () => {
+  const badHostTexts = [
+    "这首会稍微贴近旁边的质感，但主线还是继续保持这个感觉。",
+    "鎴戝厛椤虹潃 SZA 鐨勬柟鍚戞帴涓€棣栵紝鎶婄數鍙扮ǔ浣忋€俙",
+  ];
+
+  for (const badText of badHostTexts) {
+    const model: ProgramPlanningModel = {
+      chat: async () => JSON.stringify({
+        station_brief: "Late-night R&B.",
+        main_direction: "Keep R&B central.",
+        candidate_tasks: [{ query: "SZA Snooze", reason: "Known R&B anchor.", style: "R&B" }],
+        host_intent: {
+          should_speak: true,
+          event: "return_to_contract",
+          reason: "continuity",
+          text: badText,
+        },
+      }),
+    };
+    const director = new RadioAgentProgramDirector(model, () => NOW);
+
+    const window = await director.plan(contextSnapshot());
+
+    assert.equal(window.hostIntent.shouldSpeak, false);
+    assert.equal(window.hostIntent.event, "silent");
+    assert.equal(window.hostIntent.text, "");
+    assert.doesNotMatch(window.hostIntent.text, unsafeHostSpeechText);
   }
 });
 

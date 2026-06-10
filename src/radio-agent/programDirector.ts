@@ -29,6 +29,8 @@ const PROGRAM_DIRECTOR_SYSTEM =
 const DEFAULT_FALLBACK_QUERY = "warm vocal radio discovery";
 const INTERNAL_HOST_TERMS =
   /\b(model|json|candidate|trace|prompt|verification|shadow mode|tool call|deterministic|contract)\b/i;
+const AWKWARD_HOST_TERMS = /旁边|质感|当前电台方向|继续保持这个感觉|主线还是/u;
+const MOJIBAKE_HOST_TERMS = /[�]|閹|閵|娑|缁|淇|檤|闁|濞|鐢|鍙|姘|鎴|鍏|涓|杩|俙|銆/u;
 const RAW_MEMORY_EVIDENCE_TERMS = /listener has|library evidence|playlist titles repeatedly/i;
 const RAW_COMMAND_QUERY = /^\s*(please\s+)?(play|put on|queue|find|search|give me|can you|could you|i want|i need)\b/i;
 const UTILITY_AUDIO_QUERY = /\b(playlist|study|studying|sleep|lofi|lo-fi|white noise|brown noise|pink noise|rain sounds|timer|meditation|focus music|ambient sounds)\b/i;
@@ -295,6 +297,7 @@ function sanitizeHostText(text: string): string {
   const compact = text.replace(/\s+/g, " ").trim();
   if (!compact) return "";
   if (INTERNAL_HOST_TERMS.test(compact)) return "";
+  if (AWKWARD_HOST_TERMS.test(compact) || MOJIBAKE_HOST_TERMS.test(compact)) return "";
   return compact.length <= HOST_TEXT_LIMIT ? compact : compact.slice(0, HOST_TEXT_LIMIT).trim();
 }
 
