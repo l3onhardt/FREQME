@@ -1,7 +1,12 @@
 import type { DecisionTrace } from "../radio/radioBrainTypes.js";
 import type { MusicTask, SearchVerification, SelectionReason, StationEnvironment, Track } from "../types.js";
 import { compactText, dedupe } from "../utils/text.js";
-import type { RadioAgentCandidateTask, RadioAgentPreparedTrack, RadioAgentProgramWindow } from "./types.js";
+import type {
+  RadioAgentCandidateTask,
+  RadioAgentPreparedTrack,
+  RadioAgentProgramExecutionDiagnostics,
+  RadioAgentProgramWindow,
+} from "./types.js";
 
 export interface ProgramVerifier {
   verify(task: MusicTask, uid?: string | null, context?: string): Promise<SearchVerification>;
@@ -13,14 +18,21 @@ const INTERNAL_LISTENER_TERMS =
 const TRACK_SEPARATOR = /\s[-\u2013\u2014:]\s/u;
 const GENERIC_REASON = "Selected for the current radio program.";
 
-export class RadioAgentProgramExecutor {
+export class RadioAgentProgramExecutor implements RadioAgentProgramExecutionDiagnostics {
+  private attemptedQueries: string[] = [];
+
   constructor(
     private readonly verifier: ProgramVerifier,
     private readonly traceId: () => string = () => `radio-agent-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     private readonly now: () => string = () => new Date().toISOString(),
   ) {}
 
+  latestAttemptedQueries(): string[] {
+    return [...this.attemptedQueries];
+  }
+
   async prepareFirstPlayable(window: RadioAgentProgramWindow): Promise<RadioAgentPreparedTrack | null> {
+    this.attemptedQueries = [];
     const traceId = this.traceId();
     const rejectedCandidates: string[] = [];
     const verificationAttempts: string[] = [];
@@ -32,7 +44,9 @@ export class RadioAgentProgramExecutor {
 
       const musicTask = musicTaskForCandidate(window, candidate);
       const verification = await this.verifier.verify(musicTask, window.uid, verifierContext(window)).catch(() => null);
-      const attemptedQuery = compactText(verification?.usedQuery || candidate.query, 120);
+      const attemptedQueries = attemptedQueriesForVerification(verification, candidate.query);
+      this.attemptedQueries = dedupe([...this.attemptedQueries, ...attemptedQueries]);
+      const attemptedQuery = attemptedQueries[0] || compactText(candidate.query, 120);
       if (attemptedQuery) verificationAttempts.push(attemptedQuery);
 
       if (!isPlayableVerification(verification)) {
@@ -87,6 +101,14 @@ export class RadioAgentProgramExecutor {
 
     return null;
   }
+}
+
+function attemptedQueriesForVerification(verification: SearchVerification | null, fallbackQuery: string): string[] {
+  return dedupe([
+    ...(verification?.diagnostics?.searchedQueries || []),
+    verification?.usedQuery || "",
+    fallbackQuery,
+  ].map((query) => compactText(query, 120)).filter(Boolean));
 }
 
 function musicTaskForCandidate(window: RadioAgentProgramWindow, candidate: RadioAgentCandidateTask): MusicTask {

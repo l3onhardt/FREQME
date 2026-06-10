@@ -135,6 +135,10 @@ export interface RadioAgentPreparedTrack {
   decisionTrace: DecisionTrace;
 }
 
+export interface RadioAgentProgramExecutionDiagnostics {
+  latestAttemptedQueries(): string[];
+}
+
 export interface RadioShadowDecision {
   id: string;
   uid: string | null;

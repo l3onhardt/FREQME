@@ -164,6 +164,33 @@ test("assisted queue logs and falls back when no playable track verifies", async
   assert.deepEqual(reported[1]?.attemptedQueries, ["SZA Good Days"]);
 });
 
+test("assisted queue reports actual verifier attempts when no playable track verifies", async () => {
+  const reported: Record<string, unknown>[] = [];
+  const { deps, fallbackReasons } = assistedDeps({
+    radioAgent: {
+      handle: async (input: Record<string, unknown>) => {
+        reported.push(input);
+        return {
+          controlsPlayback: false,
+          event: { uid: "42", sessionId: 9, type: "queue_low", priority: "warm", payload: {}, createdAt: "" },
+          programWindow: window,
+        };
+      },
+    },
+    executor: {
+      prepareFirstPlayable: async () => null,
+      latestAttemptedQueries: () => ["SZA Good Days live", "SZA Good Days acoustic"],
+    },
+  });
+
+  const queued = await tryQueueRadioAgentAssistedTrack(deps as any);
+
+  assert.equal(queued, false);
+  assert.deepEqual(fallbackReasons, ["program_executor_no_track"]);
+  assert.equal(reported[1]?.type, "program_repair_needed");
+  assert.deepEqual(reported[1]?.attemptedQueries, ["SZA Good Days live", "SZA Good Days acoustic", "SZA Good Days"]);
+});
+
 test("assisted queue logs and falls back before queueing when trace save fails", async () => {
   const reported: Record<string, unknown>[] = [];
   const { deps, calls, fallbackReasons } = assistedDeps({

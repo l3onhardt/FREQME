@@ -4,6 +4,7 @@ import type {
   RadioAgentHandleResult,
   RadioAgentMode,
   RadioAgentPreparedTrack,
+  RadioAgentProgramExecutionDiagnostics,
   RadioAgentProgramWindow,
 } from "./types.js";
 
@@ -39,7 +40,7 @@ export interface RadioAgentAssistedQueueDeps {
   };
   executor: {
     prepareFirstPlayable(window: RadioAgentProgramWindow): Promise<RadioAgentPreparedTrack | null>;
-  };
+  } & Partial<RadioAgentProgramExecutionDiagnostics>;
   traceStore: {
     save(trace: DecisionTrace): void | Promise<void>;
   };
@@ -75,12 +76,12 @@ export async function tryQueueRadioAgentAssistedTrack(args: RadioAgentAssistedQu
     try {
       prepared = await args.executor.prepareFirstPlayable(result.programWindow);
     } catch {
-      await reportRepairNeeded(args, result.programWindow, "assisted_queue_failed");
+      await reportRepairNeeded(args, result.programWindow, "assisted_queue_failed", attemptedQueriesFromExecutor(args, result.programWindow));
       logFallback(args, "assisted_queue_failed");
       return false;
     }
     if (!prepared) {
-      await reportRepairNeeded(args, result.programWindow, "program_executor_no_track");
+      await reportRepairNeeded(args, result.programWindow, "program_executor_no_track", attemptedQueriesFromExecutor(args, result.programWindow));
       logFallback(args, "program_executor_no_track");
       return false;
     }
@@ -88,7 +89,7 @@ export async function tryQueueRadioAgentAssistedTrack(args: RadioAgentAssistedQu
     try {
       await args.traceStore.save(prepared.decisionTrace);
     } catch {
-      await reportRepairNeeded(args, result.programWindow, "trace_save_failed");
+      await reportRepairNeeded(args, result.programWindow, "trace_save_failed", prepared.decisionTrace.verificationAttempts);
       logFallback(args, "trace_save_failed");
       return false;
     }
@@ -100,7 +101,7 @@ export async function tryQueueRadioAgentAssistedTrack(args: RadioAgentAssistedQu
         ttsHash,
       });
     } catch {
-      await reportRepairNeeded(args, result.programWindow, "assisted_queue_failed");
+      await reportRepairNeeded(args, result.programWindow, "assisted_queue_failed", prepared.decisionTrace.verificationAttempts);
       logFallback(args, "assisted_queue_failed");
       return false;
     }
@@ -122,6 +123,7 @@ async function reportRepairNeeded(
   args: RadioAgentAssistedQueueDeps,
   programWindow: RadioAgentProgramWindow,
   reason: RadioAgentAssistedFallbackReason,
+  attemptedQueries = programWindow.candidateTasks.map((task) => task.query).filter(Boolean),
 ): Promise<void> {
   try {
     await args.radioAgent.handle({
@@ -130,10 +132,19 @@ async function reportRepairNeeded(
       sessionId: args.sessionId,
       reason,
       programWindow,
-      attemptedQueries: programWindow.candidateTasks.map((task) => task.query).filter(Boolean),
+      attemptedQueries: dedupeStrings([...attemptedQueries, ...programWindow.candidateTasks.map((task) => task.query).filter(Boolean)]),
       currentTrack: args.currentTrack,
       readyQueue: args.readyQueue,
     });
   } catch {
   }
+}
+
+function attemptedQueriesFromExecutor(args: RadioAgentAssistedQueueDeps, programWindow: RadioAgentProgramWindow): string[] {
+  const latest = args.executor.latestAttemptedQueries?.() || [];
+  return dedupeStrings([...latest, ...programWindow.candidateTasks.map((task) => task.query).filter(Boolean)]);
+}
+
+function dedupeStrings(values: string[]): string[] {
+  return Array.from(new Set(values.map((value) => value.trim()).filter(Boolean)));
 }

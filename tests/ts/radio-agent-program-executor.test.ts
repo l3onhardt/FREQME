@@ -108,6 +108,25 @@ test("program executor returns null when no candidate verifies", async () => {
   assert.equal(prepared, null);
 });
 
+test("program executor exposes actual attempted search queries when no candidate verifies", async () => {
+  const verifier = {
+    verify: async (task: MusicTask): Promise<SearchVerification> => ({
+      status: "not_found",
+      verification: {},
+      fallbackCandidates: [],
+      recoveryOptions: [],
+      failureReason: "none",
+      diagnostics: { searchedQueries: [`${task.searchGoals[0]} live`, `${task.searchGoals[0]} acoustic`] },
+    }),
+  };
+
+  const executor = new RadioAgentProgramExecutor(verifier as any, () => "trace-attempts");
+  const prepared = await executor.prepareFirstPlayable(programWindow());
+
+  assert.equal(prepared, null);
+  assert.deepEqual(executor.latestAttemptedQueries(), ["SZA Good Days live", "SZA Good Days acoustic", "SZA Good Days"]);
+});
+
 test("program executor leaves segue text empty when host intent should not speak", async () => {
   const verifier = {
     verify: async (): Promise<SearchVerification> => ({
