@@ -305,16 +305,17 @@ function fallbackHostAnchor(context: RadioAgentContextSnapshot): string {
   const contract = contractAnchor(context.contract);
   const explicitContract = explicitContractFallbackQueries(context)[0] || "";
   if (explicitContract && isRnbContractGoal(contract)) return listenerFacingContractAnchor(contract);
-  const anchor =
-    reflectionCompletedArtists(context.reflection)[0] ||
-    reflectionPositiveAnchors(context.reflection)[0] ||
-    memoryAnchor(context.memoryHypotheses[0]) ||
-    memoryAnchor(context.memoryFacts[0]) ||
-    profileAnchors(context.profile)[0] ||
-    context.currentTrack?.artist ||
-    context.readyQueue[0]?.artist ||
-    "";
-  if (anchor && (!contract || anchorFitsContract(contract, anchor))) return anchor;
+  const avoids = fallbackNegativeConstraints(context);
+  const anchor = [
+    ...reflectionCompletedArtists(context.reflection),
+    ...reflectionPositiveAnchors(context.reflection),
+    ...context.memoryHypotheses.map(memoryAnchor),
+    ...context.memoryFacts.map(memoryAnchor),
+    ...profileAnchors(context.profile),
+    context.currentTrack?.artist,
+    ...context.readyQueue.map((track) => track.artist),
+  ].find((candidate) => candidate && !queryMatchesAvoids(candidate, avoids) && (!contract || anchorFitsContract(contract, candidate)));
+  if (anchor) return anchor;
   if (isRnbContractGoal(contract)) return "R&B";
   return contract;
 }
@@ -348,6 +349,7 @@ function explicitArtistSessionAnchor(context: RadioAgentContextSnapshot): string
 }
 
 function cleanSessionAnchor(value: string): string {
+  if (/^\s*(?:avoid|less|skip|no|don't|dont|do not|dislike)\b/i.test(value)) return "";
   return value
     .replace(/\s+/g, " ")
     .replace(/[.,;:!?]+$/u, "")
@@ -466,14 +468,16 @@ function fallbackMainDirection(context: RadioAgentContextSnapshot): string {
   const contract = contractAnchor(context.contract);
   const explicitContract = explicitContractFallbackQueries(context)[0] || "";
   if (explicitContract) return `Stay with ${explicitContract} as the active station direction.`;
-  const anchor =
-    reflectionCompletedArtists(context.reflection)[0] ||
-    reflectionPositiveAnchors(context.reflection)[0] ||
-    memoryAnchor(context.memoryHypotheses[0]) ||
-    memoryAnchor(context.memoryFacts[0]) ||
-    profileAnchors(context.profile)[0] ||
-    context.currentTrack?.artist ||
-    context.currentTrack?.name;
+  const avoids = fallbackNegativeConstraints(context);
+  const anchor = [
+    ...reflectionCompletedArtists(context.reflection),
+    ...reflectionPositiveAnchors(context.reflection),
+    ...context.memoryHypotheses.map(memoryAnchor),
+    ...context.memoryFacts.map(memoryAnchor),
+    ...profileAnchors(context.profile),
+    context.currentTrack?.artist,
+    context.currentTrack?.name,
+  ].find((candidate) => candidate && !queryMatchesAvoids(candidate, avoids));
   if (contract && (!anchor || !anchorFitsContract(contract, anchor))) return contract;
   return anchor ? `Stay close to ${anchor} and keep the current radio mood coherent.` : "Keep the current radio mood coherent.";
 }

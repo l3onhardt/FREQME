@@ -984,11 +984,36 @@ function currentSessionDirection(events: RadioAgentEvent[]): ActiveSessionDirect
   const explicitEvent = events.find((event) => {
     if (event.type !== "user_text") return false;
     const text = stringValue(event.payload.text);
-    return isRnbRequest(text) || Boolean(positiveArtistRequestFromText(text));
+    return isRnbRequest(text) || Boolean(positiveArtistRequestFromText(text)) || negativeArtistMovesFromText(text).length > 0;
   });
   if (!explicitEvent) return null;
 
   const explicitText = stringValue(explicitEvent.payload.text);
+  const explicitAvoids = negativeArtistMovesFromText(explicitText);
+  if (explicitAvoids.length > 0) {
+    const avoidLabel = humanList(explicitAvoids);
+    return {
+      activeRequest: `Avoid ${avoidLabel}`,
+      stationGoal: `Move the current radio session away from ${avoidLabel} while keeping the broader station coherent.`,
+      acceptedDirection: `Avoid ${avoidLabel} for this session and choose nearby music that does not repeat the rejected direction.`,
+      allowedMoves: [
+        "Use adjacent tracks only when they avoid the rejected artist direction.",
+        "Keep the broader station coherent while replacing the rejected anchor.",
+      ],
+      blockedMoves: [
+        ...explicitAvoids.map((artist) => `Do not play ${artist} unless the listener asks for it again.`),
+        "Do not let older profile anchors override this explicit correction.",
+      ],
+      rejectedMoves: explicitAvoids,
+      openHypotheses: [
+        `The listener explicitly corrected away from ${avoidLabel}; treat this as a session constraint, not a permanent dislike.`,
+        "Wait for repeated evidence before weakening durable taste memory.",
+      ],
+      nextPromise: `Avoid ${avoidLabel} unless the listener asks for it again.`,
+      hostGuidance: `Acknowledge the correction briefly if speaking, then move away from ${avoidLabel} without overexplaining.`,
+    };
+  }
+
   const explicitArtist = positiveArtistRequestFromText(explicitText);
   if (explicitArtist) {
     return {

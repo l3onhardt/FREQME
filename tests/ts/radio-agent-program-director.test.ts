@@ -616,6 +616,58 @@ test("fallback planning prioritizes an explicit artist session contract over sta
   assert.doesNotMatch(window.hostIntent.text, /Anyma/i);
 });
 
+test("fallback planning treats a negative artist session request as an avoid, not an anchor", async () => {
+  const director = new RadioAgentProgramDirector(null, () => NOW);
+
+  const window = await director.plan({
+    ...contextSnapshot(),
+    profile: [
+      "# User Profile",
+      "",
+      "## Stable Taste Facts",
+      "- artist:Frank Ocean: Listener returns to Frank Ocean for late-night transitions. (confidence: 0.83, evidence: 4)",
+      "- artist:SZA: Listener has repeated library evidence for SZA. (confidence: 0.91, evidence: 5)",
+    ].join("\n"),
+    memoryFacts: [
+      {
+        uid: "42",
+        key: "artist:Frank Ocean",
+        kind: "taste_fact",
+        value: "Listener has repeated library evidence for Frank Ocean.",
+        confidence: 0.91,
+        evidenceCount: 6,
+        evidenceRefs: ["track:frank-1"],
+        updatedAt: "2026-06-03T01:00:00.000Z",
+      },
+      {
+        uid: "42",
+        key: "artist:SZA",
+        kind: "taste_fact",
+        value: "Listener has repeated library evidence for SZA.",
+        confidence: 0.86,
+        evidenceCount: 4,
+        evidenceRefs: ["track:sza-1"],
+        updatedAt: "2026-06-03T01:00:00.000Z",
+      },
+    ],
+    memoryHypotheses: [],
+    currentTrack: { id: "frank-1", name: "Pink + White", artist: "Frank Ocean" },
+    readyQueue: [{ id: "frank-2", name: "Nights", artist: "Frank Ocean" }],
+    reflection: "# Session Reflection\n\n## Temporary Avoids\n- Frank Ocean",
+    contract:
+      "# Program Contract\nstation_goal: Move the current radio session away from Frank Ocean while keeping the broader station coherent.\navoid: Frank Ocean",
+    session:
+      "# Listener Session\nactive_request: Avoid Frank Ocean\naccepted_direction: Move away from Frank Ocean for this session.\nnext_promise: Avoid Frank Ocean unless the listener asks for it again.",
+  });
+
+  assert.equal(window.source, "deterministic_fallback");
+  assert.ok(window.candidateTasks.length > 0);
+  assert.ok(window.candidateTasks.every((task) => !/Frank Ocean/i.test(task.query)));
+  assert.ok(window.candidateTasks.every((task) => task.negativeConstraints.some((item) => /Frank Ocean/i.test(item))));
+  assert.doesNotMatch(window.mainDirection, /Stay with Avoid Frank Ocean/i);
+  assert.doesNotMatch(window.hostIntent.text, /Frank Ocean/i);
+});
+
 test("fallback planning turns a fresh R&B session contract into concrete first moves before old anchors", async () => {
   const director = new RadioAgentProgramDirector(null, () => NOW);
 
