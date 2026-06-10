@@ -1,8 +1,23 @@
 import dotenv from "dotenv";
+import fs from "node:fs";
+import path from "node:path";
 
 import type { RadioAgentMode } from "./radio-agent/types.js";
 
-dotenv.config();
+for (const envPath of envFileCandidates(process.cwd())) {
+  if (fs.existsSync(envPath)) dotenv.config({ path: envPath, override: false });
+}
+
+export function envFileCandidates(cwd: string): string[] {
+  const normalized = path.resolve(cwd);
+  const candidates = [path.join(normalized, ".env")];
+  const marker = `${path.sep}.worktrees${path.sep}`;
+  const markerIndex = normalized.indexOf(marker);
+  if (markerIndex >= 0) {
+    candidates.push(path.join(normalized.slice(0, markerIndex), ".env"));
+  }
+  return Array.from(new Set(candidates));
+}
 
 function intEnv(name: string, fallback: number): number {
   const raw = process.env[name];
