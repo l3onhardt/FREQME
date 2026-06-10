@@ -98,6 +98,10 @@ export function distillTasteFacts(args: TasteDistillationArgs): TasteDistillatio
     upsertEvidence(facts, item);
   }
 
+  for (const item of durableNegativeArtistFacts(args.recentEvents, existingMemories)) {
+    upsertEvidence(facts, item);
+  }
+
   for (const event of args.recentEvents) {
     if (event.type === "track_skipped") {
       const track = extractTrack(event.payload.track) || extractTrack(event.payload.currentTrack);
@@ -285,6 +289,37 @@ function durableCompletedArtistFacts(events: RadioAgentEvent[], existingMemories
   return result;
 }
 
+function durableNegativeArtistFacts(events: RadioAgentEvent[], existingMemories: RadioAgentMemory[]): TasteEvidenceItem[] {
+  const priorAvoids = new Map<string, { count: number; refs: string[] }>();
+  for (const memory of existingMemories) {
+    const artist = artistFromSessionAvoidMemory(memory);
+    if (!artist) continue;
+    const current = priorAvoids.get(artist) || { count: 0, refs: [] };
+    current.count += Math.max(1, memory.evidenceCount || 1);
+    current.refs.push(...memory.evidenceRefs);
+    priorAvoids.set(artist, current);
+  }
+
+  const result: TasteEvidenceItem[] = [];
+  for (const [artist, prior] of priorAvoids.entries()) {
+    const currentRefs = events
+      .filter((event) => event.type === "user_text")
+      .filter((event) => explicitNegativeArtistsFromText(stringValue(event.payload.text)).includes(artist))
+      .map((event) => (event.id ? `event:${event.id}` : `event:${event.createdAt}`));
+    if (!currentRefs.length || prior.count + currentRefs.length < 2) continue;
+    result.push({
+      key: `avoid_artist:${artist}`,
+      kind: "taste_fact",
+      value: `Listener repeatedly asked to avoid ${artist}; treat ${artist} as a conservative durable avoid unless the listener asks for it again.`,
+      confidence: Math.min(0.84, 0.64 + (prior.count + currentRefs.length) * 0.05),
+      evidenceCount: prior.count + currentRefs.length,
+      evidenceRefs: uniqueStrings([...prior.refs, ...currentRefs]).slice(0, 12),
+    });
+  }
+
+  return result;
+}
+
 function completedArtistEvidence(
   events: RadioAgentEvent[],
   existingMemories: RadioAgentMemory[] = [],
@@ -315,6 +350,11 @@ function completedArtistEvidence(
 
 function artistFromSessionMemory(memory: RadioAgentMemory): string {
   if (memory.kind !== "taste_hypothesis" || !memory.key.startsWith("session_artist:")) return "";
+  return memory.key.split(":").slice(1).join(":").trim();
+}
+
+function artistFromSessionAvoidMemory(memory: RadioAgentMemory): string {
+  if (memory.kind !== "session_evidence" || !memory.key.startsWith("session_avoid:")) return "";
   return memory.key.split(":").slice(1).join(":").trim();
 }
 
