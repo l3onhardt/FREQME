@@ -614,6 +614,36 @@ test("runtime keeps explicit positive artist requests in the current station con
   assert.doesNotMatch(contract?.content ?? "", /station_goal:.*Anyma/i);
 });
 
+test("runtime lets the newest explicit artist request replace an older R&B session contract", async () => {
+  const store = runtimeStore();
+  const runtime = new RadioAgentRuntime({ mode: "assisted", store, now: () => "2026-06-03T01:02:03.000Z" });
+
+  await runtime.handle({
+    type: "user_text",
+    uid: "42",
+    sessionId: 9,
+    text: "play some rnb",
+  });
+  await runtime.handle({
+    type: "user_text",
+    uid: "42",
+    sessionId: 9,
+    text: "actually more Frank Ocean tonight",
+  });
+  await runtime.handle({
+    type: "playback_started",
+    uid: "42",
+    sessionId: 9,
+    track: { id: "s1", name: "Snooze", artist: "SZA" },
+  });
+
+  const session = store.artifact("42", "listener_session.md");
+  const contract = store.artifact("42", "program_contract.md");
+  assert.match(session?.content ?? "", /active_request: Frank Ocean/i);
+  assert.match(contract?.content ?? "", /station_goal: Keep the current radio session centered on Frank Ocean/i);
+  assert.doesNotMatch(contract?.content ?? "", /station_goal: Keep the current radio session centered on R&B/i);
+});
+
 test("runtime writes current listener session memory for explicit R&B boundaries", async () => {
   const store = runtimeStore({
     memories: (uid: string, kind: string, limit: number) =>

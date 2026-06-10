@@ -981,12 +981,37 @@ function listenerStateForEvent(event: RadioAgentEvent): string {
 }
 
 function currentSessionDirection(events: RadioAgentEvent[]): ActiveSessionDirection | null {
-  const explicitRnb = events.find((event) => {
+  const explicitEvent = events.find((event) => {
     if (event.type !== "user_text") return false;
     const text = stringValue(event.payload.text);
-    return isRnbRequest(text);
+    return isRnbRequest(text) || Boolean(positiveArtistRequestFromText(text));
   });
-  if (explicitRnb) {
+  if (!explicitEvent) return null;
+
+  const explicitText = stringValue(explicitEvent.payload.text);
+  const explicitArtist = positiveArtistRequestFromText(explicitText);
+  if (explicitArtist) {
+    return {
+      activeRequest: explicitArtist,
+      stationGoal: `Keep the current radio session centered on ${explicitArtist} until the listener asks to move elsewhere.`,
+      acceptedDirection: `Keep this session close to ${explicitArtist}: start from that artist as the primary anchor, then use nearby tracks only when they support the same feel.`,
+      allowedMoves: [
+        `Use ${explicitArtist} as the primary session anchor.`,
+        "Use adjacent artists or tracks only when they clearly support the requested artist direction.",
+      ],
+      blockedMoves: [
+        "Do not let older profile anchors override this explicit session request.",
+      ],
+      openHypotheses: [
+        `The listener explicitly asked for more ${explicitArtist}; treat this as a session preference until playback confirms it.`,
+        "Do not promote this into a durable preference without repeated evidence or completed listening.",
+      ],
+      nextPromise: `Stay close to ${explicitArtist} until the listener asks to move elsewhere.`,
+      hostGuidance: `Acknowledge ${explicitArtist} naturally if speaking, then keep the handoff concrete and low-interruption.`,
+    };
+  }
+
+  if (isRnbRequest(explicitText)) {
     return {
       activeRequest: "R&B",
       stationGoal: "Keep the current radio session centered on R&B until the listener asks to move elsewhere.",
@@ -1014,30 +1039,7 @@ function currentSessionDirection(events: RadioAgentEvent[]): ActiveSessionDirect
     };
   }
 
-  const explicitArtist = events
-    .filter((event) => event.type === "user_text")
-    .map((event) => positiveArtistRequestFromText(stringValue(event.payload.text)))
-    .find(Boolean);
-  if (!explicitArtist) return null;
-
-  return {
-    activeRequest: explicitArtist,
-    stationGoal: `Keep the current radio session centered on ${explicitArtist} until the listener asks to move elsewhere.`,
-    acceptedDirection: `Keep this session close to ${explicitArtist}: start from that artist as the primary anchor, then use nearby tracks only when they support the same feel.`,
-    allowedMoves: [
-      `Use ${explicitArtist} as the primary session anchor.`,
-      "Use adjacent artists or tracks only when they clearly support the requested artist direction.",
-    ],
-    blockedMoves: [
-      "Do not let older profile anchors override this explicit session request.",
-    ],
-    openHypotheses: [
-      `The listener explicitly asked for more ${explicitArtist}; treat this as a session preference until playback confirms it.`,
-      "Do not promote this into a durable preference without repeated evidence or completed listening.",
-    ],
-    nextPromise: `Stay close to ${explicitArtist} until the listener asks to move elsewhere.`,
-    hostGuidance: `Acknowledge ${explicitArtist} naturally if speaking, then keep the handoff concrete and low-interruption.`,
-  };
+  return null;
 }
 
 function listenerSessionFromEvents(
