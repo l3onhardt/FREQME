@@ -921,12 +921,12 @@ async function handleRadioSocket(socket: WebSocketType): Promise<void> {
         currentTrack: currentTrack ? trackInfo(currentTrack) : null,
       });
     }
+    if (!queue.readyItems().length) await fillQueue(1, false);
     if (!queue.readyItems().length && allowContinuation && activeRequestToken == null) {
       const beforeContinuation = kickBrainContinuation();
       const ready = await waitForNewBrainReadyItem(beforeContinuation, CONTINUATION_BRAIN_READY_TIMEOUT_MS);
       if (ready) prepareFreshBrainReadyForPromotion(queue, beforeContinuation);
     }
-    if (!queue.readyItems().length) await fillQueue(1, false);
     const item = queue.promoteNext(previousEvent);
     if (!item) {
       mirrorRadioAgentHostSpeech({

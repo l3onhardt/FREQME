@@ -97,3 +97,19 @@ test("server routes queue and recovery pressure through radio agent host speech"
   assert.match(source.slice(queueLowEvent - 80, queueLowEvent), /mirrorRadioAgentHostSpeech\(\{\s*$/);
   assert.match(source.slice(recoveryEvent - 80, recoveryEvent), /mirrorRadioAgentHostSpeech\(\{\s*$/);
 });
+
+test("server gives assisted radio agent first chance to continue an empty queue", () => {
+  const source = fs.readFileSync("src/server.ts", "utf8");
+  const sendPreparedNextStart = source.indexOf("const sendPreparedNext =");
+  const sendPreparedNextEnd = source.indexOf('socket.on("message"', sendPreparedNextStart);
+  const sendPreparedNextSource = source.slice(sendPreparedNextStart, sendPreparedNextEnd);
+  const queueLowEvent = sendPreparedNextSource.indexOf('type: "queue_low"');
+  const fillQueueCall = sendPreparedNextSource.indexOf("await fillQueue(1, false)", queueLowEvent);
+  const legacyContinuation = sendPreparedNextSource.indexOf("kickBrainContinuation()", queueLowEvent);
+
+  assert.ok(sendPreparedNextStart >= 0);
+  assert.ok(sendPreparedNextEnd > sendPreparedNextStart);
+  assert.ok(queueLowEvent >= 0);
+  assert.ok(fillQueueCall > queueLowEvent);
+  assert.ok(legacyContinuation > fillQueueCall);
+});
