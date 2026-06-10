@@ -1041,6 +1041,7 @@ function shouldPlanProgramWindow(event: RadioAgentEvent): boolean {
   if (event.type === "user_text") return shouldPlanFromUserText(stringValue(event.payload.text));
   if (event.type === "queue_low") return true;
   if (event.type === "program_repair_needed") return true;
+  if (event.type === "playback_recovery_needed") return true;
   if (event.type !== "track_completed") return false;
   if (event.payload.queueLow === true) return true;
 

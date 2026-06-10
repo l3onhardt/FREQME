@@ -1352,6 +1352,49 @@ test("runtime records playback recovery failure as agent repair evidence", async
   assert.match(repair?.sourceVersion ?? "", /agent-repair\/v1/);
 });
 
+test("runtime returns a playable recovery program window when playback is exhausted", async () => {
+  const store = runtimeStore();
+  store.saveArtifact("42", "user_profile.md", "# User Profile\nSZA", "taste-distiller/v3-memory-merge");
+  store.saveArtifact("42", "station_now.md", "# Station Now\nlate_night", "station-context/v1");
+  store.saveArtifact(
+    "42",
+    "program_contract.md",
+    "# Program Contract\nstation_goal: Keep late-night R&B coherent\n\n## Blocked Moves\n- classical chamber music",
+    "program-contract/v1",
+  );
+  let receivedSnapshot: Record<string, unknown> | null = null;
+  const runtime = new RadioAgentRuntime({
+    mode: "assisted",
+    store,
+    programDirector: {
+      plan: async (snapshot: Record<string, unknown>) => {
+        receivedSnapshot = snapshot;
+        return programWindow({
+          id: "recovery-window-1",
+          candidateTasks: [{ query: "Daniel Caesar Get You", reason: "Safe recovery anchor.", style: "R&B", negativeConstraints: [] }],
+          hostIntent: { shouldSpeak: true, event: "recovery", reason: "recover playback", text: "I found a safe next track." },
+        });
+      },
+    },
+    now: () => "2026-06-03T01:02:03.000Z",
+  });
+
+  const result = await runtime.handle({
+    type: "playback_recovery_needed",
+    uid: "42",
+    sessionId: 9,
+    reason: "queue_empty_after_all_recovery",
+    currentTrack: { id: "s1", name: "Good Days", artist: "SZA" },
+    readyQueue: [],
+  });
+
+  assert.equal(result.programWindow?.id, "recovery-window-1");
+  assert.equal(receivedSnapshot?.eventType, "playback_recovery_needed");
+  assert.match(String(receivedSnapshot?.repair), /queue_empty_after_all_recovery/);
+  assert.match(String(receivedSnapshot?.repair), /Good Days - SZA/);
+  assert.ok(store.decisions.some((decision) => decision.decisionType === "program_window"));
+});
+
 test("runtime includes latest agent repair artifact in the next planning snapshot", async () => {
   const store = runtimeStore();
   store.saveArtifact(
