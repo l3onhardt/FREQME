@@ -101,11 +101,18 @@ function buildWindowFromParsed(
   createdAt: string,
   source: ProgramWindowSource,
 ): RadioAgentProgramWindow {
-  const candidateTasks = arrayValue(valueFor(parsed, "candidateTasks"))
+  const parsedCandidateTasks = arrayValue(valueFor(parsed, "candidateTasks"))
     .map(toCandidateTask)
-    .filter((task): task is RadioAgentCandidateTask => task !== null)
+    .filter((task): task is RadioAgentCandidateTask => task !== null);
+  const safeModelTasks = parsedCandidateTasks
+    .filter((task) => !queryWasRecentlyFailed(task.query, repairFailedQueries(context.repair)))
+    .filter((task) => !queryMatchesAvoids(task.query, fallbackNegativeConstraints(context)))
     .filter((task) => taskFitsContract(context, task))
     .slice(0, MAX_CANDIDATE_TASKS);
+  const candidateTasks =
+    safeModelTasks.length > 0 || !hasExecutionRepair(context.repair) || parsedCandidateTasks.length === 0
+      ? safeModelTasks
+      : fallbackCandidateTasks(context).slice(0, MAX_CANDIDATE_TASKS);
 
   return {
     id: makeWindowId(context, createdAt),

@@ -958,6 +958,51 @@ test("empty model tasks fall back to deterministic memory anchors", async () => 
   assertFallbackWindow(window);
 });
 
+test("model planning avoids queries that just failed execution", async () => {
+  const model: ProgramPlanningModel = {
+    chat: async () =>
+      JSON.stringify({
+        station_brief: "Late-night R&B recovery.",
+        main_direction: "Recover from the failed queue attempt without repeating the missed searches.",
+        candidate_tasks: [
+          { query: "SZA", reason: "The model tried to reuse the failed artist.", style: "R&B" },
+          { query: "Frank Ocean", reason: "The model tried another failed artist.", style: "alt-R&B" },
+        ],
+        host_intent: {
+          should_speak: true,
+          event: "recovery",
+          reason: "recovering from failed execution",
+          text: "Recovering from that miss; I will keep it in R&B without repeating the same searches.",
+        },
+      }),
+  };
+  const director = new RadioAgentProgramDirector(model, () => NOW);
+
+  const window = await director.plan({
+    ...contextSnapshot(),
+    readyQueue: [],
+    repair: [
+      "# Agent Repair",
+      "",
+      "## Issue",
+      "- Execution could not prepare a playable track: program_executor_no_track.",
+      "",
+      "## Evidence",
+      "- SZA",
+      "- Frank Ocean",
+      "",
+      "## Next Attempt",
+      "- Replan with safer concrete R&B songs.",
+    ].join("\n"),
+  });
+
+  assert.equal(window.source, "model");
+  assert.ok(window.candidateTasks.length > 0);
+  assert.ok(window.candidateTasks.every((task) => !/^SZA$|^Frank Ocean$/i.test(task.query)));
+  assert.ok(window.candidateTasks.some((task) => /Daniel Caesar|H\.E\.R\.|Brent Faiyaz/i.test(task.query)));
+  assert.equal(window.hostIntent.event, "recovery");
+});
+
 test("fallback planning avoids queries that just failed execution", async () => {
   const director = new RadioAgentProgramDirector(null, () => NOW);
 
