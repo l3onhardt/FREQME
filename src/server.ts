@@ -1029,7 +1029,7 @@ async function handleRadioSocket(socket: WebSocketType): Promise<void> {
     }
     const item = queue.promoteNext(previousEvent);
     if (!item) {
-      mirrorRadioAgentHostSpeech({
+      const agentRecoveryResult = await mirrorRadioAgentImmediate({
         type: "playback_recovery_needed",
         uid,
         sessionId,
@@ -1037,6 +1037,23 @@ async function handleRadioSocket(socket: WebSocketType): Promise<void> {
         currentTrack: currentTrack ? trackInfo(currentTrack) : null,
         readyQueue: queue.readyItems().map((readyItem) => trackInfo(readyItem.track)),
       });
+      if (agentRecoveryResult?.programWindow && (await queueRadioAgentWindow(agentRecoveryResult.programWindow))) {
+        const recoveredItem = queue.promoteNext(previousEvent);
+        if (recoveredItem) {
+          sendTrack(recoveredItem.track, recoveredItem.url);
+          if (allowContinuation && activeRequestToken == null) {
+            kickBrainContinuation();
+          }
+          return;
+        }
+      }
+      const recoveryText = agentRecoveryResult
+        ? hostTextForRadioAgentDelivery({
+            eventType: agentRecoveryResult.event.type,
+            decision: agentRecoveryResult.hostDecision,
+          })
+        : "";
+      if (recoveryText) synthesizeAndSendDjMessage(recoveryText);
       send({ type: "error", message: "暂时没有更多歌曲，请稍后再试。" });
       return;
     }

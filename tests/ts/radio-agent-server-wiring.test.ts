@@ -72,19 +72,28 @@ test("server keeps assisted fallback logging best effort", () => {
   assert.match(assistedQueueSource, /assisted_queue_failed/);
 });
 
-test("server reports exhausted playback recovery back to the radio agent", () => {
+test("server gives the radio agent a final recovery window before reporting playback exhaustion", () => {
   const source = fs.readFileSync("src/server.ts", "utf8");
   const promoteNext = source.indexOf("const item = queue.promoteNext(previousEvent)");
   const missingItem = source.indexOf("if (!item)", promoteNext);
-  const recoveryEvent = source.indexOf('type: "playback_recovery_needed"', missingItem);
+  const agentRecoveryResult = source.indexOf("const agentRecoveryResult = await mirrorRadioAgentImmediate", missingItem);
+  const recoveryEvent = source.indexOf('type: "playback_recovery_needed"', agentRecoveryResult);
+  const agentRecoveryQueue = source.indexOf("queueRadioAgentWindow(agentRecoveryResult.programWindow)", agentRecoveryResult);
+  const recoveredItem = source.indexOf("const recoveredItem = queue.promoteNext(previousEvent)", agentRecoveryQueue);
   const listenerError = source.indexOf('send({ type: "error"', missingItem);
 
   assert.ok(promoteNext >= 0);
   assert.ok(missingItem > promoteNext);
-  assert.ok(recoveryEvent > missingItem);
-  assert.ok(listenerError > recoveryEvent);
-  assert.match(source.slice(recoveryEvent, listenerError), /reason:\s*"queue_empty_after_all_recovery"/);
-  assert.match(source.slice(recoveryEvent, listenerError), /currentTrack:\s*currentTrack\s*\?\s*trackInfo\(currentTrack\)\s*:\s*null/);
+  assert.ok(agentRecoveryResult > missingItem);
+  assert.ok(recoveryEvent > agentRecoveryResult);
+  assert.ok(agentRecoveryQueue > agentRecoveryResult);
+  assert.ok(recoveredItem > agentRecoveryQueue);
+  assert.ok(listenerError > recoveredItem);
+  const recoveryBlock = source.slice(recoveryEvent, listenerError);
+  assert.match(recoveryBlock, /reason:\s*"queue_empty_after_all_recovery"/);
+  assert.match(recoveryBlock, /currentTrack:\s*currentTrack\s*\?\s*trackInfo\(currentTrack\)\s*:\s*null/);
+  assert.match(recoveryBlock, /sendTrack\(recoveredItem\.track,\s*recoveredItem\.url\)/);
+  assert.match(recoveryBlock, /return;/);
 });
 
 test("server reports queue pressure when playback completion is mirrored to the radio agent", () => {
@@ -112,17 +121,22 @@ test("server delivers safe radio agent host speech into the live DJ message chan
   assert.match(source, /synthesizeAndSendDjMessage\(text\)/);
 });
 
-test("server routes queue and recovery pressure through radio agent host speech", () => {
+test("server routes queue pressure through host speech and recovery pressure through executable agent recovery", () => {
   const source = fs.readFileSync("src/server.ts", "utf8");
   const sendPreparedNext = source.indexOf("const sendPreparedNext =");
   const queueLowEvent = source.indexOf('type: "queue_low"', sendPreparedNext);
-  const recoveryEvent = source.indexOf('type: "playback_recovery_needed"', sendPreparedNext);
+  const agentRecoveryResult = source.indexOf("const agentRecoveryResult = await mirrorRadioAgentImmediate", queueLowEvent);
+  const recoveryEvent = source.indexOf('type: "playback_recovery_needed"', agentRecoveryResult);
+  const recoveryText = source.indexOf("const recoveryText = agentRecoveryResult", recoveryEvent);
 
   assert.ok(sendPreparedNext >= 0);
   assert.ok(queueLowEvent > sendPreparedNext);
-  assert.ok(recoveryEvent > queueLowEvent);
+  assert.ok(agentRecoveryResult > queueLowEvent);
+  assert.ok(recoveryEvent > agentRecoveryResult);
+  assert.ok(recoveryText > recoveryEvent);
   assert.match(source.slice(queueLowEvent - 80, queueLowEvent), /mirrorRadioAgentHostSpeech\(\{\s*$/);
-  assert.match(source.slice(recoveryEvent - 80, recoveryEvent), /mirrorRadioAgentHostSpeech\(\{\s*$/);
+  assert.match(source.slice(agentRecoveryResult, recoveryText), /queueRadioAgentWindow\(agentRecoveryResult\.programWindow\)/);
+  assert.match(source.slice(recoveryText, recoveryText + 260), /hostTextForRadioAgentDelivery/);
 });
 
 test("server gives assisted radio agent first chance to continue an empty queue", () => {

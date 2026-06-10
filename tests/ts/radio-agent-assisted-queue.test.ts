@@ -142,6 +142,36 @@ test("assisted queue can execute an already planned user text program window", a
   assert.deepEqual(reported[0]?.track, track);
 });
 
+test("assisted queue can execute a playback recovery program window", async () => {
+  const reported: Record<string, unknown>[] = [];
+  const recoveryWindow = {
+    ...window,
+    id: "recovery-window-1",
+    traceBasis: { ...window.traceBasis, eventType: "playback_recovery_needed" as const },
+    hostIntent: { shouldSpeak: true, event: "recovery" as const, reason: "queue exhausted", text: "I found a safe next track." },
+  };
+  const { deps, calls, fallbackReasons } = assistedDeps({
+    radioAgent: {
+      handle: async (input: Record<string, unknown>) => {
+        reported.push(input);
+        return {
+          controlsPlayback: false,
+          event: { uid: "42", sessionId: 9, type: input.type as "program_track_queued", priority: "warm", payload: {}, createdAt: "" },
+        };
+      },
+    },
+  });
+
+  const queued = await queueRadioAgentProgramWindow(deps as any, recoveryWindow);
+  await flushAsyncWork();
+
+  assert.equal(queued, true);
+  assert.deepEqual(calls, ["executor", "trace", "tts", "queue:tts-hash"]);
+  assert.deepEqual(fallbackReasons, []);
+  assert.equal(reported[0]?.type, "program_track_queued");
+  assert.equal(reported[0]?.programWindowId, "recovery-window-1");
+});
+
 test("assisted queue saves trace before queueing and survives TTS failure", async () => {
   const reported: Record<string, unknown>[] = [];
   const { deps, calls, fallbackReasons } = assistedDeps({
