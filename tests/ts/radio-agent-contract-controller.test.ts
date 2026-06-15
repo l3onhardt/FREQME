@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import test from "node:test";
 
 import { ContractController } from "../../src/radio-agent/contractController.js";
@@ -90,6 +91,31 @@ test("contract markdown round-trips fields used by runtime artifacts", () => {
   assert.deepEqual(roundTripped.allowedAdjacent, contract.allowedAdjacent);
   assert.equal(roundTripped.bridgeBudget, contract.bridgeBudget);
   assert.equal(roundTripped.returnRequirement, contract.returnRequirement);
+});
+
+test("canonical session contract does not expose legacy station contract fields", () => {
+  const controller = new ContractController({ now: () => NOW });
+  const contract = controller.fromUserDirection({
+    uid: "42",
+    sessionId: 7,
+    text: "play rnb",
+    sourceEventId: "event-1",
+  });
+
+  assert.equal("positiveSeeds" in contract, false);
+  assert.equal("driftBudget" in contract, false);
+  assert.equal("mustReturnToContract" in contract, false);
+  assert.equal("mainDirection" in contract, false);
+});
+
+test("contract controller source keeps legacy action compatibility outside canonical contract", () => {
+  const source = fs.readFileSync("src/radio-agent/contractController.ts", "utf8");
+  const interfaceStart = source.indexOf("export interface AgentSessionContract");
+  const nextExport = source.indexOf("\nexport interface", interfaceStart + 1);
+  const interfaceSource = source.slice(interfaceStart, nextExport);
+
+  assert.doesNotMatch(source, /LegacyAgentSessionContract/);
+  assert.doesNotMatch(interfaceSource, /positiveSeeds|driftBudget|mustReturnToContract|mainDirection|hostStyle/);
 });
 
 test("program window can seed a session contract", () => {

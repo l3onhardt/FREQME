@@ -16,31 +16,6 @@ export interface AgentSessionContract {
   repairedFrom?: string;
   createdAt: string;
   updatedAt: string;
-  mainDirection?: string;
-  softBridge?: string[];
-  positiveSeeds?: string[];
-  negativeConstraints?: string[];
-  driftBudget?: number;
-  bridgeCount?: number;
-  mustReturnToContract?: boolean;
-  hostStyle?: "quiet" | "standard" | "companion";
-}
-
-export interface LegacyAgentSessionContract {
-  id?: string;
-  mainDirection: string;
-  rawUserText?: string;
-  allowedAdjacent: string[];
-  softBridge?: string[];
-  disallowed: string[];
-  positiveSeeds?: string[];
-  negativeConstraints?: string[];
-  driftBudget?: number;
-  bridgeCount?: number;
-  mustReturnToContract?: boolean;
-  hostStyle?: "quiet" | "standard" | "companion";
-  createdAt?: string;
-  updatedAt?: string;
 }
 
 export interface ContractControllerOptions {
@@ -176,9 +151,6 @@ export class ContractController {
       disallowed: [...window.disallowed],
       bridgeBudget: Math.max(0, Math.floor(window.bridgeBudget)),
       returnRequirement: window.returnRequirement || contract.returnRequirement,
-      mainDirection: window.mainDirection,
-      driftBudget: Math.max(0, Math.floor(window.bridgeBudget)),
-      mustReturnToContract: Boolean(window.returnRequirement),
     };
   }
 

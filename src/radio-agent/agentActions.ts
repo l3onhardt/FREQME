@@ -1,9 +1,23 @@
 import type { SelectionReason, Track } from "../types.js";
 import type { RadioAgentPreparedTrack, RadioAgentProgramWindow } from "./types.js";
-import type {
-  AgentSessionContract as ControllerAgentSessionContract,
-  LegacyAgentSessionContract,
-} from "./contractController.js";
+import type { AgentSessionContract as ControllerAgentSessionContract } from "./contractController.js";
+
+interface LegacyAgentSessionContract {
+  id?: string;
+  mainDirection: string;
+  rawUserText?: string;
+  allowedAdjacent: string[];
+  softBridge?: string[];
+  disallowed: string[];
+  positiveSeeds?: string[];
+  negativeConstraints?: string[];
+  driftBudget?: number;
+  bridgeCount?: number;
+  mustReturnToContract?: boolean;
+  hostStyle?: "quiet" | "standard" | "companion";
+  createdAt?: string;
+  updatedAt?: string;
+}
 
 export type AgentSessionContract = ControllerAgentSessionContract | LegacyAgentSessionContract;
 
