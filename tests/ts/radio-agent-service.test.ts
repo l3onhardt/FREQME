@@ -52,6 +52,34 @@ test("service starts a session with an opening track before background planning"
   releaseBackgroundPlanning?.();
 });
 
+test("service exposes explicit play action for a prepared opening", async () => {
+  const openingTrack: Track = { id: "liked-1", name: "Pink + White", artist: "Frank Ocean" };
+  const service = new RadioAgentService({
+    chooseOpeningTrack: () => ({
+      track: openingTrack,
+      reason: { type: "radio_agent_opening_liked", sourceRank: 3 },
+    }) satisfies OpeningTrackPick,
+    prepareTrack: async (track) => prepared(track, { type: "radio_agent_opening_liked", text: "Started from a liked track." }),
+  });
+
+  const result = await service.startSession({
+    uid: "42",
+    sessionId: 7,
+    recentPlayableTracks: [],
+    profileAnchorTracks: [],
+    likedTracks: [openingTrack],
+    fallbackTracks: [],
+    avoidTrackIds: new Set(),
+  });
+
+  assert.deepEqual(result.actions.map((action) => action.type), ["play_now"]);
+  assert.equal(result.actions[0]?.type, "play_now");
+  if (result.actions[0]?.type !== "play_now") throw new Error("expected play_now action");
+  assert.equal(result.actions[0].track.id, "liked-1");
+  assert.equal(result.actions[0].url, "/audio/liked-1");
+  assert.equal(result.actions[0].reason.type, "radio_agent_opening_liked");
+});
+
 test("service marks an unprepared opening candidate so the next attempt can advance", async () => {
   const attempts: string[] = [];
   const failedTrack: Track = { id: "bad-url", name: "Bad URL", artist: "A" };
@@ -153,6 +181,54 @@ test("service turns explicit listener direction into a program window and host a
   ]);
 });
 
+test("service exposes honest_not_found action when user direction has no playable candidate", async () => {
+  const programWindow = radioWindow({
+    id: "window-empty",
+    stationBrief: "Quiet jazz for reading.",
+    mainDirection: "quiet jazz for reading",
+    allowedAdjacent: ["modal jazz"],
+    disallowed: ["high energy EDM"],
+    candidateTasks: [
+      { query: "Miles Davis Blue in Green", reason: "Quiet jazz reading anchor.", style: "jazz", negativeConstraints: [] },
+      { query: "Bill Evans Peace Piece", reason: "Soft piano jazz backup.", style: "jazz", negativeConstraints: [] },
+    ],
+  });
+  const service = new RadioAgentService({
+    chooseOpeningTrack: () => null,
+    prepareTrack: async () => null,
+    handleRadioAgentEvent: async () =>
+      ({
+        controlsPlayback: false,
+        event: { uid: "42", sessionId: 7, type: "user_text", priority: "hot", payload: {}, createdAt: "2026-06-11T00:00:00.000Z" },
+        hostDecision: {
+          shouldSpeak: true,
+          event: "recovery",
+          reason: "no playable candidate",
+          text: "I could not find a playable match for that direction yet.",
+        },
+        programWindow,
+      }) satisfies RadioAgentHandleResult,
+    prepareProgramWindow: async () => null,
+    hostTextForDelivery: ({ decision }) => decision?.text || "",
+  });
+
+  const result = await service.handleUserText({
+    uid: "42",
+    sessionId: 7,
+    text: "play quiet jazz for reading",
+    currentTrack: null,
+    readyQueue: [],
+    shouldClearQueue: false,
+  });
+
+  const notFound = result.actions.find((action) => action.type === "honest_not_found");
+  assert.equal(notFound?.type, "honest_not_found");
+  if (notFound?.type !== "honest_not_found") throw new Error("expected honest_not_found action");
+  assert.equal(notFound.contract?.mainDirection, "quiet jazz for reading");
+  assert.match(notFound.reason, /no playable candidate/i);
+  assert.deepEqual(notFound.searchedQueries, ["Miles Davis Blue in Green", "Bill Evans Peace Piece"]);
+});
+
 test("service can execute an explicit direction through the queue adapter", async () => {
   const calls: string[] = [];
   const programWindow = radioWindow({
@@ -207,6 +283,104 @@ test("service can execute an explicit direction through the queue adapter", asyn
   assert.equal(result.programQueued, true);
   assert.equal(result.hostText, "好，接下来收进安静一点的 jazz。");
   assert.deepEqual(calls, ["agent:user_text", "clear", "queue:window-jazz", "host:user_text"]);
+});
+
+test("service prefers concrete program window host intent over generic acknowledgement", async () => {
+  const calls: string[] = [];
+  const programWindow = radioWindow({
+    id: "window-jazz",
+    stationBrief: "Quiet jazz for reading.",
+    mainDirection: "quiet jazz for reading",
+    hostIntent: {
+      shouldSpeak: true,
+      event: "request_ack",
+      reason: "listener changed the active music direction",
+      text: "好，接下来收进安静爵士，适合阅读，我先给你找一首稳的。",
+    },
+  });
+  const service = new RadioAgentService({
+    chooseOpeningTrack: () => null,
+    prepareTrack: async () => null,
+    handleRadioAgentEvent: async () => ({
+      controlsPlayback: false,
+      event: { uid: "42", sessionId: 7, type: "user_text", priority: "hot", payload: {}, createdAt: "2026-06-11T00:00:00.000Z" },
+      hostDecision: {
+        shouldSpeak: true,
+        event: "request_ack",
+        reason: "generic acknowledgement",
+        text: "收到，我会按这个方向调整。",
+      },
+      programWindow,
+    }) satisfies RadioAgentHandleResult,
+    queueProgramWindow: async () => true,
+    hostTextForDelivery: ({ eventType, decision }) => {
+      calls.push(`host:${eventType}:${decision?.text}`);
+      return decision?.text || "";
+    },
+  });
+
+  const result = await service.handleUserText({
+    uid: "42",
+    sessionId: 7,
+    text: "播放安静爵士阅读",
+    currentTrack: null,
+    readyQueue: [],
+    shouldClearQueue: false,
+  });
+
+  assert.equal(result.programQueued, true);
+  assert.equal(result.hostText, "好，接下来收进安静爵士，适合阅读，我先给你找一首稳的。");
+  assert.deepEqual(calls, ["host:user_text:好，接下来收进安静爵士，适合阅读，我先给你找一首稳的。"]);
+});
+
+test("service times out explicit direction queueing so request fallback can continue", async () => {
+  const calls: string[] = [];
+  const programWindow = radioWindow({
+    id: "window-slow",
+    stationBrief: "Quiet jazz for reading.",
+    mainDirection: "quiet jazz for reading",
+  });
+  const service = new RadioAgentService({
+    chooseOpeningTrack: () => null,
+    prepareTrack: async () => null,
+    handleRadioAgentEvent: async () => {
+      calls.push("agent");
+      return {
+        controlsPlayback: false,
+        event: { uid: "42", sessionId: 7, type: "user_text", priority: "hot", payload: {}, createdAt: "2026-06-11T00:00:00.000Z" },
+        hostDecision: {
+          shouldSpeak: true,
+          event: "request_ack",
+          reason: "listener changed direction",
+          text: "Okay.",
+        },
+        programWindow,
+      } satisfies RadioAgentHandleResult;
+    },
+    queueProgramWindow: async () => {
+      calls.push("queue-start");
+      return await new Promise<boolean>(() => undefined);
+    },
+    hostTextForDelivery: ({ eventType, decision }) => {
+      calls.push(`host:${eventType}`);
+      return decision?.text || "";
+    },
+    userTextQueueTimeoutMs: 1,
+  });
+
+  const result = await service.handleUserText({
+    uid: "42",
+    sessionId: 7,
+    text: "play quiet jazz for reading",
+    currentTrack: null,
+    readyQueue: [],
+    shouldClearQueue: false,
+  });
+
+  assert.equal(result.programWindow?.id, "window-slow");
+  assert.equal(result.programQueued, false);
+  assert.equal(result.fallbackReason, "radio_agent_user_text_queue_timeout");
+  assert.deepEqual(calls, ["agent", "queue-start", "host:user_text"]);
 });
 
 test("service repairs the active window after explicit negative feedback", async () => {
