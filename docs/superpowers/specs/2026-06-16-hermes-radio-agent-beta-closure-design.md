@@ -201,6 +201,56 @@ Important rule:
 
 > `not_found` is not a reason to drop the contract. It is evidence that the next search or fallback must continue within the contract or honestly report exhaustion.
 
+## Contract Match Semantics
+
+The implementation must use one shared contract-match standard for planning, verification, governor decisions, live smoke checks, and trace output.
+
+The default match pipeline is deterministic first, model-assisted second:
+
+1. **Hard block check:** reject if normalized candidate metadata contains a contract disallowed move, negative constraint, exhausted seed group, or a globally unsafe utility item such as playlists, white noise, karaoke, backing tracks, or sleep-study utility audio.
+2. **Direct positive evidence check:** accept if normalized candidate metadata matches a contract positive anchor, known artist anchor, style registry marker, or allowed adjacent marker. Candidate metadata means artist, title, album, aliases, and trusted library tags. Search query provenance is not positive evidence.
+3. **Registry style check:** accept if the style registry maps the active contract to the candidate through explicit registry markers and the candidate is not blocked by cooldown or duplicate rules.
+4. **Model semantic check:** when deterministic evidence is insufficient, the model may classify candidate fit, but it must receive the active contract, candidate metadata, and negative constraints, and it must return structured evidence. Model acceptance cannot override hard blocks, duplicate rejection, stale request rejection, or exhausted seed rejection.
+5. **Bridge check:** if a candidate is adjacent rather than directly on-contract, it is allowed only when bridge budget remains and the program window records a return requirement. After bridge budget is spent, adjacent candidates are rejected until the station returns to direct positive evidence.
+
+The following are explicitly not positive fit evidence:
+
+- the search query string;
+- `track.source` when it is a query provenance field;
+- selection reason prose;
+- host text;
+- old ready queue reason text.
+
+These fields may be used for hard block detection and diagnostics, but not to prove a candidate is on-contract.
+
+Minimum trace evidence for every governor decision:
+
+```ts
+interface PlaybackGovernanceTrace {
+  status: "accepted" | "rejected";
+  contractId: string | null;
+  requestToken: number | null;
+  candidateKey: string;
+  decision:
+    | "direct_positive"
+    | "registry_style"
+    | "model_semantic"
+    | "bridge_allowed"
+    | "reject_hard_block"
+    | "reject_off_contract"
+    | "reject_duplicate_recent"
+    | "reject_duplicate_ready"
+    | "reject_stale_request"
+    | "reject_seed_exhausted"
+    | "reject_audio_unplayable"
+    | "reject_host_text";
+  evidence: string[];
+  fallbackLevel?: FallbackLevel;
+}
+```
+
+Live acceptance should assert these structured decisions, not fragile log prose.
+
 ### ProgramPlanner
 
 Responsibilities:
@@ -250,6 +300,14 @@ candidate
   -> has playable audio
   -> host text, if any, is safe
 ```
+
+Default duplicate rules:
+
+- Compare by song id when both ids exist.
+- Also compare by normalized `artist + title` so the same song cannot bypass the guard under a different id.
+- The recent duplicate window is the current track plus the last 8 played tracks.
+- The ready duplicate window is all currently ready queue items.
+- A/B loop means any two normalized track keys repeat in alternating order within the last 6 promoted request-scope tracks.
 
 If all safe same-contract candidates are exhausted, the governor must not allow A/B looping. It should return `honest_not_found` or a bounded recovery action.
 
@@ -428,6 +486,15 @@ Fallback levels:
 4. `legacy_with_label`: old stack keeps audio moving, but status records that the agent degraded.
 5. `honest_not_found`: no safe playback action exists.
 
+`legacy_with_label` has strict boundaries:
+
+- It is allowed when no explicit active listener contract exists.
+- It is allowed for startup or anonymous continuity when the agent has not yet formed a contract.
+- It is allowed under an active explicit contract only if the legacy candidate still passes the same `PlaybackGovernor` checks.
+- It is not allowed to play off-contract music just to avoid silence after the listener gave an explicit direction.
+
+If an active explicit contract is exhausted and no same-contract playable candidate exists, the correct action is `honest_not_found` or a visible/listenable recovery message, not off-contract legacy playback.
+
 Forbidden fallback:
 
 - off-contract playback under an active explicit direction;
@@ -518,15 +585,15 @@ Verification:
 The Beta closure is not complete until all gates below pass on current code.
 
 1. **Agent ownership:** session start, user text, correction, queue low, track end, and fallback routing are handled through the agent service boundary.
-2. **Fast start:** the app emits playable audio quickly when a safe known candidate exists.
-3. **No end stall:** after track end, the station starts the next approved track, enters recovery, or gives a visible honest reason.
+2. **Fast start:** the app emits playable audio within 30 seconds when at least one safe known candidate exists. The harness must verify a `play_track` or `segue` with audio bytes from `/api/radio/audio/:id`.
+3. **No end stall:** after track end, the station starts the next approved track, enters recovery, or gives a visible honest reason within 15 seconds.
 4. **Direction contract:** explicit listener direction creates a contract immediately, even if search fails.
 5. **Three-track retention:** after a direction request, the next 3 promoted tracks stay on contract or record a deliberate bridge with return requirement.
 6. **Cross-style proof:** the same direction-retention harness passes for R&B, quiet jazz, focus/quiet, and one Chinese mood request.
-7. **No repeat loop:** current, recent, ready, and exhausted seed groups cannot A/B loop.
+7. **No repeat loop:** current track, last 8 played tracks, ready queue, and exhausted seed groups cannot A/B loop. The live harness fails if any normalized track key repeats inside the 3-track retention window.
 8. **Correction loop:** negative feedback removes incompatible ready items and affects the next playable item.
-9. **Memory persistence:** repeated explicit preference or avoid evidence survives restart and changes later opening or continuation behavior.
-10. **Host naturalness:** host text avoids internal terms, mojibake, and fake filler; ordinary continuation is usually silent.
+9. **Memory persistence:** at least 3 explicit preference or avoid signals for the same artist/style survive a service restart and influence a later opening or continuation decision. One skip alone must not become durable memory.
+10. **Host naturalness:** host text avoids internal terms, mojibake, and fake filler. In the request + 3 track-end smoke, ordinary on-contract continuations should produce no more than one non-recovery host speech after the initial acknowledgement.
 11. **Safe degradation:** model/search/TTS/audio failures keep the system bounded and honest.
 12. **Observability:** status and traces explain active contract, chosen action, rejected reason, and fallback level.
 
@@ -554,6 +621,7 @@ For each direction scenario:
 - reject duplicate artist/title keys;
 - reject off-contract tracks;
 - reject unsafe host text.
+- require governance traces for accepted and rejected candidates to include contract id, candidate key, decision code, and evidence.
 
 Required browser scenarios:
 
