@@ -161,6 +161,7 @@ export class ContractController {
       "Allowed Adjacent": [],
       Disallowed: [],
     };
+    const presentSections = new Set<string>();
     let activeSection = "";
 
     for (const rawLine of markdown.split(/\r?\n/)) {
@@ -169,6 +170,7 @@ export class ContractController {
       const heading = /^##\s+(.+)$/.exec(line);
       if (heading) {
         activeSection = heading[1] ?? "";
+        if (activeSection in lists) presentSections.add(activeSection);
         continue;
       }
       if (line.startsWith("- ")) {
@@ -198,9 +200,9 @@ export class ContractController {
     return {
       ...baseline,
       stationBrief: metadata.stationBrief || baseline.stationBrief,
-      positiveAnchors: lists["Positive Anchors"].length ? lists["Positive Anchors"] : baseline.positiveAnchors,
-      disallowed: lists.Disallowed.length ? lists.Disallowed : baseline.disallowed,
-      allowedAdjacent: lists["Allowed Adjacent"].length ? lists["Allowed Adjacent"] : baseline.allowedAdjacent,
+      positiveAnchors: presentSections.has("Positive Anchors") ? lists["Positive Anchors"] : baseline.positiveAnchors,
+      disallowed: presentSections.has("Disallowed") ? lists.Disallowed : baseline.disallowed,
+      allowedAdjacent: presentSections.has("Allowed Adjacent") ? lists["Allowed Adjacent"] : baseline.allowedAdjacent,
       bridgeBudget: Number.isFinite(Number(metadata.bridgeBudget)) ? Math.max(0, Math.floor(Number(metadata.bridgeBudget))) : baseline.bridgeBudget,
       returnRequirement: metadata.returnRequirement || baseline.returnRequirement,
       status,

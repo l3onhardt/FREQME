@@ -107,6 +107,31 @@ test("contract markdown round-trips multiline raw user text", () => {
   assert.equal(roundTripped.rawUserText, contract.rawUserText);
 });
 
+test("contract markdown preserves explicit empty list sections", () => {
+  const controller = new ContractController({ now: () => NOW });
+  const contract: AgentSessionContract = {
+    id: "strict-contract",
+    uid: "42",
+    sessionId: 7,
+    rawUserText: "play quiet jazz for reading",
+    stationBrief: "Strict quiet jazz.",
+    positiveAnchors: ["jazz"],
+    disallowed: [],
+    allowedAdjacent: [],
+    bridgeBudget: 0,
+    returnRequirement: "Stay directly in quiet jazz.",
+    sourceEventId: "event-1",
+    status: "active",
+    createdAt: NOW,
+    updatedAt: NOW,
+  };
+
+  const roundTripped = controller.fromMarkdown(controller.toProgramContractMarkdown(contract));
+
+  assert.deepEqual(roundTripped.allowedAdjacent, []);
+  assert.deepEqual(roundTripped.disallowed, []);
+});
+
 test("fromMarkdown derives conservative anchors when sections are absent", () => {
   const controller = new ContractController({ now: () => NOW });
 
