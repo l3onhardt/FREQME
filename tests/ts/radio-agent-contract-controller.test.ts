@@ -93,6 +93,38 @@ test("contract markdown round-trips fields used by runtime artifacts", () => {
   assert.equal(roundTripped.returnRequirement, contract.returnRequirement);
 });
 
+test("contract markdown round-trips multiline raw user text", () => {
+  const controller = new ContractController({ now: () => NOW });
+  const contract = controller.fromUserDirection({
+    uid: "42",
+    sessionId: 7,
+    text: "play quiet jazz\navoid festival EDM",
+    sourceEventId: "event-1",
+  });
+
+  const roundTripped = controller.fromMarkdown(controller.toProgramContractMarkdown(contract));
+
+  assert.equal(roundTripped.rawUserText, contract.rawUserText);
+});
+
+test("fromMarkdown derives conservative anchors when sections are absent", () => {
+  const controller = new ContractController({ now: () => NOW });
+
+  const contract = controller.fromMarkdown([
+    "# Program Contract",
+    "",
+    "id: partial-1",
+    "rawUserText: \"play quiet jazz for reading\"",
+    "stationBrief: \"Quiet jazz for reading.\"",
+    "sourceEventId: event-1",
+  ].join("\n"));
+
+  assert.ok(contract.positiveAnchors.includes("jazz"));
+  assert.ok(contract.positiveAnchors.includes("quiet"));
+  assert.ok(contract.allowedAdjacent.length > 0);
+  assert.equal(contract.rawUserText, "play quiet jazz for reading");
+});
+
 test("canonical session contract does not expose legacy station contract fields", () => {
   const controller = new ContractController({ now: () => NOW });
   const contract = controller.fromUserDirection({

@@ -99,23 +99,23 @@ export class ContractController {
     const lines = [
       "# Program Contract",
       "",
-      `id: ${contract.id}`,
-      `uid: ${contract.uid ?? EMPTY_UID}`,
-      `sessionId: ${contract.sessionId ?? ""}`,
-      `sourceEventId: ${contract.sourceEventId}`,
-      `status: ${contract.status}`,
-      `createdAt: ${contract.createdAt}`,
-      `updatedAt: ${contract.updatedAt}`,
+      metadataLine("id", contract.id),
+      metadataLine("uid", contract.uid ?? EMPTY_UID),
+      metadataLine("sessionId", contract.sessionId ?? ""),
+      metadataLine("sourceEventId", contract.sourceEventId),
+      metadataLine("status", contract.status),
+      metadataLine("createdAt", contract.createdAt),
+      metadataLine("updatedAt", contract.updatedAt),
     ];
 
-    if (contract.repairedFrom) lines.push(`repairedFrom: ${contract.repairedFrom}`);
+    if (contract.repairedFrom) lines.push(metadataLine("repairedFrom", contract.repairedFrom));
 
     lines.push(
       "",
-      `rawUserText: ${contract.rawUserText}`,
-      `stationBrief: ${contract.stationBrief}`,
-      `bridgeBudget: ${contract.bridgeBudget}`,
-      `returnRequirement: ${contract.returnRequirement}`,
+      metadataLine("rawUserText", contract.rawUserText),
+      metadataLine("stationBrief", contract.stationBrief),
+      metadataLine("bridgeBudget", contract.bridgeBudget),
+      metadataLine("returnRequirement", contract.returnRequirement),
       "",
       "## Positive Anchors",
       ...listLines(contract.positiveAnchors),
@@ -176,30 +176,34 @@ export class ContractController {
         continue;
       }
       const pair = /^([A-Za-z]+):\s*(.*)$/.exec(line);
-      if (pair) metadata[pair[1] as MarkdownKey] = pair[2] ?? "";
+      if (pair) metadata[pair[1] as MarkdownKey] = parseMetadataValue(pair[2] ?? "");
     }
 
     const timestamp = this.now();
     const status = normalizeStatus(metadata.status);
     const sessionId = metadata.sessionId === "" || metadata.sessionId == null ? null : Number(metadata.sessionId);
     const uid = metadata.uid === EMPTY_UID ? null : metadata.uid ?? null;
-
-    return {
+    const rawUserText = metadata.rawUserText || "";
+    const baseline = this.createContract({
       id: metadata.id || this.nextId(metadata.sourceEventId || "markdown"),
       uid,
       sessionId: Number.isFinite(sessionId) ? sessionId : null,
-      rawUserText: metadata.rawUserText || "",
-      stationBrief: metadata.stationBrief || metadata.rawUserText || "",
-      positiveAnchors: lists["Positive Anchors"],
-      disallowed: lists.Disallowed,
-      allowedAdjacent: lists["Allowed Adjacent"],
-      bridgeBudget: Number.isFinite(Number(metadata.bridgeBudget)) ? Math.max(0, Math.floor(Number(metadata.bridgeBudget))) : 0,
-      returnRequirement: metadata.returnRequirement || "Stay inside the requested direction.",
+      rawUserText,
       sourceEventId: metadata.sourceEventId || metadata.id || "markdown",
-      status,
       repairedFrom: metadata.repairedFrom || undefined,
       createdAt: metadata.createdAt || timestamp,
       updatedAt: metadata.updatedAt || timestamp,
+    });
+
+    return {
+      ...baseline,
+      stationBrief: metadata.stationBrief || baseline.stationBrief,
+      positiveAnchors: lists["Positive Anchors"].length ? lists["Positive Anchors"] : baseline.positiveAnchors,
+      disallowed: lists.Disallowed.length ? lists.Disallowed : baseline.disallowed,
+      allowedAdjacent: lists["Allowed Adjacent"].length ? lists["Allowed Adjacent"] : baseline.allowedAdjacent,
+      bridgeBudget: Number.isFinite(Number(metadata.bridgeBudget)) ? Math.max(0, Math.floor(Number(metadata.bridgeBudget))) : baseline.bridgeBudget,
+      returnRequirement: metadata.returnRequirement || baseline.returnRequirement,
+      status,
     };
   }
 
@@ -297,6 +301,21 @@ function normalizeStatus(value: string | undefined): AgentSessionContract["statu
 
 function listLines(values: string[]): string[] {
   return values.length ? values.map((value) => `- ${value}`) : ["- "];
+}
+
+function metadataLine(key: string, value: string | number): string {
+  return `${key}: ${JSON.stringify(String(value))}`;
+}
+
+function parseMetadataValue(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+  try {
+    const parsed = JSON.parse(trimmed);
+    return typeof parsed === "string" ? parsed : String(parsed);
+  } catch {
+    return trimmed;
+  }
 }
 
 function dedupe(values: string[]): string[] {

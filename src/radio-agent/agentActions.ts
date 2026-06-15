@@ -1,8 +1,9 @@
 import type { SelectionReason, Track } from "../types.js";
 import type { RadioAgentPreparedTrack, RadioAgentProgramWindow } from "./types.js";
 import type { AgentSessionContract as ControllerAgentSessionContract } from "./contractController.js";
+export type { AgentSessionContract } from "./contractController.js";
 
-interface LegacyAgentSessionContract {
+export interface LegacyCompatibleAgentSessionContract {
   id?: string;
   mainDirection: string;
   rawUserText?: string;
@@ -19,7 +20,7 @@ interface LegacyAgentSessionContract {
   updatedAt?: string;
 }
 
-export type AgentSessionContract = ControllerAgentSessionContract | LegacyAgentSessionContract;
+export type AgentActionContract = ControllerAgentSessionContract | LegacyCompatibleAgentSessionContract;
 
 export type FallbackLevel =
   | "agent_program"
@@ -33,9 +34,9 @@ export type RadioAgentAction =
   | { type: "queue_window"; window: RadioAgentProgramWindow; prepared: RadioAgentPreparedTrack[] }
   | { type: "speak"; text: string; speechRole: "opening" | "ack" | "correction" | "recovery" | "explanation" }
   | { type: "stay_silent"; reason: string }
-  | { type: "repair_contract"; contract: AgentSessionContract; reason: string }
+  | { type: "repair_contract"; contract: ControllerAgentSessionContract; reason: string }
   | { type: "fallback"; level: FallbackLevel; reason: string; action?: RadioAgentAction }
-  | { type: "honest_not_found"; contract: AgentSessionContract | null; reason: string; searchedQueries: string[] };
+  | { type: "honest_not_found"; contract: AgentActionContract | null; reason: string; searchedQueries: string[] };
 
 export interface RadioAgentActionResult {
   actions: RadioAgentAction[];

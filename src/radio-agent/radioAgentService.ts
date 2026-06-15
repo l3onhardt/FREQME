@@ -1,5 +1,5 @@
 import type { Track } from "../types.js";
-import type { AgentSessionContract, RadioAgentAction } from "./agentActions.js";
+import type { AgentActionContract, RadioAgentAction } from "./agentActions.js";
 import { hostTextForRadioAgentDelivery } from "./hostDelivery.js";
 import { chooseOpeningTrack as defaultChooseOpeningTrack, type OpeningTrackArgs, type OpeningTrackPick } from "./openingTrack.js";
 import type { RadioAgentHandleResult, RadioAgentPreparedTrack, RadioAgentProgramWindow, RadioAgentEventType, RadioHostDecision } from "./types.js";
@@ -398,7 +398,7 @@ function isConcreteHostText(text: string): boolean {
   return compact.length >= 8 && !isGenericHostText(compact);
 }
 
-function contractFromProgramWindow(programWindow: RadioAgentProgramWindow, rawUserText: string): AgentSessionContract {
+function contractFromProgramWindow(programWindow: RadioAgentProgramWindow, rawUserText: string): AgentActionContract {
   return {
     id: programWindow.id,
     mainDirection: programWindow.mainDirection,
