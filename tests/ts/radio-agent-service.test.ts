@@ -225,6 +225,7 @@ test("service exposes honest_not_found action when user direction has no playabl
   assert.equal(notFound?.type, "honest_not_found");
   if (notFound?.type !== "honest_not_found") throw new Error("expected honest_not_found action");
   assert.equal(notFound.contract?.mainDirection, "quiet jazz for reading");
+  assert.equal(notFound.contract?.rawUserText, "play quiet jazz for reading");
   assert.match(notFound.reason, /no playable candidate/i);
   assert.deepEqual(notFound.searchedQueries, ["Miles Davis Blue in Green", "Bill Evans Peace Piece"]);
 });
@@ -446,6 +447,10 @@ test("service repairs the active window after explicit negative feedback", async
   assert.equal(result.programWindow?.id, "window-repaired");
   assert.equal(result.programQueued, true);
   assert.equal(result.shouldClearQueue, true);
+  const speech = result.actions.find((action) => action.type === "speak");
+  assert.equal(speech?.type, "speak");
+  if (speech?.type !== "speak") throw new Error("expected correction speech action");
+  assert.equal(speech.speechRole, "correction");
   assert.equal(result.hostText, "明白，我先避开 Frank Ocean，换成更稳的 R&B。");
   assert.deepEqual(calls, [
     "agent:user_text:don't play Frank Ocean tonight",

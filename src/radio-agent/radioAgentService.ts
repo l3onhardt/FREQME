@@ -230,16 +230,17 @@ export class RadioAgentService {
   }
 
   async handleUserText(args: RadioAgentUserTextArgs): Promise<RadioAgentUserTextResult> {
-    return await this.runProgramTextEvent(args, args.shouldClearQueue);
+    return await this.runProgramTextEvent(args, args.shouldClearQueue, "ack");
   }
 
   async handleCorrection(args: RadioAgentCorrectionArgs): Promise<RadioAgentCorrectionResult> {
-    return await this.runProgramTextEvent(args, true);
+    return await this.runProgramTextEvent(args, true, "correction");
   }
 
   private async runProgramTextEvent(
     args: Pick<RadioAgentUserTextArgs, "uid" | "sessionId" | "text" | "currentTrack" | "recentTracks" | "readyQueue">,
     shouldClearQueue: boolean,
+    speechRole: "ack" | "correction",
   ): Promise<RadioAgentUserTextResult> {
     const agentResult = this.deps.handleRadioAgentEvent
       ? await this.deps.handleRadioAgentEvent({
@@ -268,11 +269,13 @@ export class RadioAgentService {
         : "";
     const fallbackReason = queueResult.fallbackReason || (programWindow && !programQueued && !preparedTrack ? "no_playable_candidate" : undefined);
     const actions = this.userTextActions({
+      rawUserText: args.text,
       programWindow,
       preparedTrack,
       programQueued,
       hostText,
       fallbackReason,
+      speechRole,
     });
 
     return {
@@ -288,14 +291,16 @@ export class RadioAgentService {
   }
 
   private userTextActions(args: {
+    rawUserText: string;
     programWindow: RadioAgentProgramWindow | undefined;
     preparedTrack: RadioAgentPreparedTrack | null;
     programQueued: boolean;
     hostText: string;
     fallbackReason?: string;
+    speechRole: "ack" | "correction";
   }): RadioAgentAction[] {
     const actions: RadioAgentAction[] = [];
-    if (args.hostText) actions.push({ type: "speak", text: args.hostText, speechRole: "ack" });
+    if (args.hostText) actions.push({ type: "speak", text: args.hostText, speechRole: args.speechRole });
     if (args.programQueued && args.programWindow) actions.push({ type: "queue_window", window: args.programWindow, prepared: [] });
     if (args.preparedTrack) {
       actions.push({
@@ -309,7 +314,7 @@ export class RadioAgentService {
     if (args.programWindow && !args.programQueued && !args.preparedTrack && args.fallbackReason === "no_playable_candidate") {
       actions.push({
         type: "honest_not_found",
-        contract: contractFromProgramWindow(args.programWindow),
+        contract: contractFromProgramWindow(args.programWindow, args.rawUserText),
         reason: "no playable candidate",
         searchedQueries: args.programWindow.candidateTasks.map((task) => task.query).filter(Boolean),
       });
@@ -393,11 +398,11 @@ function isConcreteHostText(text: string): boolean {
   return compact.length >= 8 && !isGenericHostText(compact);
 }
 
-function contractFromProgramWindow(programWindow: RadioAgentProgramWindow): AgentSessionContract {
+function contractFromProgramWindow(programWindow: RadioAgentProgramWindow, rawUserText: string): AgentSessionContract {
   return {
     id: programWindow.id,
     mainDirection: programWindow.mainDirection,
-    rawUserText: programWindow.mainDirection,
+    rawUserText,
     allowedAdjacent: programWindow.allowedAdjacent,
     disallowed: programWindow.disallowed,
     positiveSeeds: [programWindow.mainDirection],
