@@ -18,6 +18,7 @@ export interface BuildRadioAgentContextSnapshotArgs {
   recentEvents: RadioAgentEvent[];
   memories: RadioAgentMemory[];
   currentTrack?: Track | null;
+  recentTracks?: Track[];
   readyQueue: Track[];
 }
 
@@ -37,8 +38,9 @@ export function buildRadioAgentContextSnapshot(
     memoryFacts: args.memories.filter((memory) => memory.kind === "taste_fact"),
     memoryHypotheses: args.memories.filter((memory) => memory.kind === "taste_hypothesis"),
     sessionEvidence: args.memories.filter((memory) => memory.kind === "session_evidence"),
-    recentEvents: args.recentEvents.slice(0, 12).map(sanitizeEvent),
+    recentEvents: args.recentEvents.slice(0, 20).map(sanitizeEvent),
     currentTrack: sanitizeTrack(args.currentTrack ?? null),
+    recentTracks: (args.recentTracks || []).map((track) => sanitizeTrack(track)).filter((track) => track !== null),
     readyQueue: args.readyQueue.map((track) => sanitizeTrack(track)).filter((track) => track !== null),
   };
 }
@@ -125,6 +127,11 @@ function sanitizePayload(payload: Record<string, unknown>): Record<string, unkno
       sanitized[key] = value.map(sanitizeUnknownTrack).filter((track) => track !== null);
       continue;
     }
+    if (key === "governanceTrace") {
+      const trace = sanitizeGovernanceTrace(value);
+      if (trace) sanitized[key] = trace;
+      continue;
+    }
 
     const safeValue = sanitizePayloadValue(value);
     if (safeValue !== undefined) sanitized[key] = safeValue;
@@ -172,6 +179,39 @@ function sanitizeUnknownTrack(value: unknown): Track | null {
 function capPayloadString(value: string): string {
   if (value.length <= PAYLOAD_STRING_LIMIT) return value;
   return `${value.slice(0, PAYLOAD_STRING_LIMIT - TRUNCATION_MARKER.length)}${TRUNCATION_MARKER}`;
+}
+
+function sanitizeGovernanceTrace(value: unknown): Record<string, unknown> | null {
+  if (!isRecord(value)) return null;
+  const status = stringField(value.status);
+  const candidateKey = stringField(value.candidateKey);
+  const decision = stringField(value.decision);
+  if ((status !== "accepted" && status !== "rejected") || !candidateKey || !decision) return null;
+
+  const trace: Record<string, unknown> = {
+    status,
+    contractId: stringField(value.contractId) || null,
+    requestToken: typeof value.requestToken === "number" && Number.isFinite(value.requestToken) ? value.requestToken : null,
+    candidateKey: capPayloadString(candidateKey),
+    decision: capPayloadString(decision),
+    evidence: safeGovernanceEvidence(value.evidence),
+  };
+  const fallbackLevel = stringField(value.fallbackLevel);
+  if (fallbackLevel) trace.fallbackLevel = capPayloadString(fallbackLevel);
+  return trace;
+}
+
+function safeGovernanceEvidence(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter((item): item is string => typeof item === "string")
+    .map(capPayloadString)
+    .filter((item) => item && !/\b(prompt|json|tool call|raw|secret|trace basis|decision trace|verification)\b/i.test(item))
+    .slice(0, 5);
+}
+
+function stringField(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
 }
 
 function isRawLikeKey(key: string, value: unknown): boolean {

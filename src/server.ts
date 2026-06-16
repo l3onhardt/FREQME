@@ -69,6 +69,9 @@ const require = createRequire(import.meta.url);
 const USER_REQUEST_AGENT_TIMEOUT_MS = 15000;
 const USER_REQUEST_FALLBACK_TIMEOUT_MS = 7000;
 
+type RadioAgentPlayNowAction = Extract<RadioAgentAction, { type: "play_now" }>;
+type RadioAgentHonestNotFoundAction = Extract<RadioAgentAction, { type: "honest_not_found" }>;
+
 process.on("uncaughtException", (error) => {
   console.error("[BOOT] uncaught exception", error);
 });
@@ -115,8 +118,18 @@ function radioAgentReadinessFromConfig(): {
   };
 }
 
-function radioAgentRejectedPlayback(actions: RadioAgentAction[]): RadioAgentAction | null {
-  return actions.find((action) => action.type === "honest_not_found" && Boolean(action.governanceTrace)) || null;
+function radioAgentAcceptedPlayback(actions: RadioAgentAction[]): RadioAgentPlayNowAction | null {
+  return actions.find(
+    (action): action is RadioAgentPlayNowAction =>
+      action.type === "play_now" && Boolean(action.governanceTrace),
+  ) || null;
+}
+
+function radioAgentRejectedPlayback(actions: RadioAgentAction[]): RadioAgentHonestNotFoundAction | null {
+  return actions.find(
+    (action): action is RadioAgentHonestNotFoundAction =>
+      action.type === "honest_not_found" && Boolean(action.governanceTrace),
+  ) || null;
 }
 
 const radioAgent = new RadioAgentRuntime({
@@ -1370,6 +1383,16 @@ async function handleRadioSocket(socket: WebSocketType): Promise<void> {
     const rejectedPlayback = radioAgentRejectedPlayback(trackEndResult.actions);
     if (rejectedPlayback) {
       const reason = rejectedPlayback.type === "honest_not_found" ? rejectedPlayback.reason : "radio_agent_rejected_playback";
+      mirrorSocketRadioAgent({
+        type: "playback_recovery_needed",
+        uid,
+        sessionId,
+        reason,
+        governanceTrace: rejectedPlayback.governanceTrace,
+        currentTrack: currentTrack ? trackInfo(currentTrack) : null,
+        recentTracks: recentPlaybackTrackInfos(),
+        readyQueue: queue.readyItems().map((readyItem) => trackInfo(readyItem.track)),
+      });
       store.logPlaybackEvent("radio_agent_track_end_fallback", {
         uid,
         songId: currentSongId,
@@ -1600,6 +1623,23 @@ async function handleRadioSocket(socket: WebSocketType): Promise<void> {
             if (!isCurrentRequestToken(activeRequestToken, requestToken)) return;
             const ready = queue.readyItems()[0];
             if (ready) {
+              const acceptedPlayback = radioAgentAcceptedPlayback(agentTextResult.actions);
+              if (acceptedPlayback?.governanceTrace) {
+                mirrorSocketRadioAgent({
+                  type: "program_track_queued",
+                  uid,
+                  sessionId,
+                  track: trackInfo(ready.track),
+                  programWindowId: agentProgramWindow.id,
+                  governanceTrace: acceptedPlayback.governanceTrace,
+                  traceId: ready.selectionReason.traceId || "",
+                  selectionReason: ready.selectionReason.text || agentProgramWindow.stationBrief || "",
+                  hostText: ready.segueText || agentAckText || "",
+                  currentTrack: currentTrack ? trackInfo(currentTrack) : null,
+                  recentTracks: recentPlaybackTrackInfos(),
+                  readyQueue: queue.readyItems().map((readyItem) => trackInfo(readyItem.track)),
+                });
+              }
               if (agentAckText) synthesizeAndSendDjMessage(agentAckText);
               send({
                 type: "request_status",

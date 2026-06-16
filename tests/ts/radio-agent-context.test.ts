@@ -52,12 +52,18 @@ test("agent context compacts profile, now, contract, memory, and current playbac
     recentEvents: events,
     memories,
     currentTrack: { id: "s1", name: "Good Days", artist: "SZA" },
+    recentTracks: [
+      { id: "s0", name: "Broken Clocks", artist: "SZA", raw: { secret: "recent-track-raw" } },
+      { id: "s1", name: "Good Days", artist: "SZA" },
+    ],
     readyQueue: [],
   });
 
   assert.equal(snapshot.uid, "42");
   assert.equal(snapshot.eventType, "queue_low");
   assert.equal(snapshot.currentTrack?.id, "s1");
+  assert.deepEqual(snapshot.recentTracks.map((track) => track.id), ["s0", "s1"]);
+  assert.equal(Object.hasOwn(snapshot.recentTracks[0] ?? {}, "raw"), false);
   assert.match(snapshot.profile, /SZA/);
   assert.match(snapshot.now, /late_night/);
   assert.match(snapshot.contract, /late-night R&B/);
@@ -77,6 +83,7 @@ test("agent context caps large artifacts before model boundary", () => {
     recentEvents: [],
     memories: [],
     currentTrack: null,
+    recentTracks: [],
     readyQueue: [],
   });
 
@@ -125,23 +132,69 @@ test("agent context strips raw track and event payload data", () => {
       raw: { secret: "current-track-raw" },
       source: "netease",
     },
+    recentTracks: [
+      { id: "s0", name: "Broken Clocks", artist: "SZA", raw: { secret: "recent-track-raw" } },
+    ],
     readyQueue: [
       { id: "s2", name: "Pink + White", artist: "Frank Ocean", raw: { secret: "ready-queue-raw" } },
     ],
   });
 
   assert.equal(Object.hasOwn(snapshot.currentTrack ?? {}, "raw"), false);
+  assert.equal(Object.hasOwn(snapshot.recentTracks[0] ?? {}, "raw"), false);
   assert.equal(Object.hasOwn(snapshot.readyQueue[0] ?? {}, "raw"), false);
   assert.equal(Object.hasOwn((snapshot.recentEvents[0]?.payload.currentTrack as Record<string, unknown>) ?? {}, "raw"), false);
   assert.equal(Object.hasOwn((snapshot.recentEvents[0]?.payload.readyQueue as Record<string, unknown>[])[0] ?? {}, "raw"), false);
   assert.equal(Object.hasOwn(snapshot.recentEvents[0]?.payload ?? {}, "raw"), false);
   assert.equal(Object.hasOwn(snapshot.recentEvents[0]?.payload ?? {}, "source_json"), false);
   assert.match(String(snapshot.recentEvents[0]?.payload.text), /truncated for agent context/);
-  assert.doesNotMatch(JSON.stringify(snapshot), /current-track-raw|ready-queue-raw|event-track-raw|queue-track-raw|netease-private-json|library-row|event-text-secret/);
+  assert.doesNotMatch(JSON.stringify(snapshot), /current-track-raw|recent-track-raw|ready-queue-raw|event-track-raw|queue-track-raw|netease-private-json|library-row|event-text-secret/);
 });
 
-test("agent context keeps the latest 12 newest-first recent events", () => {
-  const events: RadioAgentEvent[] = Array.from({ length: 15 }, (_, index) => ({
+test("agent context keeps only listener-safe governance trace fields", () => {
+  const snapshot = buildRadioAgentContextSnapshot({
+    uid: "42",
+    sessionId: 7,
+    eventType: "queue_low",
+    artifacts: {},
+    recentEvents: [
+      {
+        uid: "42",
+        sessionId: 7,
+        type: "program_track_queued",
+        priority: "warm",
+        payload: {
+          governanceTrace: {
+            status: "accepted",
+            contractId: "contract-rnb",
+            requestToken: 3,
+            candidateKey: "sza::gooddays",
+            decision: "direct_positive",
+            evidence: ["candidate metadata matches positive anchor: R&B", "prompt JSON trace should not survive"],
+            fallbackLevel: "agent_program",
+            rawPrompt: "secret prompt",
+          },
+        },
+        createdAt: "2026-06-03T01:00:00.000Z",
+      },
+    ],
+    memories: [],
+    currentTrack: null,
+    recentTracks: [],
+    readyQueue: [],
+  });
+
+  const trace = snapshot.recentEvents[0]?.payload.governanceTrace as Record<string, unknown> | undefined;
+  assert.equal(trace?.contractId, "contract-rnb");
+  assert.equal(trace?.candidateKey, "sza::gooddays");
+  assert.equal(trace?.decision, "direct_positive");
+  assert.deepEqual(trace?.evidence, ["candidate metadata matches positive anchor: R&B"]);
+  assert.equal(Object.hasOwn(trace ?? {}, "rawPrompt"), false);
+  assert.doesNotMatch(JSON.stringify(snapshot), /prompt|JSON trace|secret/);
+});
+
+test("agent context keeps recent events under the model context cap", () => {
+  const events: RadioAgentEvent[] = Array.from({ length: 25 }, (_, index) => ({
     uid: "42",
     sessionId: 7,
     type: "playback_progress",
@@ -158,10 +211,11 @@ test("agent context keeps the latest 12 newest-first recent events", () => {
     recentEvents: events,
     memories: [],
     currentTrack: null,
+    recentTracks: [],
     readyQueue: [],
   });
 
-  assert.equal(snapshot.recentEvents.length, 12);
+  assert.equal(snapshot.recentEvents.length, 20);
   assert.equal(snapshot.recentEvents[0]?.payload.text, "event-0");
-  assert.equal(snapshot.recentEvents.some((event) => event.payload.text === "event-14"), false);
+  assert.equal(snapshot.recentEvents.some((event) => event.payload.text === "event-24"), false);
 });

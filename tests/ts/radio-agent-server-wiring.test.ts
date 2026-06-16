@@ -594,6 +594,35 @@ test("server stops track-end promotion when radio agent action rejects ready pla
   assert.match(source, /action\.type === "honest_not_found"/);
 });
 
+test("server mirrors radio agent governance traces into runtime status events", () => {
+  const source = fs.readFileSync("src/server.ts", "utf8");
+  const acceptedHelper = source.indexOf("function radioAgentAcceptedPlayback");
+  const rejectedHelper = source.indexOf("function radioAgentRejectedPlayback");
+  const songRequestHandler = source.indexOf('if (type === "song_request")');
+  const readyBranch = source.indexOf("if (ready)", songRequestHandler);
+  const requestTrace = source.indexOf("radioAgentAcceptedPlayback(agentTextResult.actions)", readyBranch);
+  const requestMirror = source.indexOf('type: "program_track_queued"', requestTrace);
+  const sendPreparedNextStart = source.indexOf("const runSendPreparedNext =");
+  const actionGuard = source.indexOf("radioAgentRejectedPlayback(trackEndResult.actions)", sendPreparedNextStart);
+  const rejectedMirror = source.indexOf('type: "playback_recovery_needed"', actionGuard);
+
+  assert.ok(acceptedHelper >= 0);
+  assert.ok(rejectedHelper > acceptedHelper);
+  assert.ok(songRequestHandler >= 0);
+  assert.ok(readyBranch > songRequestHandler);
+  assert.ok(requestTrace > readyBranch);
+  assert.ok(requestMirror > requestTrace);
+  assert.ok(sendPreparedNextStart >= 0);
+  assert.ok(actionGuard > sendPreparedNextStart);
+  assert.ok(rejectedMirror > actionGuard);
+  assert.match(source.slice(acceptedHelper, rejectedHelper), /action\.type === "play_now"/);
+  assert.match(source.slice(acceptedHelper, rejectedHelper), /Boolean\(action\.governanceTrace\)/);
+  assert.match(source.slice(requestTrace, requestMirror + 420), /governanceTrace:\s*acceptedPlayback\.governanceTrace/);
+  assert.match(source.slice(requestTrace, requestMirror + 420), /programWindowId:\s*agentProgramWindow\.id/);
+  assert.match(source.slice(actionGuard, rejectedMirror + 420), /governanceTrace:\s*rejectedPlayback\.governanceTrace/);
+  assert.match(source.slice(actionGuard, rejectedMirror + 420), /reason/);
+});
+
 test("server gives anonymous websocket sessions an isolated radio agent session id", () => {
   const source = fs.readFileSync("src/server.ts", "utf8");
   const socketStart = source.indexOf("async function handleRadioSocket");

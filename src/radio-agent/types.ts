@@ -116,6 +116,9 @@ export interface RadioAgentProgramWindow {
   returnRequirement: string;
   candidateTasks: RadioAgentCandidateTask[];
   hostIntent: RadioAgentHostIntent;
+  currentTrack?: Track | null;
+  recentTracks?: Track[];
+  readyQueue?: Track[];
   traceBasis: {
     profile: string;
     now: string;
@@ -156,6 +159,16 @@ export interface RadioAgentReadiness {
   summary: string;
 }
 
+export interface RadioAgentGovernanceSummary {
+  status: "accepted" | "rejected";
+  contractId: string | null;
+  requestToken: number | null;
+  candidateKey: string;
+  decision: string;
+  evidence: string[];
+  fallbackLevel?: string;
+}
+
 export interface RadioAgentStatus {
   mode: RadioAgentMode;
   uid: string | null;
@@ -183,6 +196,10 @@ export interface RadioAgentStatus {
       nextAttempt: string;
     };
   };
+  governance?: {
+    lastAccepted?: RadioAgentGovernanceSummary;
+    lastRejected?: RadioAgentGovernanceSummary;
+  };
 }
 
 export interface RadioAgentHandleResult {
@@ -207,6 +224,7 @@ export interface RadioAgentContextSnapshot {
   sessionEvidence: RadioAgentMemory[];
   recentEvents: RadioAgentEvent[];
   currentTrack: Track | null;
+  recentTracks: Track[];
   readyQueue: Track[];
 }
 

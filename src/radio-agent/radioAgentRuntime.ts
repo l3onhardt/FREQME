@@ -15,6 +15,7 @@ import { distillTasteFacts, type TasteEvidenceItem } from "./tasteDistiller.js";
 import {
   normalizeRadioAgentEvent,
   type RadioAgentEvent,
+  type RadioAgentGovernanceSummary,
   type RadioAgentHandleResult,
   type RadioAgentMemory,
   type RadioAgentReadiness,
@@ -133,6 +134,7 @@ export class RadioAgentRuntime {
   status(uid: string | null, sessionId: number | null = null): RadioAgentStatus {
     const artifacts: RadioAgentStatus["artifacts"] = {};
     let explainability: RadioAgentStatus["explainability"] | undefined;
+    const recentEvents = this.deps.store.recentEvents(uid, sessionId, 20);
     if (uid) {
       for (const key of [
         "user_profile.md",
@@ -164,10 +166,11 @@ export class RadioAgentRuntime {
       sessionId,
       controlsPlayback: this.deps.mode === "active",
       readiness: agentReadinessStatus(this.deps.mode, this.deps.readiness),
-      recentEvents: this.deps.store.recentEvents(uid, sessionId, 20),
+      recentEvents,
       recentDecisions: this.deps.store.latestShadowDecisions(uid, sessionId, 20),
       artifacts,
       explainability,
+      governance: governanceStatusFromEvents(recentEvents),
     };
   }
 
@@ -438,32 +441,40 @@ export class RadioAgentRuntime {
   }
 
   private async planProgramWindow(event: RadioAgentEvent) {
-    if (!this.deps.programDirector || !event.uid) return undefined;
+    if (!this.deps.programDirector) return undefined;
 
     try {
-      const memories = [
-        ...this.deps.store.memories(event.uid, "taste_fact", 12),
-        ...this.deps.store.memories(event.uid, "taste_hypothesis", 12),
-        ...this.deps.store.memories(event.uid, "session_evidence", 12),
-      ];
+      const memories = event.uid
+        ? [
+            ...this.deps.store.memories(event.uid, "taste_fact", 12),
+            ...this.deps.store.memories(event.uid, "taste_hypothesis", 12),
+            ...this.deps.store.memories(event.uid, "session_evidence", 12),
+          ]
+        : [];
+      const payloadProgramContract = stringValue(event.payload.programContract || event.payload.activeStationContract);
       const artifacts = {
-        "user_profile.md": this.deps.store.artifact(event.uid, "user_profile.md")?.content,
-        "station_now.md": this.deps.store.artifact(event.uid, "station_now.md")?.content,
-        "program_contract.md": this.deps.store.artifact(event.uid, "program_contract.md")?.content,
-        "listener_session.md": this.deps.store.artifact(event.uid, "listener_session.md")?.content,
-        "session_reflection.md": this.deps.store.artifact(event.uid, "session_reflection.md")?.content,
-        "agent_repair.md": this.deps.store.artifact(event.uid, "agent_repair.md")?.content,
+        "user_profile.md": stringValue(event.payload.userProfile) || (event.uid ? this.deps.store.artifact(event.uid, "user_profile.md")?.content : undefined),
+        "station_now.md": stringValue(event.payload.stationNow) || (event.uid ? this.deps.store.artifact(event.uid, "station_now.md")?.content : undefined),
+        "program_contract.md": payloadProgramContract || (event.uid ? this.deps.store.artifact(event.uid, "program_contract.md")?.content : undefined),
+        "listener_session.md": stringValue(event.payload.listenerSession) || (event.uid ? this.deps.store.artifact(event.uid, "listener_session.md")?.content : undefined),
+        "session_reflection.md": stringValue(event.payload.sessionReflection) || (event.uid ? this.deps.store.artifact(event.uid, "session_reflection.md")?.content : undefined),
+        "agent_repair.md": stringValue(event.payload.agentRepair) || (event.uid ? this.deps.store.artifact(event.uid, "agent_repair.md")?.content : undefined),
       };
       const currentTrack = extractTrack(event.payload.currentTrack) || extractTrack(event.payload.track);
+      const recentTracks = extractRecentTracks(event.payload.recentTracks);
       const readyQueue = extractReadyQueue(event.payload.readyQueue);
+      const recentEvents = recentPlanningEvents(
+        this.deps.store.recentEvents(event.uid, event.sessionId ?? null, 80),
+      );
       const snapshot = buildRadioAgentContextSnapshot({
         uid: event.uid,
         sessionId: event.sessionId ?? null,
         eventType: event.type,
         artifacts,
-        recentEvents: this.deps.store.recentEvents(event.uid, event.sessionId ?? null, 20),
+        recentEvents,
         memories,
         currentTrack,
+        recentTracks,
         readyQueue,
       });
       const plannedWindow = await this.deps.programDirector.plan(snapshot);
@@ -671,6 +682,19 @@ function isTrack(value: Track | null): value is Track {
 function extractReadyQueue(value: unknown): Track[] {
   if (!Array.isArray(value)) return [];
   return value.map(extractTrack).filter(isTrack);
+}
+
+function extractRecentTracks(value: unknown): Track[] {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set<string>();
+  const tracks: Track[] = [];
+  for (const track of value.map(extractTrack).filter(isTrack)) {
+    const key = completedListeningTrackKey(track);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    tracks.push(track);
+  }
+  return tracks.slice(0, 8);
 }
 
 function journalObservation(event: RadioAgentEvent, window: RadioAgentProgramWindow): string {
@@ -943,6 +967,44 @@ function agentExplainabilityStatus(
   };
 }
 
+function governanceStatusFromEvents(events: RadioAgentEvent[]): RadioAgentStatus["governance"] | undefined {
+  let lastAccepted: RadioAgentGovernanceSummary | undefined;
+  let lastRejected: RadioAgentGovernanceSummary | undefined;
+
+  for (const event of events) {
+    const trace = governanceSummaryFromUnknown(event.payload.governanceTrace);
+    if (!trace) continue;
+    if (trace.status === "accepted" && !lastAccepted) lastAccepted = trace;
+    if (trace.status === "rejected" && !lastRejected) lastRejected = trace;
+    if (lastAccepted && lastRejected) break;
+  }
+
+  if (!lastAccepted && !lastRejected) return undefined;
+  return {
+    ...(lastAccepted ? { lastAccepted } : {}),
+    ...(lastRejected ? { lastRejected } : {}),
+  };
+}
+
+function governanceSummaryFromUnknown(value: unknown): RadioAgentGovernanceSummary | null {
+  if (!isRecord(value)) return null;
+  const status = stringValue(value.status);
+  const candidateKey = safeGovernanceField(value.candidateKey);
+  const decision = safeGovernanceField(value.decision);
+  if ((status !== "accepted" && status !== "rejected") || !candidateKey || !decision) return null;
+  const fallbackLevel = safeGovernanceField(value.fallbackLevel);
+
+  return {
+    status,
+    contractId: safeGovernanceField(value.contractId) || null,
+    requestToken: typeof value.requestToken === "number" && Number.isFinite(value.requestToken) ? value.requestToken : null,
+    candidateKey,
+    decision,
+    evidence: safeGovernanceEvidence(value.evidence),
+    ...(fallbackLevel ? { fallbackLevel } : {}),
+  };
+}
+
 function markdownFieldLine(markdown: string, field: string): string {
   const escapedField = field.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const match = markdown.match(new RegExp(`^${escapedField}:\\s*(.+)$`, "im"));
@@ -987,6 +1049,26 @@ function safeExplainabilityLine(value: string): string {
   if (/\b(model|prompt|json|tool call|shadow decision|decision trace|trace basis|verification)\b/i.test(compact)) {
     return "";
   }
+  return compact.slice(0, 220).trim();
+}
+
+function safeGovernanceField(value: unknown): string {
+  if (typeof value !== "string") return "";
+  return safeGovernanceText(value);
+}
+
+function safeGovernanceEvidence(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map(safeGovernanceField)
+    .filter(Boolean)
+    .slice(0, 5);
+}
+
+function safeGovernanceText(value: string): string {
+  const compact = value.replace(/\s+/g, " ").trim();
+  if (!compact) return "";
+  if (/\b(prompt|json|tool call|raw|secret|trace basis|decision trace|verification)\b/i.test(compact)) return "";
   return compact.slice(0, 220).trim();
 }
 
@@ -1059,6 +1141,27 @@ function shouldPlanProgramWindow(event: RadioAgentEvent): boolean {
   return readyQueueCount === 0;
 }
 
+function recentPlanningEvents(events: RadioAgentEvent[]): RadioAgentEvent[] {
+  const playbackEvents = events.filter((event) =>
+    event.type === "playback_started" ||
+    event.type === "track_completed" ||
+    event.type === "program_track_queued",
+  );
+  return uniqueEvents([...events.slice(0, 12), ...playbackEvents.slice(0, 8)]).slice(0, 20);
+}
+
+function uniqueEvents(events: RadioAgentEvent[]): RadioAgentEvent[] {
+  const seen = new Set<string>();
+  const unique: RadioAgentEvent[] = [];
+  for (const event of events) {
+    const key = event.id == null ? `${event.type}:${event.createdAt}:${JSON.stringify(event.payload)}` : `id:${event.id}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    unique.push(event);
+  }
+  return unique;
+}
+
 function shouldPlanFromUserText(text: string): boolean {
   if (!text) return false;
   if (isExplanationQuestion(text)) return false;
@@ -1066,6 +1169,31 @@ function shouldPlanFromUserText(text: string): boolean {
   if (negativeArtistMovesFromText(text).length > 0) return true;
   if (positiveArtistRequestFromText(text)) return true;
   return looksLikeMusicDirection(text);
+}
+
+function explicitStyleDirectionFromText(text: string): string {
+  const compact = text.replace(/\s+/g, " ").trim();
+  if (!compact) return "";
+  if (isExplanationQuestion(compact)) return "";
+  if (isRnbRequest(compact) || positiveArtistRequestFromText(compact) || negativeArtistMovesFromText(compact).length > 0) {
+    return "";
+  }
+  if (!looksLikeMusicDirection(compact)) return "";
+
+  const direction = compact
+    .replace(/^\s*(?:please|pls|can you|could you|would you)\s+/iu, "")
+    .replace(
+      /^\s*(?:play|put on|queue|find|search|give me|i want|i need|want|need|switch to|change to|more of|more)\s+(?:some\s+|more\s+|me\s+)?/iu,
+      "",
+    )
+    .replace(/^\s*(?:播放|放点|播点|来点|听点|想听|换成|换点|给我来点|给我放点)\s*/u, "")
+    .replace(/\b(?:please|pls|now|next|tonight|today)\b[.!?。！？，,]*$/iu, "")
+    .replace(/[.!?。！？，,]+$/u, "")
+    .trim();
+
+  if (!direction || direction.length < 2) return "";
+  if (/^(?:continue|keep going|whatever|anything|surprise me|same vibe)$/iu.test(direction)) return "";
+  return direction.slice(0, 120).trim();
 }
 
 function isExplanationQuestion(text: string): boolean {
@@ -1103,7 +1231,12 @@ function currentSessionDirection(events: RadioAgentEvent[]): ActiveSessionDirect
   const explicitEvent = events.find((event) => {
     if (event.type !== "user_text") return false;
     const text = stringValue(event.payload.text);
-    return isRnbRequest(text) || Boolean(positiveArtistRequestFromText(text)) || negativeArtistMovesFromText(text).length > 0;
+    return (
+      isRnbRequest(text) ||
+      Boolean(positiveArtistRequestFromText(text)) ||
+      negativeArtistMovesFromText(text).length > 0 ||
+      Boolean(explicitStyleDirectionFromText(text))
+    );
   });
   if (!explicitEvent) return null;
 
@@ -1180,6 +1313,29 @@ function currentSessionDirection(events: RadioAgentEvent[]): ActiveSessionDirect
       ],
       nextPromise: "Stay in R&B until the listener asks to move elsewhere.",
       hostGuidance: "Acknowledge the R&B lane naturally; keep vocals and groove forward, and avoid vague filler.",
+    };
+  }
+
+  const explicitStyle = explicitStyleDirectionFromText(explicitText);
+  if (explicitStyle) {
+    return {
+      activeRequest: explicitStyle,
+      stationGoal: `Keep the current radio session centered on ${explicitStyle} until the listener asks to move elsewhere.`,
+      acceptedDirection: `Keep this session close to ${explicitStyle}: use it as the active style direction, then bridge only when the next move clearly supports that direction.`,
+      allowedMoves: [
+        `Use ${explicitStyle} as the primary session direction.`,
+        "Use adjacent artists, eras, or textures only when they clearly support the requested style direction.",
+      ],
+      blockedMoves: [
+        "Do not let older profile anchors override this explicit session request.",
+        "Do not drift into another genre without a deliberate bridge and return.",
+      ],
+      openHypotheses: [
+        `The listener explicitly asked for ${explicitStyle}; treat this as a session preference until playback confirms it.`,
+        "Do not promote this into a durable preference without repeated evidence or completed listening.",
+      ],
+      nextPromise: `Stay close to ${explicitStyle} until the listener asks to move elsewhere.`,
+      hostGuidance: `Acknowledge ${explicitStyle} naturally if speaking, then keep the handoff concrete and low-interruption.`,
     };
   }
 

@@ -674,6 +674,79 @@ test("runtime keeps explicit positive artist requests in the current station con
   assert.doesNotMatch(contract?.content ?? "", /station_goal:.*Anyma/i);
 });
 
+test("runtime keeps generic explicit style requests in the current station contract", async () => {
+  const store = runtimeStore({
+    memories: (uid: string, kind: string, limit: number) =>
+      [
+        {
+          uid,
+          key: "artist:Anyma",
+          kind,
+          value: "Listener has repeated library evidence for Anyma.",
+          confidence: 0.91,
+          evidenceCount: 6,
+          evidenceRefs: ["track:anyma-1"],
+          updatedAt: "2026-06-03T01:00:00.000Z",
+        },
+      ].slice(0, limit),
+  });
+  const runtime = new RadioAgentRuntime({ mode: "assisted", store, now: () => "2026-06-03T01:02:03.000Z" });
+
+  await runtime.handle({
+    type: "user_text",
+    uid: "42",
+    sessionId: 9,
+    text: "play quiet jazz for reading",
+  });
+  await runtime.handle({
+    type: "playback_started",
+    uid: "42",
+    sessionId: 9,
+    track: { id: "old-1", name: "Pictures Of You", artist: "Anyma" },
+  });
+
+  const session = store.artifact("42", "listener_session.md");
+  const contract = store.artifact("42", "program_contract.md");
+  assert.match(session?.content ?? "", /active_request: quiet jazz for reading/i);
+  assert.match(session?.content ?? "", /accepted_direction: Keep this session close to quiet jazz for reading/i);
+  assert.match(contract?.content ?? "", /station_goal: Keep the current radio session centered on quiet jazz for reading/i);
+  assert.match(contract?.content ?? "", /Use quiet jazz for reading as the primary session direction/i);
+  assert.doesNotMatch(contract?.content ?? "", /station_goal:.*Anyma/i);
+});
+
+test("runtime passes explicit recent playback tracks into program planning snapshots", async () => {
+  const store = runtimeStore();
+  let receivedRecentTracks: string[] = [];
+  const runtime = new RadioAgentRuntime({
+    mode: "assisted",
+    store,
+    now: () => "2026-06-03T01:02:03.000Z",
+    programDirector: {
+      plan: async (snapshot) => {
+        receivedRecentTracks = snapshot.recentTracks.map((track) => `${track.name} - ${track.artist}`);
+        return programWindow({ id: "recent-aware-window" });
+      },
+    },
+  });
+
+  await runtime.handle({
+    type: "queue_low",
+    uid: "42",
+    sessionId: 9,
+    currentTrack: { id: "piano", name: "Piano Instrumental Music", artist: "Jazz Piano Bar Academy" },
+    recentTracks: [
+      { id: "italian", name: "Italian Dinner Background Music", artist: "Jazz Piano Bar Academy" },
+      { id: "piano", name: "Piano Instrumental Music", artist: "Jazz Piano Bar Academy" },
+    ],
+    readyQueue: [],
+  });
+
+  assert.deepEqual(receivedRecentTracks, [
+    "Italian Dinner Background Music - Jazz Piano Bar Academy",
+    "Piano Instrumental Music - Jazz Piano Bar Academy",
+  ]);
+});
+
 test("runtime lets the newest explicit artist request replace an older R&B session contract", async () => {
   const store = runtimeStore();
   const runtime = new RadioAgentRuntime({ mode: "assisted", store, now: () => "2026-06-03T01:02:03.000Z" });
@@ -938,6 +1011,70 @@ test("runtime plans an agent-owned program window on queue low", async () => {
   assert.equal(((receivedSnapshot?.recentEvents as RadioAgentEvent[] | undefined)?.[0]?.payload ?? {}).raw_json, undefined);
 });
 
+test("runtime keeps recent playback events in planning context even after queue pressure noise", async () => {
+  const store = runtimeStore();
+  store.events.push(
+    {
+      id: 1,
+      uid: null,
+      sessionId: null,
+      type: "playback_started",
+      priority: "warm",
+      payload: { track: { id: "jazz-1", name: "Italian Dinner Background Music", artist: "Jazz Piano Bar Academy" } },
+      createdAt: "2026-06-11T00:00:01.000Z",
+    },
+    {
+      id: 2,
+      uid: null,
+      sessionId: null,
+      type: "playback_started",
+      priority: "warm",
+      payload: { track: { id: "jazz-2", name: "Magical Piano", artist: "Jazz Piano Bar Academy" } },
+      createdAt: "2026-06-11T00:00:02.000Z",
+    },
+  );
+  for (let index = 0; index < 30; index += 1) {
+    store.events.push({
+      id: index + 3,
+      uid: null,
+      sessionId: null,
+      type: index % 2 === 0 ? "queue_low" : "program_repair_needed",
+      priority: "warm",
+      payload: { reason: "program_executor_duplicate_track" },
+      createdAt: `2026-06-11T00:00:${String(index + 3).padStart(2, "0")}.000Z`,
+    });
+  }
+  let receivedSnapshot: Record<string, unknown> | null = null;
+  const runtime = new RadioAgentRuntime({
+    mode: "assisted",
+    store,
+    programDirector: {
+      plan: async (snapshot: Record<string, unknown>) => {
+        receivedSnapshot = snapshot;
+        return programWindow({
+          candidateTasks: [{ query: "Bill Evans Waltz for Debby", reason: "Fresh quiet jazz.", style: "quiet jazz", negativeConstraints: [] }],
+        });
+      },
+    },
+    now: () => "2026-06-11T00:01:00.000Z",
+  });
+
+  await runtime.handle({
+    type: "queue_low",
+    uid: null,
+    sessionId: null,
+    currentTrack: { id: "jazz-3", name: "Bar Music Chillout Cafe", artist: "Jazz Piano Bar Academy" },
+    readyQueue: [],
+    payload: {
+      programContract: "# Program Contract\nstation_goal: quiet jazz for reading",
+    },
+  });
+
+  const recentEventsJson = JSON.stringify((receivedSnapshot?.recentEvents as RadioAgentEvent[] | undefined) || []);
+  assert.match(recentEventsJson, /Italian Dinner Background Music/);
+  assert.match(recentEventsJson, /Magical Piano/);
+});
+
 test("runtime plans an agent-owned program window immediately for explicit listener direction", async () => {
   const store = runtimeStore();
   let receivedSnapshot: Record<string, unknown> | null = null;
@@ -1162,6 +1299,68 @@ test("runtime status exposes safe agent journal and repair summaries", () => {
   assert.match(status.explainability?.contract?.allowedMoves?.[0] ?? "", /neo-soul/);
   assert.match(status.explainability?.contract?.blockedMoves?.[0] ?? "", /EDM/);
   assert.doesNotMatch(JSON.stringify(status.explainability), /prompt|JSON trace/i);
+});
+
+test("runtime status exposes listener-safe playback governance summaries", () => {
+  const store = runtimeStore();
+  store.events.push(
+    {
+      id: 1,
+      uid: "42",
+      sessionId: 9,
+      type: "program_track_queued",
+      priority: "warm",
+      payload: {
+        track: { id: "s1", name: "Good Days", artist: "SZA" },
+        governanceTrace: {
+          status: "accepted",
+          contractId: "contract-rnb",
+          requestToken: 12,
+          candidateKey: "sza::gooddays",
+          decision: "direct_positive",
+          evidence: ["candidate metadata matches positive anchor: R&B", "prompt raw JSON should not survive"],
+          fallbackLevel: "agent_program",
+          rawPrompt: "secret prompt",
+        },
+      },
+      createdAt: "2026-06-03T01:02:03.000Z",
+    },
+    {
+      id: 2,
+      uid: "42",
+      sessionId: 9,
+      type: "playback_recovery_needed",
+      priority: "warm",
+      payload: {
+        governanceTrace: {
+          status: "rejected",
+          contractId: "contract-rnb",
+          requestToken: 13,
+          candidateKey: "classicalensemble::pianoquintet",
+          decision: "reject_off_contract",
+          evidence: ["candidate is classical, not R&B", "tool call trace should not survive"],
+          fallbackLevel: "honest_not_found",
+        },
+      },
+      createdAt: "2026-06-03T01:03:03.000Z",
+    },
+  );
+  const runtime = new RadioAgentRuntime({
+    mode: "assisted",
+    store,
+    now: () => "2026-06-03T01:04:03.000Z",
+  });
+
+  const status = runtime.status("42", 9);
+
+  assert.equal(status.governance?.lastAccepted?.contractId, "contract-rnb");
+  assert.equal(status.governance?.lastAccepted?.candidateKey, "sza::gooddays");
+  assert.equal(status.governance?.lastAccepted?.decision, "direct_positive");
+  assert.deepEqual(status.governance?.lastAccepted?.evidence, ["candidate metadata matches positive anchor: R&B"]);
+  assert.equal(status.governance?.lastRejected?.candidateKey, "classicalensemble::pianoquintet");
+  assert.equal(status.governance?.lastRejected?.decision, "reject_off_contract");
+  assert.deepEqual(status.governance?.lastRejected?.evidence, ["candidate is classical, not R&B"]);
+  assert.doesNotMatch(JSON.stringify(status.governance), /prompt|JSON|tool call|rawPrompt|secret/i);
 });
 
 test("runtime readiness summary is listener-facing even when planning is degraded", () => {
@@ -1563,6 +1762,90 @@ test("runtime keeps host decisions when no program director is configured", asyn
   assert.equal(result.programWindow, undefined);
   assert.ok(result.hostDecision);
   assert.ok(store.decisions.some((decision) => decision.decisionType === "host"));
+});
+
+test("runtime can plan a session-local program window for anonymous listener direction", async () => {
+  const store = runtimeStore();
+  let receivedSnapshot: Record<string, unknown> | null = null;
+  const runtime = new RadioAgentRuntime({
+    mode: "assisted",
+    store,
+    programDirector: {
+      plan: async (snapshot: Record<string, unknown>) => {
+        receivedSnapshot = snapshot;
+        return programWindow({
+          uid: null,
+          sessionId: null,
+          id: "anonymous-jazz-window",
+          stationBrief: "Quiet jazz for reading.",
+          mainDirection: "quiet jazz for reading",
+          candidateTasks: [
+            {
+              query: "Miles Davis Blue in Green",
+              reason: "Quiet jazz anchor for reading.",
+              style: "quiet jazz",
+              negativeConstraints: [],
+            },
+          ],
+        });
+      },
+    },
+    now: () => "2026-06-03T01:02:03.000Z",
+  });
+
+  const result = await runtime.handle({
+    type: "user_text",
+    uid: null,
+    sessionId: null,
+    text: "play quiet jazz for reading",
+    currentTrack: { id: "current", name: "Best Part", artist: "Daniel Caesar" },
+    readyQueue: [],
+  });
+
+  assert.equal(result.programWindow?.id, "anonymous-jazz-window");
+  assert.equal(receivedSnapshot?.uid, null);
+  assert.equal(receivedSnapshot?.eventType, "user_text");
+  assert.match(JSON.stringify(receivedSnapshot?.recentEvents || []), /play quiet jazz for reading/);
+  assert.ok(store.decisions.some((decision) => decision.uid === null && decision.decisionType === "program_window"));
+  assert.equal(store.artifacts.size, 0);
+});
+
+test("runtime uses payload program contract for anonymous planning snapshots", async () => {
+  const store = runtimeStore();
+  let receivedSnapshot: Record<string, unknown> | null = null;
+  const runtime = new RadioAgentRuntime({
+    mode: "assisted",
+    store,
+    programDirector: {
+      plan: async (snapshot: Record<string, unknown>) => {
+        receivedSnapshot = snapshot;
+        return programWindow({
+          uid: null,
+          sessionId: null,
+          id: "anonymous-contract-window",
+          stationBrief: "Quiet jazz for reading.",
+          mainDirection: "quiet jazz for reading",
+        });
+      },
+    },
+    now: () => "2026-06-03T01:02:03.000Z",
+  });
+
+  await runtime.handle({
+    type: "queue_low",
+    uid: null,
+    sessionId: null,
+    payload: {
+      programContract:
+        "# Program Contract\n\nstation_goal: quiet jazz for reading\n\n## Blocked Moves\n- generic electronic\n- classical chamber music",
+    },
+    currentTrack: { id: "jazz-1", name: "Italian Dinner Background Music", artist: "Jazz Piano Bar Academy" },
+    readyQueue: [],
+  });
+
+  assert.match(String(receivedSnapshot?.contract), /quiet jazz for reading/);
+  assert.match(String(receivedSnapshot?.contract), /generic electronic/);
+  assert.equal(store.artifacts.size, 0);
 });
 
 test("runtime records assisted program track execution without replanning", async () => {
