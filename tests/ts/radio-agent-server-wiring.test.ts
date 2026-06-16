@@ -12,6 +12,25 @@ test("server wires long-term radio agent from configured mode", () => {
   assert.match(source, /\/api\/radio\/agent\/status/);
 });
 
+test("server executes approved radio agent actions through the action runner boundary", () => {
+  const source = fs.readFileSync("src/server.ts", "utf8");
+  assert.match(source, /runRadioAgentActions/);
+  assert.match(source, /const executeRadioAgentActions\s*=/);
+  assert.match(source, /executeRadioAgentActions\(result\.actions\)/);
+  assert.match(source, /executeRadioAgentActions\(agentTextResult\.actions\)/);
+});
+
+test("server does not duplicate direct prepared-track queueing after executing agent actions", () => {
+  const source = fs.readFileSync("src/server.ts", "utf8");
+  const songRequestHandler = source.indexOf('if (type === "song_request")');
+  const actionExecution = source.indexOf("executeRadioAgentActions(agentTextResult.actions)", songRequestHandler);
+  const legacyPreparedQueue = source.indexOf("queue.addReady(agentTextResult.preparedTrack.track", actionExecution);
+
+  assert.ok(songRequestHandler >= 0);
+  assert.ok(actionExecution > songRequestHandler);
+  assert.equal(legacyPreparedQueue, -1);
+});
+
 test("server delegates the first playback attempt to RadioAgentService with durable avoids", () => {
   const source = fs.readFileSync("src/server.ts", "utf8");
   const handshake = source.indexOf('if (type === "handshake")');
@@ -253,9 +272,9 @@ test("server executes explicit user direction with radio agent program window be
   const agentResultDeclaration = source.indexOf("const agentTextResult =", songRequestHandler);
   const serviceDirection = source.indexOf("radioAgentService.handleUserText", songRequestHandler);
   const agentAcknowledgement = source.indexOf("const agentAckText = agentTextResult.hostText", serviceDirection);
-  const agentProgramQueue = source.indexOf("agentTextResult.programQueued", agentAcknowledgement);
-  const preparedFallbackQueue = source.indexOf("queue.addReady(agentTextResult.preparedTrack.track", agentProgramQueue);
-  const agentAckSpeech = source.indexOf("synthesizeAndSendDjMessage(agentAckText)", agentProgramQueue);
+  const actionExecution = source.indexOf("executeRadioAgentActions(agentTextResult.actions)", agentAcknowledgement);
+  const agentProgramQueue = source.indexOf("agentTextResult.programQueued", actionExecution);
+  const agentAckSpeech = source.indexOf("synthesizeAndSendDjMessage(agentAckText)", actionExecution);
   const legacyBrainRequest = source.indexOf("radioBrain.handleUserText", serviceDirection);
 
   assert.ok(songRequestHandler >= 0);
@@ -264,6 +283,8 @@ test("server executes explicit user direction with radio agent program window be
   assert.ok(serviceDirection > songRequestHandler);
   assert.ok(agentAcknowledgement > serviceDirection);
   assert.ok(agentAcknowledgement < agentProgramQueue);
+  assert.ok(actionExecution > agentAcknowledgement);
+  assert.ok(actionExecution < agentProgramQueue);
   assert.ok(agentProgramQueue > serviceDirection);
   assert.ok(agentAckSpeech > agentProgramQueue);
   assert.ok(agentAckSpeech < legacyBrainRequest);
@@ -275,8 +296,7 @@ test("server executes explicit user direction with radio agent program window be
   assert.match(source.slice(serviceDirection, agentProgramQueue), /const\s+agentProgramWindow\s*=\s*agentTextResult\.programWindow/);
   assert.match(source.slice(agentProgramQueue, legacyBrainRequest), /agentProgramWindow\.stationBrief/);
   assert.match(source.slice(agentProgramQueue, legacyBrainRequest), /agentTextResult\.preparedTrack/);
-  assert.ok(preparedFallbackQueue > agentProgramQueue);
-  assert.match(source.slice(agentProgramQueue, preparedFallbackQueue), /queue\.clearReady\(\)/);
+  assert.doesNotMatch(source.slice(actionExecution, legacyBrainRequest), /queue\.addReady\(agentTextResult\.preparedTrack\.track/);
   assert.match(source.slice(agentProgramQueue, legacyBrainRequest), /synthesizeAndSendDjMessage\(agentAckText\)/);
   assert.match(source.slice(agentProgramQueue, legacyBrainRequest), /sendPreparedNext\("played",\s*\{\s*allowContinuation:\s*false,\s*skipPrewarmWait:\s*true,\s*requestToken\s*\}\)/);
   assert.match(source.slice(agentProgramQueue, legacyBrainRequest), /return;/);

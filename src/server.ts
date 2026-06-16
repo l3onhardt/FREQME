@@ -48,6 +48,7 @@ import { RadioAgentProgramDirector } from "./radio-agent/programDirector.js";
 import { RadioAgentProgramExecutor } from "./radio-agent/programExecutor.js";
 import { PlaybackGovernor } from "./radio-agent/playbackGovernor.js";
 import { RadioAgentService, type RadioAgentSessionStartArgs } from "./radio-agent/radioAgentService.js";
+import { runRadioAgentActions } from "./radio-agent/actionRunner.js";
 import type { RadioAgentAction } from "./radio-agent/agentActions.js";
 import type { RadioAgentCapabilityState, RadioAgentHandleResult, RadioAgentPreparedTrack, RadioAgentProgramWindow } from "./radio-agent/types.js";
 import {
@@ -942,6 +943,57 @@ async function handleRadioSocket(socket: WebSocketType): Promise<void> {
   const recentPlaybackTrackInfos = (): ReturnType<typeof trackInfo>[] =>
     playedTracks.slice(-8).map((track) => trackInfo(track));
 
+  const executeRadioAgentActions = async (actions: RadioAgentAction[]) =>
+    await runRadioAgentActions(actions, {
+      queuePlayNow: ({ track, url, reason, hostText, governanceTrace }) => {
+        const safeHostText = hostTextForRadioAgentDelivery({
+          eventType: "program_track_queued",
+          decision: hostText ? { shouldSpeak: true, event: "service_delivery", reason: "approved action host text", text: hostText } : undefined,
+        });
+        queue.addReady(track, url, reason, { segueText: safeHostText });
+        if (governanceTrace) {
+          mirrorSocketRadioAgent({
+            type: "program_track_queued",
+            uid,
+            sessionId,
+            track: trackInfo(track),
+            governanceTrace,
+            selectionReason: reason.text || "",
+            hostText: safeHostText,
+            currentTrack: currentTrack ? trackInfo(currentTrack) : null,
+            recentTracks: recentPlaybackTrackInfos(),
+            readyQueue: queue.readyItems().map((readyItem) => trackInfo(readyItem.track)),
+          });
+        }
+      },
+      queuePrepared: ({ prepared }) => {
+        const safeHostText = hostTextForRadioAgentDelivery({
+          eventType: "program_track_queued",
+          decision: prepared.segueText ? { shouldSpeak: true, event: "service_delivery", reason: "approved prepared host text", text: prepared.segueText } : undefined,
+        });
+        queue.addReady(prepared.track, prepared.url, prepared.selectionReason, { segueText: safeHostText });
+      },
+      speak: ({ text }) => synthesizeAndSendDjMessage(text),
+      staySilent: () => undefined,
+      reportNotFound: ({ reason, governanceTrace }) => {
+        mirrorSocketRadioAgent({
+          type: "playback_recovery_needed",
+          uid,
+          sessionId,
+          reason,
+          governanceTrace,
+          currentTrack: currentTrack ? trackInfo(currentTrack) : null,
+          recentTracks: recentPlaybackTrackInfos(),
+          readyQueue: queue.readyItems().map((readyItem) => trackInfo(readyItem.track)),
+        });
+        send({ type: "request_status", status: "not_found", text: "I could not find a safe playable match for that direction yet." });
+      },
+      repairContract: () => undefined,
+      reportFallback: ({ level, reason }) => {
+        store.logPlaybackEvent("radio_agent_fallback_intent", { uid, reason, payload: { level, sessionId } });
+      },
+    });
+
   const withUserRequestAgentTimeout = async <T>(
     work: Promise<T>,
     requestToken: number,
@@ -1125,8 +1177,8 @@ async function handleRadioSocket(socket: WebSocketType): Promise<void> {
         if (result.fallbackReason === "opening_track_prepare_failed") continue;
         return false;
       }
-      queue.addReady(result.opening.track, result.opening.url, result.opening.selectionReason);
-      return true;
+      const actionSummary = await executeRadioAgentActions(result.actions);
+      return actionSummary.playbackQueued;
     }
     return false;
   };
@@ -1674,17 +1726,12 @@ async function handleRadioSocket(socket: WebSocketType): Promise<void> {
         const agentAckText = agentTextResult.hostText;
         if (!isCurrentRequestToken(activeRequestToken, requestToken)) return;
         store.logPlaybackEvent("song_request", { uid, songId: currentSongId, reason: requestText });
+        const actionSummary = await executeRadioAgentActions(agentTextResult.actions);
         let shouldKickAfterRequest = false;
         try {
           const agentProgramWindow = agentTextResult.programWindow;
           if (agentProgramWindow && (agentTextResult.programQueued || agentTextResult.preparedTrack)) {
             rememberAgentProgramWindowContract(agentProgramWindow);
-            if (!agentTextResult.programQueued && agentTextResult.preparedTrack) {
-              queue.clearReady();
-              queue.addReady(agentTextResult.preparedTrack.track, agentTextResult.preparedTrack.url, agentTextResult.preparedTrack.selectionReason, {
-                segueText: agentTextResult.preparedTrack.segueText,
-              });
-            }
             if (!isCurrentRequestToken(activeRequestToken, requestToken)) return;
             const ready = queue.readyItems()[0];
             if (ready) {
