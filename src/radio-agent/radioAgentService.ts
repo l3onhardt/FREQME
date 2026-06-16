@@ -1,7 +1,10 @@
 import type { Track } from "../types.js";
 import type { AgentActionContract, RadioAgentAction } from "./agentActions.js";
+import { ContractController } from "./contractController.js";
+import type { AgentSessionContract } from "./contractController.js";
 import { hostTextForRadioAgentDelivery } from "./hostDelivery.js";
 import { chooseOpeningTrack as defaultChooseOpeningTrack, type OpeningTrackArgs, type OpeningTrackPick } from "./openingTrack.js";
+import type { PlaybackGovernanceTrace, PlaybackGovernor, PlaybackGovernorResult } from "./playbackGovernor.js";
 import type { RadioAgentHandleResult, RadioAgentPreparedTrack, RadioAgentProgramWindow, RadioAgentEventType, RadioHostDecision } from "./types.js";
 
 export interface RadioAgentSessionStartArgs extends OpeningTrackArgs {
@@ -84,6 +87,14 @@ export interface RadioAgentServiceDeps {
   hostTextForDelivery?: (args: RadioAgentHostTextArgs) => string;
   trackEndTimeoutMs?: number;
   userTextQueueTimeoutMs?: number;
+  contractController?: ContractController;
+  activeContractStore?: ActiveContractStore;
+  playbackGovernor?: Pick<PlaybackGovernor, "evaluate">;
+}
+
+export interface ActiveContractStore {
+  get(uid: string | null, sessionId: number | null): AgentSessionContract | null;
+  set(contract: AgentSessionContract): void;
 }
 
 const DEFAULT_TRACK_END_TIMEOUT_MS = 2500;
@@ -91,12 +102,16 @@ const DEFAULT_USER_TEXT_QUEUE_TIMEOUT_MS = 12000;
 
 export class RadioAgentService {
   private readonly deps: Required<Pick<RadioAgentServiceDeps, "chooseOpeningTrack">> & Omit<RadioAgentServiceDeps, "chooseOpeningTrack">;
+  private readonly contractController: ContractController;
+  private readonly activeContractStore: ActiveContractStore;
 
   constructor(deps: RadioAgentServiceDeps) {
     this.deps = {
       ...deps,
       chooseOpeningTrack: deps.chooseOpeningTrack ?? defaultChooseOpeningTrack,
     };
+    this.contractController = deps.contractController ?? new ContractController();
+    this.activeContractStore = deps.activeContractStore ?? new InMemoryActiveContractStore();
   }
 
   async startSession(args: RadioAgentSessionStartArgs): Promise<RadioAgentSessionStartResult> {
@@ -145,6 +160,48 @@ export class RadioAgentService {
 
   async handleTrackEnded(args: RadioAgentTrackEndedArgs): Promise<RadioAgentTrackEndedResult> {
     if (args.readyQueue.length > 0) {
+      const readyTrack = asTrack(args.readyQueue[0]);
+      if (readyTrack && this.deps.playbackGovernor) {
+        const governedReady = await this.governReadyTrack({
+          uid: args.uid,
+          sessionId: args.sessionId,
+          currentTrack: args.currentTrack,
+          recentTracks: args.recentTracks || [],
+          readyQueue: args.readyQueue.slice(1),
+          readyTrack,
+        });
+        if (governedReady.status === "rejected") {
+          return {
+            actions: [
+              {
+                type: "honest_not_found",
+                contract: this.activeContractFor(args.uid, args.sessionId),
+                reason: governedReady.reason,
+                searchedQueries: [],
+                governanceTrace: governedReady.trace,
+              },
+            ],
+            action: "legacy_fallback",
+            agentResult: null,
+            programQueued: false,
+            hostText: "",
+            fallbackReason: governedReady.reason,
+          };
+        }
+        return {
+          actions: [
+            {
+              type: "fallback",
+              level: "same_contract_recent_safe",
+              reason: "ready_queue_available",
+            },
+          ],
+          action: "promote_ready",
+          agentResult: null,
+          programQueued: false,
+          hostText: "",
+        };
+      }
       return {
         actions: [{ type: "fallback", level: "same_contract_recent_safe", reason: "ready_queue_available" }],
         action: "promote_ready",
@@ -169,11 +226,72 @@ export class RadioAgentService {
         })
       : null;
     const programWindow = agentResult?.programWindow;
-    const programQueued = programWindow && this.deps.queueProgramWindow ? await this.deps.queueProgramWindow(programWindow) : false;
+    const preparedTrack =
+      programWindow && this.deps.prepareProgramWindow
+        ? await this.deps.prepareProgramWindow(programWindow)
+        : null;
+    const governedPrepared = programWindow && preparedTrack
+      ? await this.governPreparedTrack({
+          uid: args.uid,
+          sessionId: args.sessionId,
+          currentTrack: args.currentTrack,
+          recentTracks: args.recentTracks || [],
+          readyQueue: args.readyQueue,
+          programWindow,
+          preparedTrack,
+        })
+      : null;
+    const programQueued =
+      !preparedTrack && programWindow && this.deps.queueProgramWindow
+        ? await this.deps.queueProgramWindow(programWindow)
+        : false;
     const hostText =
       agentResult && this.deps.hostTextForDelivery
         ? this.deliverableHostText(agentResult)
         : "";
+
+    if (preparedTrack && governedPrepared?.status === "accepted") {
+      return {
+        actions: [
+          {
+            type: "play_now",
+            track: governedPrepared.track,
+            url: governedPrepared.url,
+            reason: preparedTrack.selectionReason,
+            ...(preparedTrack.segueText ? { hostText: preparedTrack.segueText } : {}),
+            governanceTrace: governedPrepared.trace,
+          },
+          ...(hostText ? [{ type: "speak" as const, text: hostText, speechRole: "recovery" as const }] : []),
+        ],
+        action: "promote_ready",
+        agentResult,
+        ...(programWindow ? { programWindow } : {}),
+        programQueued: false,
+        hostText,
+      };
+    }
+
+    if (governedPrepared?.status === "rejected") {
+      const fallbackReason = governedPrepared.reason;
+      return {
+        actions: [
+          ...(hostText ? [{ type: "speak" as const, text: hostText, speechRole: "recovery" as const }] : []),
+          {
+            type: "honest_not_found",
+            contract: this.activeContractFor(args.uid, args.sessionId),
+            reason: fallbackReason,
+            searchedQueries: searchedQueriesFor(programWindow),
+            governanceTrace: governedPrepared.trace,
+          },
+        ],
+        action: "legacy_fallback",
+        agentResult,
+        ...(programWindow ? { programWindow } : {}),
+        programQueued: false,
+        hostText,
+        fallbackReason,
+      };
+    }
 
     if (programQueued) {
       return {
@@ -242,6 +360,9 @@ export class RadioAgentService {
     shouldClearQueue: boolean,
     speechRole: "ack" | "correction",
   ): Promise<RadioAgentUserTextResult> {
+    const contract = speechRole === "correction"
+      ? this.repairActiveContract(args.uid, args.sessionId, args.text)
+      : this.createActiveContract(args.uid, args.sessionId, args.text);
     const agentResult = this.deps.handleRadioAgentEvent
       ? await this.deps.handleRadioAgentEvent({
           type: "user_text",
@@ -263,26 +384,44 @@ export class RadioAgentService {
       programWindow && !programQueued && !this.deps.queueProgramWindow && this.deps.prepareProgramWindow
         ? await this.deps.prepareProgramWindow(programWindow)
         : null;
+    const governedPrepared = programWindow && preparedTrack
+      ? await this.governPreparedTrack({
+          uid: args.uid,
+          sessionId: args.sessionId,
+          currentTrack: args.currentTrack,
+          recentTracks: args.recentTracks || [],
+          readyQueue: args.readyQueue,
+          programWindow,
+          preparedTrack,
+        })
+      : null;
     const hostText =
       agentResult && this.deps.hostTextForDelivery
         ? this.deliverableHostText(agentResult)
         : "";
-    const fallbackReason = queueResult.fallbackReason || (programWindow && !programQueued && !preparedTrack ? "no_playable_candidate" : undefined);
+    const acceptedPreparedTrack = governedPrepared?.status === "accepted" ? preparedTrack : null;
+    const governanceTrace = governedPrepared?.trace;
+    const fallbackReason =
+      queueResult.fallbackReason ||
+      (governedPrepared?.status === "rejected" ? governedPrepared.reason : undefined) ||
+      (programWindow && !programQueued && !acceptedPreparedTrack ? "no_playable_candidate" : undefined);
     const actions = this.userTextActions({
       rawUserText: args.text,
+      contract,
       programWindow,
-      preparedTrack,
+      preparedTrack: acceptedPreparedTrack,
       programQueued,
       hostText,
       fallbackReason,
       speechRole,
+      governanceTrace,
     });
 
     return {
       actions,
       agentResult,
       ...(programWindow ? { programWindow } : {}),
-      ...(preparedTrack ? { preparedTrack } : {}),
+      ...(acceptedPreparedTrack ? { preparedTrack: acceptedPreparedTrack } : {}),
       programQueued,
       hostText,
       shouldClearQueue,
@@ -292,14 +431,17 @@ export class RadioAgentService {
 
   private userTextActions(args: {
     rawUserText: string;
+    contract: AgentSessionContract | null;
     programWindow: RadioAgentProgramWindow | undefined;
     preparedTrack: RadioAgentPreparedTrack | null;
     programQueued: boolean;
     hostText: string;
     fallbackReason?: string;
     speechRole: "ack" | "correction";
+    governanceTrace?: PlaybackGovernanceTrace;
   }): RadioAgentAction[] {
     const actions: RadioAgentAction[] = [];
+    if (args.contract) actions.push({ type: "repair_contract", contract: args.contract, reason: args.speechRole === "correction" ? "correction" : "listener_direction" });
     if (args.hostText) actions.push({ type: "speak", text: args.hostText, speechRole: args.speechRole });
     if (args.programQueued && args.programWindow) actions.push({ type: "queue_window", window: args.programWindow, prepared: [] });
     if (args.preparedTrack) {
@@ -309,14 +451,25 @@ export class RadioAgentService {
         url: args.preparedTrack.url,
         reason: args.preparedTrack.selectionReason,
         ...(args.preparedTrack.segueText ? { hostText: args.preparedTrack.segueText } : {}),
+        ...(args.governanceTrace ? { governanceTrace: args.governanceTrace } : {}),
       });
     }
     if (args.programWindow && !args.programQueued && !args.preparedTrack && args.fallbackReason === "no_playable_candidate") {
       actions.push({
         type: "honest_not_found",
-        contract: contractFromProgramWindow(args.programWindow, args.rawUserText),
+        contract: args.contract ?? contractFromProgramWindow(args.programWindow, args.rawUserText),
         reason: "no playable candidate",
         searchedQueries: args.programWindow.candidateTasks.map((task) => task.query).filter(Boolean),
+      });
+      return actions;
+    }
+    if (args.programWindow && !args.programQueued && !args.preparedTrack && args.governanceTrace) {
+      actions.push({
+        type: "honest_not_found",
+        contract: args.contract ?? contractFromProgramWindow(args.programWindow, args.rawUserText),
+        reason: args.fallbackReason || args.governanceTrace.decision,
+        searchedQueries: args.programWindow.candidateTasks.map((task) => task.query).filter(Boolean),
+        governanceTrace: args.governanceTrace,
       });
       return actions;
     }
@@ -373,6 +526,151 @@ export class RadioAgentService {
       },
     });
   }
+
+  private createActiveContract(uid: string | null, sessionId: number | null, text: string): AgentSessionContract | null {
+    const contract = this.contractController.fromUserDirection({
+      uid,
+      sessionId,
+      text,
+      sourceEventId: `user_text:${Date.now()}`,
+    });
+    this.activeContractStore.set(contract);
+    return contract;
+  }
+
+  private repairActiveContract(uid: string | null, sessionId: number | null, text: string): AgentSessionContract | null {
+    const active = this.activeContractFor(uid, sessionId);
+    if (!active) return this.createActiveContract(uid, sessionId, text);
+    const contract = this.contractController.repairFromCorrection(active, {
+      text,
+      sourceEventId: `correction:${Date.now()}`,
+      reason: "listener correction",
+    });
+    this.activeContractStore.set(contract);
+    return contract;
+  }
+
+  private activeContractFor(uid: string | null, sessionId: number | null): AgentSessionContract | null {
+    return this.activeContractStore.get(uid, sessionId);
+  }
+
+  private async governPreparedTrack(args: {
+    uid: string | null;
+    sessionId: number | null;
+    currentTrack: Record<string, unknown> | null;
+    recentTracks: Record<string, unknown>[];
+    readyQueue: Record<string, unknown>[];
+    programWindow: RadioAgentProgramWindow;
+    preparedTrack: RadioAgentPreparedTrack;
+  }): Promise<PlaybackGovernorResult> {
+    if (!this.deps.playbackGovernor) {
+      return {
+        status: "accepted",
+        track: args.preparedTrack.track,
+        url: args.preparedTrack.url,
+        trace: {
+          status: "accepted",
+          contractId: this.activeContractFor(args.uid, args.sessionId)?.id ?? null,
+          requestToken: 1,
+          candidateKey: `${args.preparedTrack.track.artist}::${args.preparedTrack.track.name}`,
+          decision: "direct_positive",
+          evidence: ["playback governor not configured"],
+        },
+      };
+    }
+    return await this.deps.playbackGovernor.evaluate({
+      contract: this.activeContractFor(args.uid, args.sessionId),
+      requestToken: 1,
+      activeRequestToken: 1,
+      candidate: args.preparedTrack.track,
+      url: args.preparedTrack.url,
+      query: args.programWindow.candidateTasks[0]?.query,
+      currentTrack: asTrack(args.currentTrack),
+      recentTracks: args.recentTracks.map(asTrack).filter((track): track is Track => Boolean(track)),
+      readyQueue: args.readyQueue.map(asTrack).filter((track): track is Track => Boolean(track)).map((track) => ({ track })),
+      seedState: {},
+      hostText: args.preparedTrack.segueText,
+      fallbackLevel: "agent_program",
+    });
+  }
+
+  private async governReadyTrack(args: {
+    uid: string | null;
+    sessionId: number | null;
+    currentTrack: Record<string, unknown> | null;
+    recentTracks: Record<string, unknown>[];
+    readyQueue: Record<string, unknown>[];
+    readyTrack: Track;
+  }): Promise<PlaybackGovernorResult> {
+    if (!this.deps.playbackGovernor) {
+      return {
+        status: "accepted",
+        track: args.readyTrack,
+        url: "",
+        trace: {
+          status: "accepted",
+          contractId: this.activeContractFor(args.uid, args.sessionId)?.id ?? null,
+          requestToken: 1,
+          candidateKey: `${args.readyTrack.artist}::${args.readyTrack.name}`,
+          decision: "direct_positive",
+          evidence: ["playback governor not configured"],
+        },
+      };
+    }
+    return await this.deps.playbackGovernor.evaluate({
+      contract: this.activeContractFor(args.uid, args.sessionId),
+      requestToken: 1,
+      activeRequestToken: 1,
+      candidate: args.readyTrack,
+      url: "",
+      query: args.readyTrack.selectionReason?.text,
+      currentTrack: asTrack(args.currentTrack),
+      recentTracks: args.recentTracks.map(asTrack).filter((track): track is Track => Boolean(track)),
+      readyQueue: args.readyQueue.map(asTrack).filter((track): track is Track => Boolean(track)).map((track) => ({ track })),
+      seedState: {},
+      hostText: "",
+      fallbackLevel: "same_contract_recent_safe",
+    });
+  }
+}
+
+class InMemoryActiveContractStore implements ActiveContractStore {
+  private readonly contracts = new Map<string, AgentSessionContract>();
+
+  get(uid: string | null, sessionId: number | null): AgentSessionContract | null {
+    const key = safeContractStoreKey(uid, sessionId);
+    return key ? this.contracts.get(key) || null : null;
+  }
+
+  set(contract: AgentSessionContract): void {
+    const key = safeContractStoreKey(contract.uid, contract.sessionId);
+    if (key) this.contracts.set(key, contract);
+  }
+}
+
+function safeContractStoreKey(uid: string | null, sessionId: number | null): string | null {
+  if (uid) return `uid:${uid}`;
+  if (sessionId != null) return `session:${sessionId}`;
+  return null;
+}
+
+function asTrack(value: Record<string, unknown> | null | undefined): Track | null {
+  if (!value) return null;
+  const id = typeof value.id === "string" ? value.id : "";
+  const name = typeof value.name === "string" ? value.name : "";
+  const artist = typeof value.artist === "string" ? value.artist : "";
+  if (!id || !name || !artist) return null;
+  return {
+    id,
+    name,
+    artist,
+    ...(typeof value.album === "string" ? { album: value.album } : {}),
+    ...(typeof value.source === "string" ? { source: value.source } : {}),
+  };
+}
+
+function searchedQueriesFor(programWindow: RadioAgentProgramWindow | undefined): string[] {
+  return programWindow?.candidateTasks.map((task) => task.query).filter(Boolean) || [];
 }
 
 function hostDeliveryCandidates(agentResult: RadioAgentHandleResult): RadioHostDecision[] {

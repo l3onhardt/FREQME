@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { ContractController } from "../../src/radio-agent/contractController.js";
 import { RadioAgentService } from "../../src/radio-agent/radioAgentService.js";
 import type { OpeningTrackPick } from "../../src/radio-agent/openingTrack.js";
+import type { AgentSessionContract } from "../../src/radio-agent/playbackGovernor.js";
 import type { RadioAgentHandleResult, RadioAgentPreparedTrack, RadioAgentProgramWindow } from "../../src/radio-agent/types.js";
 import type { SelectionReason, Track } from "../../src/types.js";
 
@@ -224,10 +226,123 @@ test("service exposes honest_not_found action when user direction has no playabl
   const notFound = result.actions.find((action) => action.type === "honest_not_found");
   assert.equal(notFound?.type, "honest_not_found");
   if (notFound?.type !== "honest_not_found") throw new Error("expected honest_not_found action");
-  assert.equal(notFound.contract?.mainDirection, "quiet jazz for reading");
+  assert.equal("stationBrief" in (notFound.contract || {}) ? notFound.contract?.stationBrief : notFound.contract?.mainDirection, "quiet jazz for reading.");
   assert.equal(notFound.contract?.rawUserText, "play quiet jazz for reading");
   assert.match(notFound.reason, /no playable candidate/i);
   assert.deepEqual(notFound.searchedQueries, ["Miles Davis Blue in Green", "Bill Evans Peace Piece"]);
+});
+
+test("service creates and retains a contract when explicit direction cannot queue a playable item", async () => {
+  const stored: AgentSessionContract[] = [];
+  const contractController = new ContractController({ now: () => "2026-06-16T00:00:00.000Z" });
+  const programWindow = radioWindow({
+    id: "window-empty-contract",
+    stationBrief: "Quiet jazz for reading.",
+    mainDirection: "quiet jazz for reading",
+    candidateTasks: [
+      { query: "Miles Davis Blue in Green", reason: "Quiet jazz reading anchor.", style: "jazz", negativeConstraints: [] },
+    ],
+  });
+  const service = new RadioAgentService({
+    contractController,
+    activeContractStore: {
+      get: () => stored.at(-1) || null,
+      set: (contract) => {
+        stored.push(contract);
+      },
+    },
+    chooseOpeningTrack: () => null,
+    prepareTrack: async () => null,
+    handleRadioAgentEvent: async () =>
+      ({
+        controlsPlayback: false,
+        event: { uid: "42", sessionId: 7, type: "user_text", priority: "hot", payload: {}, createdAt: "2026-06-16T00:00:00.000Z" },
+        hostDecision: { shouldSpeak: false, event: "silent", reason: "test" },
+        programWindow,
+      }) satisfies RadioAgentHandleResult,
+    prepareProgramWindow: async () => null,
+  });
+
+  const result = await service.handleUserText({
+    uid: "42",
+    sessionId: 7,
+    text: "play quiet jazz for reading",
+    currentTrack: null,
+    readyQueue: [],
+    shouldClearQueue: false,
+  });
+
+  assert.equal(stored.at(-1)?.rawUserText, "play quiet jazz for reading");
+  assert.equal(stored.at(-1)?.status, "active");
+  assert.ok(result.actions.some((action) => action.type === "repair_contract"));
+  const notFound = result.actions.find((action) => action.type === "honest_not_found");
+  assert.equal(notFound?.type, "honest_not_found");
+  if (notFound?.type !== "honest_not_found") throw new Error("expected honest_not_found action");
+  assert.equal(notFound.contract?.id, stored.at(-1)?.id);
+  assert.deepEqual(notFound.searchedQueries, ["Miles Davis Blue in Green"]);
+});
+
+test("service rejects prepared duplicate through playback governor before returning a play action", async () => {
+  const duplicateTrack: Track = { id: "duplicate-alt", name: "Good Days", artist: "SZA" };
+  const contract = serviceContract({ rawUserText: "play rnb", stationBrief: "late-night R&B." });
+  const programWindow = radioWindow({
+    id: "window-duplicate",
+    stationBrief: "Late-night R&B.",
+    mainDirection: "late-night R&B",
+    candidateTasks: [{ query: "SZA Good Days", reason: "Known R&B anchor.", style: "R&B", negativeConstraints: [] }],
+  });
+  const governorCalls: Array<{ contractId: string | null; candidateId: string }> = [];
+  const service = new RadioAgentService({
+    activeContractStore: {
+      get: () => contract,
+      set: () => undefined,
+    },
+    playbackGovernor: {
+      evaluate: async (args) => {
+        governorCalls.push({ contractId: args.contract?.id || null, candidateId: args.candidate.id });
+        return {
+          status: "rejected",
+          reason: "reject_duplicate_recent",
+          trace: {
+            status: "rejected",
+            contractId: args.contract?.id || null,
+            requestToken: args.requestToken,
+            candidateKey: "sza::gooddays",
+            decision: "reject_duplicate_recent",
+            evidence: ["candidate matches recent playback"],
+          },
+        };
+      },
+    },
+    chooseOpeningTrack: () => null,
+    prepareTrack: async () => null,
+    handleRadioAgentEvent: async () =>
+      ({
+        controlsPlayback: false,
+        event: { uid: "42", sessionId: 7, type: "user_text", priority: "hot", payload: {}, createdAt: "2026-06-16T00:00:00.000Z" },
+        hostDecision: { shouldSpeak: false, event: "silent", reason: "test" },
+        programWindow,
+      }) satisfies RadioAgentHandleResult,
+    prepareProgramWindow: async () => prepared(duplicateTrack, { type: "radio_agent_program", text: "Known R&B anchor." }),
+  });
+
+  const result = await service.handleUserText({
+    uid: "42",
+    sessionId: 7,
+    text: "play rnb",
+    currentTrack: null,
+    recentTracks: [{ id: "recent-sza", name: "Good Days", artist: "SZA" }],
+    readyQueue: [],
+    shouldClearQueue: false,
+  });
+
+  assert.deepEqual(governorCalls, [{ contractId: "contract-test", candidateId: "duplicate-alt" }]);
+  assert.ok(!result.actions.some((action) => action.type === "play_now"));
+  const notFound = result.actions.find((action) => action.type === "honest_not_found");
+  assert.equal(notFound?.type, "honest_not_found");
+  if (notFound?.type !== "honest_not_found") throw new Error("expected honest_not_found action");
+  assert.equal(notFound.reason, "reject_duplicate_recent");
+  assert.equal(notFound.governanceTrace?.decision, "reject_duplicate_recent");
 });
 
 test("service can execute an explicit direction through the queue adapter", async () => {
@@ -542,6 +657,131 @@ test("service continues from the active contract when a track ends and queue is 
   assert.deepEqual(calls, ["agent:queue_low", "queue:window-continuation", "host:queue_low"]);
 });
 
+test("service rejects an unsafe ready item through playback governor before promotion", async () => {
+  const contract = serviceContract({ rawUserText: "play rnb", stationBrief: "late-night R&B." });
+  const readyTrack = { id: "classical-live", name: "Piano Quintet No. 2 in C Minor", artist: "Classical Ensemble" };
+  const governorCalls: string[] = [];
+  const service = new RadioAgentService({
+    activeContractStore: {
+      get: () => contract,
+      set: () => undefined,
+    },
+    playbackGovernor: {
+      evaluate: async (args) => {
+        governorCalls.push(`${args.contract?.id}:${args.candidate.id}`);
+        return {
+          status: "rejected",
+          reason: "reject_off_contract",
+          trace: {
+            status: "rejected",
+            contractId: args.contract?.id || null,
+            requestToken: args.requestToken,
+            candidateKey: "classicalensemble::pianoquintetno2incminor",
+            decision: "reject_off_contract",
+            evidence: ["candidate is classical, not R&B"],
+          },
+        };
+      },
+    },
+    chooseOpeningTrack: () => null,
+    prepareTrack: async () => null,
+  });
+
+  const result = await service.handleTrackEnded({
+    uid: "42",
+    sessionId: 7,
+    previousEvent: "played",
+    currentTrack: { id: "current", name: "Good Days", artist: "SZA" },
+    readyQueue: [readyTrack],
+  });
+
+  assert.deepEqual(governorCalls, ["contract-test:classical-live"]);
+  assert.equal(result.action, "legacy_fallback");
+  assert.equal(result.fallbackReason, "reject_off_contract");
+  assert.ok(!result.actions.some((action) => action.type === "fallback" && action.reason === "ready_queue_available"));
+  const notFound = result.actions.find((action) => action.type === "honest_not_found");
+  assert.equal(notFound?.type, "honest_not_found");
+  if (notFound?.type !== "honest_not_found") throw new Error("expected honest_not_found action");
+  assert.equal(notFound.governanceTrace?.decision, "reject_off_contract");
+});
+
+test("queue-low continuation uses active contract and governor before gateway promotion", async () => {
+  const contract = serviceContract({ rawUserText: "play quiet jazz for reading", stationBrief: "quiet jazz for reading." });
+  const preparedTrack = prepared(
+    { id: "miles-blue", name: "Blue in Green", artist: "Miles Davis" },
+    { type: "radio_agent_program", text: "Quiet jazz continuation." },
+  );
+  const programWindow = radioWindow({
+    id: "window-governed-continuation",
+    stationBrief: "Quiet jazz for reading.",
+    mainDirection: "quiet jazz for reading",
+    candidateTasks: [{ query: "Miles Davis Blue in Green", reason: "Quiet jazz continuation.", style: "jazz", negativeConstraints: [] }],
+  });
+  const calls: string[] = [];
+  const service = new RadioAgentService({
+    activeContractStore: {
+      get: (uid, sessionId) => {
+        calls.push(`contract:${uid}:${sessionId}`);
+        return contract;
+      },
+      set: () => undefined,
+    },
+    playbackGovernor: {
+      evaluate: async (args) => {
+        calls.push(`govern:${args.contract?.id}:${args.candidate.id}`);
+        return {
+          status: "accepted",
+          track: args.candidate,
+          url: args.url,
+          trace: {
+            status: "accepted",
+            contractId: args.contract?.id || null,
+            requestToken: args.requestToken,
+            candidateKey: "milesdavis::blueingreen",
+            decision: "direct_positive",
+            evidence: ["candidate metadata matches positive anchor: jazz"],
+          },
+        };
+      },
+    },
+    chooseOpeningTrack: () => null,
+    prepareTrack: async () => null,
+    handleRadioAgentEvent: async (event) => {
+      calls.push(`agent:${event.type}`);
+      return {
+        controlsPlayback: false,
+        event: { uid: "42", sessionId: 7, type: "queue_low", priority: "warm", payload: {}, createdAt: "2026-06-16T00:00:00.000Z" },
+        hostDecision: { shouldSpeak: false, event: "silent", reason: "ordinary continuation" },
+        programWindow,
+      } satisfies RadioAgentHandleResult;
+    },
+    prepareProgramWindow: async () => {
+      calls.push("prepare");
+      return preparedTrack;
+    },
+  });
+
+  const result = await service.handleTrackEnded({
+    uid: "42",
+    sessionId: 7,
+    previousEvent: "played",
+    currentTrack: { id: "current", name: "Peace Piece", artist: "Bill Evans" },
+    readyQueue: [],
+  });
+
+  assert.deepEqual(calls, [
+    "agent:queue_low",
+    "prepare",
+    "contract:42:7",
+    "govern:contract-test:miles-blue",
+  ]);
+  const play = result.actions.find((action) => action.type === "play_now");
+  assert.equal(play?.type, "play_now");
+  if (play?.type !== "play_now") throw new Error("expected governed play_now action");
+  assert.equal(play.track.id, "miles-blue");
+  assert.equal(play.governanceTrace?.decision, "direct_positive");
+});
+
 test("service returns an explicit fallback when track end continuation cannot queue a program", async () => {
   const calls: string[] = [];
   const service = new RadioAgentService({
@@ -646,6 +886,26 @@ function radioWindow(overrides: Partial<RadioAgentProgramWindow>): RadioAgentPro
     traceBasis: { profile: "", now: "", contract: "", eventType: "user_text" },
     source: "model",
     createdAt: "2026-06-11T00:00:00.000Z",
+    ...overrides,
+  };
+}
+
+function serviceContract(overrides: Partial<AgentSessionContract> = {}): AgentSessionContract {
+  return {
+    id: "contract-test",
+    uid: "42",
+    sessionId: 7,
+    rawUserText: "play quiet jazz",
+    stationBrief: "quiet jazz.",
+    positiveAnchors: ["jazz", "R&B"],
+    disallowed: ["high energy EDM"],
+    allowedAdjacent: ["soul"],
+    bridgeBudget: 1,
+    returnRequirement: "Return to the requested direction.",
+    sourceEventId: "event-test",
+    status: "active",
+    createdAt: "2026-06-16T00:00:00.000Z",
+    updatedAt: "2026-06-16T00:00:00.000Z",
     ...overrides,
   };
 }
