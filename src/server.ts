@@ -28,20 +28,13 @@ import { detectScene, localTimeBlock, normalizeGeo, trackInfo } from "./radio/co
 import type { StationEnvironment, TasteProfile, Track, UserSettings, WeatherSnapshot } from "./types.js";
 import { compactText } from "./utils/text.js";
 import { WeatherService } from "./services/weatherService.js";
-import { RadioBrain, type BridgePick, type RadioBrainArgs } from "./radio/radioBrain.js";
 import { IntentRouter } from "./radio/intentRouter.js";
 import { DecisionTraceStore } from "./radio/decisionTraceStore.js";
-import { HostResponder } from "./radio/hostResponder.js";
-import { EpisodePlanner } from "./radio/episodePlanner.js";
-import { QueueWarmer } from "./radio/queueWarmer.js";
-import { ReflectionLoop } from "./radio/reflectionLoop.js";
-import { StationContractManager } from "./radio/stationContract.js";
 import { BoundaryGuard } from "./radio/boundaryGuard.js";
-import { HostNarrationLayer } from "./radio/hostNarrationLayer.js";
 import type { StationContract } from "./radio/radioBrainTypes.js";
 import { LibraryCensus } from "./radio-agent/libraryCensus.js";
 import { RadioAgentRuntime } from "./radio-agent/radioAgentRuntime.js";
-import { queueRadioAgentProgramWindow, tryQueueRadioAgentAssistedTrack } from "./radio-agent/assistedQueue.js";
+import { queueRadioAgentProgramWindow } from "./radio-agent/assistedQueue.js";
 import { hostTextForRadioAgentDelivery } from "./radio-agent/hostDelivery.js";
 import { likedOpeningTracks } from "./radio-agent/openingTrack.js";
 import { RadioAgentProgramDirector } from "./radio-agent/programDirector.js";
@@ -49,24 +42,20 @@ import { RadioAgentProgramExecutor } from "./radio-agent/programExecutor.js";
 import { PlaybackGovernor } from "./radio-agent/playbackGovernor.js";
 import { RadioAgentService, type RadioAgentSessionStartArgs } from "./radio-agent/radioAgentService.js";
 import { runRadioAgentActions } from "./radio-agent/actionRunner.js";
+import { agentContractForGovernor } from "./radio-agent/legacyContract.js";
+import {
+  createLegacyFallbackTools,
+  type LegacyFallbackCandidate,
+  type LegacyFallbackContext,
+} from "./radio-agent/legacyFallbackTools.js";
 import type { RadioAgentAction } from "./radio-agent/agentActions.js";
+import type { AgentSessionContract } from "./radio-agent/contractController.js";
 import type { RadioAgentCapabilityState, RadioAgentHandleResult, RadioAgentPreparedTrack, RadioAgentProgramWindow } from "./radio-agent/types.js";
 import {
-  CONTINUATION_BRAIN_READY_TIMEOUT_MS,
-  USER_REQUEST_BRAIN_READY_TIMEOUT_MS,
-  USER_REQUEST_STILL_PLANNING_AFTER_MS,
-} from "./radio/radioBrainTimings.js";
-import {
-  findNewBrainReadyItem,
   isCurrentRequestToken,
-  prepareFreshBrainReadyOrReplaceWithFallback,
-  prepareFreshBrainReadyForPromotion,
   removeReadyItemsMatchingRecentPlayback,
   removeReadyItemsOutsideStationContract,
-  snapshotReadyItems,
-  type ReadyItemSnapshot,
 } from "./radio/requestReadySelector.js";
-import { ensureTrackEndReadyItem } from "./radio/trackEndRecovery.js";
 
 const require = createRequire(import.meta.url);
 const USER_REQUEST_AGENT_TIMEOUT_MS = 15000;
@@ -153,10 +142,6 @@ const djEngine = new DJEngine(llm);
 const weatherService = new WeatherService();
 const intentRouter = new IntentRouter();
 const traceStore = new DecisionTraceStore(store);
-const hostResponder = new HostResponder();
-const episodePlanner = new EpisodePlanner(llm);
-const reflectionLoop = new ReflectionLoop();
-const stationContractManager = new StationContractManager();
 const boundaryGuard = new BoundaryGuard();
 const radioAgentPlaybackGovernor = new PlaybackGovernor({
   boundaryGuard,
@@ -167,29 +152,6 @@ const radioAgentPlaybackGovernor = new PlaybackGovernor({
   },
 });
 const scheduler = new StreamScheduler(netease, store, audioResolver, boundaryGuard);
-const hostNarrationLayer = new HostNarrationLayer();
-const queueWarmer = new QueueWarmer(searchVerifyAgent, traceStore, boundaryGuard, hostNarrationLayer);
-const radioBrain = new RadioBrain({
-  intentRouter,
-  contractManager: stationContractManager,
-  planner: episodePlanner,
-  warmer: queueWarmer,
-  responder: hostResponder,
-  traceStore,
-  reflectionLoop,
-  bridgePicker: pickBridgeTrack,
-  onBackgroundPlanFailure: (failure) => {
-    store.logPlaybackEvent("radio_brain_plan_failed", {
-      uid: failure.uid,
-      reason: failure.message,
-      payload: {
-        sessionId: failure.sessionId,
-        createdFrom: failure.createdFrom,
-        intentType: failure.intentType,
-      },
-    });
-  },
-});
 
 const projectRoot = path.resolve(".");
 const frontendDir = path.join(projectRoot, "frontend");
@@ -649,31 +611,6 @@ function continuationPromptFromContract(
   return "Continue the current personal radio direction with a coherent next track.";
 }
 
-async function pickBridgeTrack(uid: string | null, profile: TasteProfile | null): Promise<BridgePick | null> {
-  const tryCandidate = async (track: Track, reason: string): Promise<BridgePick | null> => {
-    if (!track.id) return null;
-    try {
-      const prepared = await scheduler.prepareTrack(track, uid);
-      if (!prepared) return null;
-      return { track: prepared.track, url: prepared.url, reason };
-    } catch {
-      return null;
-    }
-  };
-
-  for (const track of store.getRecentPlayableTracks(uid, 20)) {
-    const bridge = await tryCandidate(track, "先接上一首确认可播的歌，让电台马上有声音。");
-    if (bridge) return bridge;
-  }
-
-  for (const track of profile?.anchorTracks || []) {
-    const bridge = await tryCandidate(track, "先从你的熟悉锚点开场，再慢慢往今天的频率展开。");
-    if (bridge) return bridge;
-  }
-
-  return null;
-}
-
 async function proxyAudio(url: string, rangeHeader: string | undefined, res: http.ServerResponse, songId: string): Promise<void> {
   try {
     const headers: Record<string, string> = {};
@@ -727,7 +664,6 @@ async function handleRadioSocket(socket: WebSocketType): Promise<void> {
   const schedulerState = scheduler.newSessionState();
   const stationState = stationDirector.newSessionState();
   const recentTurns: Array<Record<string, unknown>> = [];
-  let prewarmTask: Promise<void> | null = null;
   let introSendCancelled = false;
   let nextRequestToken = 0;
   let activeRequestToken: number | null = null;
@@ -837,84 +773,6 @@ async function handleRadioSocket(socket: WebSocketType): Promise<void> {
         });
       }
     })().catch(() => undefined);
-  };
-
-  const brainArgs = (requestText: string): RadioBrainArgs => {
-    const readyQueue = queue.readyItems().map((item) => item.track);
-    const recentTracks = playedTracks.slice(-8);
-    const playbackContext = {
-      currentTrack,
-      recentTracks,
-      playedTracks: recentTracks,
-      readyQueue,
-      scene,
-      environment,
-    };
-    const contextPack = djMemory.buildContextPack({
-      uid,
-      sessionId,
-      requestText,
-      profile,
-      userSettings: settings,
-      playbackContext,
-      recentTurns,
-    });
-    return {
-      queue,
-      uid,
-      sessionId,
-      profile,
-      settings,
-      environment,
-      currentTrack,
-      playedTracks,
-      recentTurns,
-      contextPack,
-    };
-  };
-
-  const saveSessionWorkingMemory = (args: RadioBrainArgs): void => {
-    if (uid && sessionId) {
-      store.saveDjSessionMemory(uid, sessionId, args.contextPack.sessionWorkingMemory);
-    }
-  };
-
-  const waitForNewBrainReadyItem = async (
-    beforeRequest: ReadyItemSnapshot,
-    timeoutMs = USER_REQUEST_BRAIN_READY_TIMEOUT_MS,
-    requestToken?: number,
-    options: { stillPlanningAfterMs?: number; onStillPlanning?: () => void } = {},
-  ): Promise<ReturnType<typeof queue.readyItems>[number] | null> => {
-    const startedAt = Date.now();
-    const deadline = Date.now() + timeoutMs;
-    let stillPlanningSent = false;
-    while (Date.now() < deadline) {
-      if (requestToken != null && !isCurrentRequestToken(activeRequestToken, requestToken)) return null;
-      const ready = findNewBrainReadyItem(queue, beforeRequest);
-      if (ready) return ready;
-      if (
-        !stillPlanningSent &&
-        options.onStillPlanning &&
-        options.stillPlanningAfterMs != null &&
-        Date.now() - startedAt >= options.stillPlanningAfterMs
-      ) {
-        stillPlanningSent = true;
-        options.onStillPlanning();
-      }
-      await new Promise((resolve) => setTimeout(resolve, 250));
-    }
-    if (requestToken != null && !isCurrentRequestToken(activeRequestToken, requestToken)) return null;
-    return findNewBrainReadyItem(queue, beforeRequest);
-  };
-
-  const kickBrainContinuation = (): ReadyItemSnapshot => {
-    const beforeContinuation = snapshotReadyItems(queue);
-    const continuationPrompt = continuationPromptFromContract(uid, sessionId, activeAgentStationContract);
-    void radioBrain
-      .handleUserText({ ...brainArgs(continuationPrompt), text: continuationPrompt })
-      .then(() => undefined)
-      .catch(() => undefined);
-    return beforeContinuation;
   };
 
   const rememberCurrentTrack = (track: Track): void => {
@@ -1034,33 +892,6 @@ async function handleRadioSocket(socket: WebSocketType): Promise<void> {
     } catch {
     }
   };
-
-  const tryRadioAgentAssistedQueue = async (): Promise<boolean> =>
-    tryQueueRadioAgentAssistedTrack({
-      mode: config.radioAgentMode,
-      uid,
-      sessionId,
-      currentTrack: currentTrack ? trackInfo(currentTrack) : null,
-      recentTracks: recentPlaybackTrackInfos(),
-      readyQueue: queue.readyItems().map((item) => ({
-        ...trackInfo(item.track),
-        selectionReason: item.selectionReason,
-      })),
-      getPlaybackSnapshot: () => ({
-        currentTrack: currentTrack ? trackInfo(currentTrack) : null,
-        recentTracks: recentPlaybackTrackInfos(),
-        readyQueue: queue.readyItems().map((item) => ({
-          ...trackInfo(item.track),
-          selectionReason: item.selectionReason,
-        })),
-      }),
-      radioAgent: socketRadioAgent,
-      executor: radioAgentProgramExecutor,
-      traceStore,
-      queue,
-      synthesize,
-      logFallback: logRadioAgentAssistedFallback,
-    });
 
   const queueRadioAgentWindow = async (programWindow: NonNullable<RadioAgentHandleResult["programWindow"]>): Promise<boolean> => {
     rememberAgentProgramWindowContract(programWindow);
@@ -1183,21 +1014,25 @@ async function handleRadioSocket(socket: WebSocketType): Promise<void> {
     return false;
   };
 
-  const fillQueue = async (maxItems?: number, allowProgramBreak = true): Promise<void> => {
-    let added = 0;
+  const legacyFallbackCandidateFrom = (
+    track: Track,
+    url: string,
+    reason: LegacyFallbackCandidate["reason"],
+    options: { segueText?: string } = {},
+  ): LegacyFallbackCandidate => ({
+    track,
+    url,
+    reason,
+    ...(options.segueText ? { hostText: options.segueText } : {}),
+  });
+
+  const buildLegacyContinuationFallbackCandidate = async (reason: string, maxItems?: number, allowProgramBreak = true): Promise<LegacyFallbackCandidate | null> => {
     let attempts = 0;
-    while (queue.prewarmNeeded() > 0) {
-      if (maxItems != null && added >= maxItems) break;
+    while (maxItems == null || attempts < maxItems) {
       if (attempts >= 12) {
-        const fallback = await addRecentPlayableFallback();
-        if (fallback) added += 1;
-        break;
+        return await buildRecentPlayableFallbackCandidate();
       }
       attempts += 1;
-      if (await tryRadioAgentAssistedQueue()) {
-        added += 1;
-        continue;
-      }
       const directed = await stationDirector.pickNext({
         state: stationState,
         uid,
@@ -1212,7 +1047,6 @@ async function handleRadioSocket(socket: WebSocketType): Promise<void> {
       });
       if (directed.status === "queued" && directed.track && directed.url) {
         let segueText = "";
-        let ttsHash = "";
         if (allowProgramBreak && shouldGenerateSegue(trackIndex + queue.readyItems().length + 1)) {
           segueText = await djEngine
             .generateProgramBreak({
@@ -1223,16 +1057,13 @@ async function handleRadioSocket(socket: WebSocketType): Promise<void> {
               settings,
             })
             .catch(() => "");
-          if (segueText) ttsHash = await synthesize(segueText);
         }
-        queue.addReady(
+        return legacyFallbackCandidateFrom(
           directed.track,
           directed.url,
           directed.track.selectionReason || { type: "ai_station_director", text: directed.plan?.stationBrief || "AI 正在接管电台走向。" },
-          { segueText, ttsHash },
+          { segueText },
         );
-        added += 1;
-        continue;
       }
 
       store.logPlaybackEvent("ai_station_degraded_fallback", { uid, songId: currentSongId, reason: directed.djText });
@@ -1255,7 +1086,6 @@ async function handleRadioSocket(socket: WebSocketType): Promise<void> {
         },
       };
       let segueText = "";
-      let ttsHash = "";
       if (allowProgramBreak && shouldGenerateSegue(trackIndex + queue.readyItems().length + 1)) {
         segueText = await djEngine
           .generateProgramBreak({
@@ -1266,19 +1096,18 @@ async function handleRadioSocket(socket: WebSocketType): Promise<void> {
             settings,
           })
           .catch(() => "");
-        if (segueText) ttsHash = await synthesize(segueText);
       }
-      queue.addReady(
+      return legacyFallbackCandidateFrom(
         queuedTrack,
         prepared.url,
         queuedTrack.selectionReason,
-        { segueText, ttsHash },
+        { segueText },
       );
-      added += 1;
     }
+    return await buildRecentPlayableFallbackCandidate();
   };
 
-  const addRecentPlayableFallback = async (): Promise<boolean> => {
+  const buildRecentPlayableFallbackCandidate = async (): Promise<LegacyFallbackCandidate | null> => {
     for (const track of store.getRecentPlayableTracks(uid, 20)) {
       if (!track.id || track.id === currentSongId) continue;
       const boundaryDecision = boundaryGuard.evaluate({
@@ -1290,40 +1119,18 @@ async function handleRadioSocket(socket: WebSocketType): Promise<void> {
       if (boundaryDecision.status.startsWith("reject_")) continue;
       const prepared = await scheduler.prepareTrack(track, uid);
       if (!prepared) continue;
-      queue.addReady(prepared.track, prepared.url, {
+      return legacyFallbackCandidateFrom(prepared.track, prepared.url, {
         type: "recent_playable_fallback",
-        text: "先接上一首刚刚确认可播的歌，让电台不断档。",
+        text: "Use a recently verified playable track as an explicit governed fallback.",
       });
-      return true;
     }
-    return false;
+    return null;
   };
 
-  const promoteFreshBrainReady = async (
-    beforeRequest: ReadyItemSnapshot,
-    resultText: string,
-    requestToken?: number,
-  ): Promise<boolean> => {
-    if (requestToken != null && !isCurrentRequestToken(activeRequestToken, requestToken)) return false;
-    const ready = prepareFreshBrainReadyForPromotion(queue, beforeRequest);
-    if (!ready) return false;
-    send({
-      type: "request_status",
-      status: "ready",
-      text: ready.selectionReason.text || resultText,
-      next_track: trackInfo(ready.track),
-    });
-    await sendPreparedNext("played", { allowContinuation: false, skipPrewarmWait: true, requestToken });
-    return true;
-  };
-
-  const runStationDirectorRequestFallback = async (
+  const buildLegacyRequestFallbackCandidate = async (
     requestText: string,
-    readyBeforeRequest?: ReadyItemSnapshot,
-    resultText = "",
-    requestToken?: number,
-  ): Promise<boolean> => {
-    if (readyBeforeRequest && (await promoteFreshBrainReady(readyBeforeRequest, resultText, requestToken))) return true;
+    _reason: string,
+  ): Promise<LegacyFallbackCandidate | null> => {
     const result = await withUserRequestFallbackTimeout(
       stationDirector.handleUserRequest({
         requestText,
@@ -1338,62 +1145,90 @@ async function handleRadioSocket(socket: WebSocketType): Promise<void> {
         readyQueue: queue.readyItems().map((item) => item.track),
         recentTurns,
       }),
-      requestToken,
+      undefined,
     );
-    if (requestToken != null && !isCurrentRequestToken(activeRequestToken, requestToken)) return false;
     if (result.status === "station_director_request_timeout") {
       store.logPlaybackEvent("radio_agent_request_fallback_timeout", {
         uid,
         songId: currentSongId,
         reason: requestText,
       });
-      send({
-        type: "request_status",
-        status: "not_found",
-        text: resultText || "我还没拿到足够稳的可播放版本，先不乱切。",
-      });
-      return false;
+      return null;
     }
     recentTurns.push({ user: requestText, result: result.status, at: new Date().toISOString() });
-    if (readyBeforeRequest && (await promoteFreshBrainReady(readyBeforeRequest, resultText || result.djText || "", requestToken))) return true;
     if (result.status === "queued" && result.track && result.url) {
       const fallbackReason = result.track.selectionReason || { type: "ai_station_director", text: result.plan?.stationBrief || "AI 已经重排电台方向。" };
-      const prepared =
-        readyBeforeRequest
-          ? prepareFreshBrainReadyOrReplaceWithFallback(queue, readyBeforeRequest, {
-              track: result.track,
-              url: result.url,
-              selectionReason: fallbackReason,
-            })
-          : (() => {
-              queue.clearReady();
-              queue.addReady(result.track, result.url, fallbackReason);
-              return { source: "fallback" as const, item: queue.readyItems()[0] };
-            })();
-      if (prepared.source === "fallback" && result.djText) {
-        synthesizeAndSendDjMessage(result.djText);
-      }
-      const ready = prepared.item;
-      if (ready) {
-        send({
-          type: "request_status",
-          status: "ready",
-          text: ready.selectionReason.text || `下一首准备好了：${ready.track.name}`,
-          next_track: trackInfo(ready.track),
-        });
-        await sendPreparedNext("played", { allowContinuation: false, skipPrewarmWait: true, requestToken });
-      }
-      if (prepared.source === "fallback") {
-        prewarmTask = fillQueue(1, false).catch(() => undefined);
-      }
-      return true;
+      return legacyFallbackCandidateFrom(result.track, result.url, fallbackReason, { segueText: result.djText });
     }
     if (result.status === "ask") {
       send({ type: "request_status", status: "needs_clarification", text: result.djText });
+      return null;
+    }
+    return null;
+  };
+
+  const buildLegacyOpeningFallbackCandidate = async (reason: string): Promise<LegacyFallbackCandidate | null> =>
+    await buildLegacyContinuationFallbackCandidate(reason, 1, false);
+
+  const legacyFallbackCandidateSource = async (context: LegacyFallbackContext): Promise<LegacyFallbackCandidate | null> => {
+    if ((context.source === "request" || context.source === "correction") && context.requestText) {
+      return await buildLegacyRequestFallbackCandidate(context.requestText, context.reason);
+    }
+    if (context.source === "opening") {
+      return await buildLegacyOpeningFallbackCandidate(context.reason);
+    }
+    return await buildLegacyContinuationFallbackCandidate(context.reason, 1, false);
+  };
+
+  const currentAgentActionContract = (): AgentSessionContract | null =>
+    agentContractForGovernor(currentStationContract(), { uid, sessionId });
+
+  const fallbackContractForGovernor = (context: LegacyFallbackContext): AgentSessionContract | null => {
+    const contract = context.contract;
+    return contract && "stationBrief" in contract && "positiveAnchors" in contract ? contract : null;
+  };
+
+  const legacyFallbackTools = createLegacyFallbackTools({
+    candidateSource: legacyFallbackCandidateSource,
+    governCandidate: async ({ context, candidate, url, fallbackLevel, hostText }) =>
+      await radioAgentPlaybackGovernor.evaluate({
+        contract: fallbackContractForGovernor(context),
+        requestToken: context.expectedRequestToken ?? context.activeRequestToken ?? 1,
+        activeRequestToken: context.activeRequestToken ?? context.expectedRequestToken ?? 1,
+        candidate,
+        url,
+        query: context.reason,
+        currentTrack: context.currentTrack,
+        recentTracks: context.recentTracks,
+        readyQueue: context.readyQueue.map((track) => ({ track })),
+        seedState: {},
+        hostText: hostText || "",
+        fallbackLevel,
+      }),
+  });
+
+  const runGovernedLegacyFallback = async (
+    context: Omit<LegacyFallbackContext, "contract" | "currentTrack" | "recentTracks" | "readyQueue">,
+  ): Promise<boolean> => {
+    const fallbackResult = await legacyFallbackTools.fallbackToAction({
+      ...context,
+      contract: currentAgentActionContract(),
+      currentTrack,
+      recentTracks: playedTracks.slice(-8),
+      readyQueue: queue.readyItems().map((readyItem) => readyItem.track),
+    });
+    if (fallbackResult.status === "stale") return false;
+    if (fallbackResult.status === "empty") {
+      store.logPlaybackEvent("radio_agent_governed_fallback_empty", {
+        uid,
+        songId: currentSongId,
+        reason: fallbackResult.reason,
+        payload: { source: context.source, level: context.level, sessionId },
+      });
       return false;
     }
-    send({ type: "request_status", status: "not_found", text: result.djText || "我没拿到足够稳的可播放版本，先不乱放。" });
-    return false;
+    const fallbackSummary = await executeRadioAgentActions([fallbackResult.action]);
+    return fallbackSummary.playbackQueued;
   };
 
   let nextTrackTask: Promise<void> = Promise.resolve();
@@ -1416,9 +1251,6 @@ async function handleRadioSocket(socket: WebSocketType): Promise<void> {
     const allowContinuation = options.allowContinuation !== false;
     if (options.requestToken == null && activeRequestToken != null) return;
     if (options.requestToken != null && !isCurrentRequestToken(activeRequestToken, options.requestToken)) return;
-    if (!options.skipPrewarmWait && prewarmTask) {
-      await Promise.race([prewarmTask, new Promise((resolve) => setTimeout(resolve, 1500))]).catch(() => null);
-    }
     const trackEndResult = await radioAgentService.handleTrackEnded({
       uid,
       sessionId,
@@ -1452,21 +1284,17 @@ async function handleRadioSocket(socket: WebSocketType): Promise<void> {
         contract: currentStationContract(),
       });
     };
-    const recovery = await ensureTrackEndReadyItem({
-      readyCount: () => queue.readyItems().length,
-      sanitizeReadyItems: sanitizeReadyItemsForPromotion,
-      trackEndAction: trackEndResult.action,
-      allowContinuation,
-      hasActiveRequest: activeRequestToken != null,
-      hasActiveStationContract: Boolean(currentStationContract()),
-      fillLegacyQueue: () => fillQueue(1, false),
-      addRecentPlayableFallback,
-      kickBrainContinuation,
-      waitForNewBrainReadyItem: (beforeContinuation) =>
-        waitForNewBrainReadyItem(beforeContinuation, CONTINUATION_BRAIN_READY_TIMEOUT_MS),
-      prepareFreshBrainReadyForPromotion: (beforeContinuation) =>
-        prepareFreshBrainReadyForPromotion(queue, beforeContinuation),
-    });
+    let recoverySource = actionSummary.playbackQueued || actionSummary.preparedQueued > 0 ? "radio_agent_action" : "not_attempted";
+    sanitizeReadyItemsForPromotion();
+    if (!queue.readyItems().length && allowContinuation && activeRequestToken == null && !actionSummary.notFound) {
+      const governedFallbackQueued = await runGovernedLegacyFallback({
+        source: actionSummary.fallbackLevels.length ? "queue_low" : "track_end",
+        level: "legacy_with_label",
+        reason: trackEndResult.fallbackReason || actionSummary.fallbackLevels[0] || "queue_empty_after_agent_actions",
+        activeRequestToken,
+      });
+      recoverySource = governedFallbackQueued ? "governed_legacy_fallback" : "governed_legacy_empty";
+    }
     if (options.requestToken == null && activeRequestToken != null) return;
     if (options.requestToken != null && !isCurrentRequestToken(activeRequestToken, options.requestToken)) return;
     sanitizeReadyItemsForPromotion();
@@ -1474,7 +1302,7 @@ async function handleRadioSocket(socket: WebSocketType): Promise<void> {
     debugRadioAgent("promote_next", {
       promoted: item ? trackInfo(item.track) : null,
       previousEvent,
-      recovery,
+      recovery: { source: recoverySource },
       readyQueue: queue.readyItems().map((readyItem) => trackInfo(readyItem.track)),
     });
     if (!item) {
@@ -1496,8 +1324,7 @@ async function handleRadioSocket(socket: WebSocketType): Promise<void> {
           songId: currentSongId,
           reason,
           payload: {
-            recoverySource: recovery.source,
-            legacyFillTimedOut: recovery.legacyFillTimedOut,
+            recoverySource,
             trackEndAction: trackEndResult.action,
           },
         });
@@ -1509,10 +1336,9 @@ async function handleRadioSocket(socket: WebSocketType): Promise<void> {
       store.logPlaybackEvent("radio_agent_track_end_fallback", {
         uid,
         songId: currentSongId,
-        reason: trackEndResult.fallbackReason || recovery.source || "queue_empty_after_all_recovery",
+        reason: trackEndResult.fallbackReason || recoverySource || "queue_empty_after_all_recovery",
         payload: {
-          recoverySource: recovery.source,
-          legacyFillTimedOut: recovery.legacyFillTimedOut,
+          recoverySource,
           trackEndAction: trackEndResult.action,
         },
       });
@@ -1534,9 +1360,6 @@ async function handleRadioSocket(socket: WebSocketType): Promise<void> {
       rememberCurrentTrack(item.track);
     } else {
       sendTrack(item.track, item.url);
-    }
-    if (allowContinuation && activeRequestToken == null) {
-      kickBrainContinuation();
     }
   };
 
@@ -1601,7 +1424,7 @@ async function handleRadioSocket(socket: WebSocketType): Promise<void> {
         });
         const defaultHash = await defaultTtsTask;
         send({ type: "intro", text: defaultIntro, tts_ready: Boolean(defaultHash), tts_hash: defaultHash });
-        await tryQueueRadioAgentOpeningTrack({
+        const openingQueued = await tryQueueRadioAgentOpeningTrack({
           likedTracks: likedOpeningTracks({
             uid,
             profile,
@@ -1609,9 +1432,12 @@ async function handleRadioSocket(socket: WebSocketType): Promise<void> {
           }),
           avoidArtists: durableAvoidedArtists(uid),
         });
-        await radioBrain.startSession(brainArgs("startup")).catch(() => undefined);
-        if (!queue.readyItems().length) {
-          await fillQueue(1, false);
+        if (!openingQueued && !queue.readyItems().length) {
+          await runGovernedLegacyFallback({
+            source: "opening",
+            level: "legacy_with_label",
+            reason: "agent_opening_fallback",
+          });
         }
         const item = queue.promoteNext();
         if (item) sendTrack(item.track, item.url);
@@ -1621,7 +1447,6 @@ async function handleRadioSocket(socket: WebSocketType): Promise<void> {
           const hash = await synthesize(intro);
           send({ type: "intro", text: intro, tts_ready: Boolean(hash), tts_hash: hash });
         })();
-        kickBrainContinuation();
       }
 
       if (type === "track_ended") {
@@ -1662,11 +1487,9 @@ async function handleRadioSocket(socket: WebSocketType): Promise<void> {
         const requestText = compactText(message.text || "", 120);
         if (!requestText) return;
         introSendCancelled = true;
-        prewarmTask = null;
         send({ type: "request_status", status: "planning", text: "我先按这个方向找一首稳的。" });
         const requestToken = ++nextRequestToken;
         activeRequestToken = requestToken;
-        const readyBeforeRequest = snapshotReadyItems(queue);
         let requestIntent: ReturnType<typeof intentRouter.classify> | null = null;
         try {
           requestIntent = intentRouter.classify(requestText);
@@ -1698,7 +1521,18 @@ async function handleRadioSocket(socket: WebSocketType): Promise<void> {
         if (!("hostText" in agentTextResult)) {
           if (!isCurrentRequestToken(activeRequestToken, requestToken)) return;
           store.logPlaybackEvent("song_request", { uid, songId: currentSongId, reason: requestText });
-          await runStationDirectorRequestFallback(requestText, readyBeforeRequest, "我还在筛可播版本，先换一条备用路线。", requestToken);
+          const fallbackQueued = await runGovernedLegacyFallback({
+            source: requestIntent?.type === "correction" || requestIntent?.type === "negative_feedback" ? "correction" : "request",
+            level: "legacy_with_label",
+            reason: "radio_agent_user_text_timeout",
+            requestText,
+            activeRequestToken,
+            expectedRequestToken: requestToken,
+          });
+          if (fallbackQueued) {
+            send({ type: "request_status", status: "ready", text: "I found a governed fallback that still fits this direction." });
+            await sendPreparedNext("played", { allowContinuation: false, skipPrewarmWait: true, requestToken });
+          }
           if (isCurrentRequestToken(activeRequestToken, requestToken)) activeRequestToken = null;
           return;
         }
@@ -1706,7 +1540,6 @@ async function handleRadioSocket(socket: WebSocketType): Promise<void> {
         if (!isCurrentRequestToken(activeRequestToken, requestToken)) return;
         store.logPlaybackEvent("song_request", { uid, songId: currentSongId, reason: requestText });
         const actionSummary = await executeRadioAgentActions(agentTextResult.actions);
-        let shouldKickAfterRequest = false;
         try {
           const agentProgramWindow = agentTextResult.programWindow;
           if (agentProgramWindow && (agentTextResult.programQueued || agentTextResult.preparedTrack)) {
@@ -1745,50 +1578,26 @@ async function handleRadioSocket(socket: WebSocketType): Promise<void> {
           }
           if (
             agentTextResult.fallbackReason === "radio_agent_user_text_queue_timeout" ||
-            agentTextResult.fallbackReason === "radio_agent_user_text_timeout"
+            agentTextResult.fallbackReason === "radio_agent_user_text_timeout" ||
+            actionSummary.fallbackLevels.length > 0
           ) {
-            shouldKickAfterRequest = await runStationDirectorRequestFallback(
+            const fallbackQueued = await runGovernedLegacyFallback({
+              source: requestIntent?.type === "correction" || requestIntent?.type === "negative_feedback" ? "correction" : "request",
+              level: "legacy_with_label",
+              reason: agentTextResult.fallbackReason || actionSummary.fallbackLevels[0] || "agent_request_fallback",
               requestText,
-              readyBeforeRequest,
-              agentAckText || "我还在筛可播版本，先换一条备用路线。",
-              requestToken,
-            );
+              activeRequestToken,
+              expectedRequestToken: requestToken,
+            });
+            if (fallbackQueued) {
+              send({ type: "request_status", status: "ready", text: "I found a governed fallback that still fits this direction." });
+              await sendPreparedNext("played", { allowContinuation: false, skipPrewarmWait: true, requestToken });
+            }
             return;
           }
-
-          const args = brainArgs(requestText);
-          const result = await radioBrain.handleUserText({ ...args, text: requestText }).catch(() => null);
-          if (!isCurrentRequestToken(activeRequestToken, requestToken)) return;
-          if (!result) {
-            shouldKickAfterRequest = await runStationDirectorRequestFallback(requestText, readyBeforeRequest, "", requestToken);
-            return;
-          }
-          saveSessionWorkingMemory(args);
-          if (result.status === "explained") {
-            send({ type: "request_status", status: "explained", text: result.hostText });
-            synthesizeAndSendDjMessage(result.hostText);
-            recentTurns.push({ user: requestText, result: result.status, at: new Date().toISOString() });
-            return;
-          }
-          send({ type: "request_status", status: "planning", text: result.hostText });
-          synthesizeAndSendDjMessage(result.hostText);
-          const ready = await waitForNewBrainReadyItem(readyBeforeRequest, USER_REQUEST_BRAIN_READY_TIMEOUT_MS, requestToken, {
-            stillPlanningAfterMs: USER_REQUEST_STILL_PLANNING_AFTER_MS,
-            onStillPlanning: () => {
-              send({ type: "request_status", status: "planning", text: "我还在筛可播版本，先让当前这首撑住，不会急着乱切。" });
-            },
-          });
-          if (!isCurrentRequestToken(activeRequestToken, requestToken)) return;
-          if (ready) {
-            recentTurns.push({ user: requestText, result: "ready", at: new Date().toISOString() });
-            shouldKickAfterRequest = await promoteFreshBrainReady(readyBeforeRequest, result.hostText, requestToken);
-            return;
-          }
-          shouldKickAfterRequest = await runStationDirectorRequestFallback(requestText, readyBeforeRequest, result.hostText, requestToken);
         } finally {
           if (isCurrentRequestToken(activeRequestToken, requestToken)) {
             activeRequestToken = null;
-            if (shouldKickAfterRequest) kickBrainContinuation();
           }
         }
       }
