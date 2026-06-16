@@ -339,6 +339,166 @@ test("assisted queue retries once with agent repair before falling back", async 
   assert.deepEqual(fallbackReasons, []);
 });
 
+test("assisted queue asks for repair when the prepared track is already current or ready", async () => {
+  const reported: Record<string, unknown>[] = [];
+  const { deps, calls, fallbackReasons } = assistedDeps({
+    currentTrack: track,
+    readyQueue: [{ id: "s2", name: "Pink + White", artist: "Frank Ocean" }],
+    radioAgent: {
+      handle: async (input: Record<string, unknown>) => {
+        reported.push(input);
+        return {
+          controlsPlayback: false,
+          event: { uid: "42", sessionId: 9, type: input.type as "queue_low", priority: "warm", payload: {}, createdAt: "" },
+          programWindow: {
+            ...window,
+            id: input.type === "program_repair_needed" ? "window-repaired" : "window-1",
+            candidateTasks:
+              input.type === "program_repair_needed"
+                ? [{ query: "Daniel Caesar Get You", reason: "Repaired non-duplicate R&B candidate.", style: "R&B", negativeConstraints: [] }]
+                : window.candidateTasks,
+          },
+        };
+      },
+    },
+    executor: {
+      prepareFirstPlayable: async (programWindow: RadioAgentProgramWindow) => {
+        calls.push(`executor:${programWindow.id}`);
+        if (programWindow.id === "window-1") return preparedTrack();
+        const repairedTrack = { id: "s3", name: "Get You", artist: "Daniel Caesar" };
+        return {
+          ...preparedTrack(),
+          track: repairedTrack,
+          url: "/audio/s3",
+          selectionReason: { type: "radio_agent_program", text: "Repaired non-duplicate R&B candidate.", traceId: "trace-3" },
+          decisionTrace: {
+            ...preparedTrack().decisionTrace,
+            id: "trace-3",
+            selectedTrack: repairedTrack,
+            verificationAttempts: ["Daniel Caesar Get You"],
+          },
+        };
+      },
+      latestAttemptedQueries: () => ["SZA Good Days"],
+    },
+  });
+
+  const queued = await tryQueueRadioAgentAssistedTrack(deps as any);
+
+  assert.equal(queued, true);
+  assert.equal(reported[1]?.type, "program_repair_needed");
+  assert.equal(reported[1]?.reason, "program_executor_duplicate_track");
+  assert.deepEqual(reported[1]?.attemptedQueries, ["SZA Good Days"]);
+  assert.deepEqual(calls, ["executor:window-1", "executor:window-repaired", "trace", "tts", "queue:tts-hash"]);
+  assert.deepEqual(fallbackReasons, []);
+});
+
+test("assisted queue asks for repair when prepared track is a remix of recent playback", async () => {
+  const reported: Record<string, unknown>[] = [];
+  const remixTrack = { id: "pink-remix", name: "frank ocean - pinkpuss (pink + white remix)", artist: "LegoG" };
+  const { deps, calls, fallbackReasons } = assistedDeps({
+    recentTracks: [{ id: "pink-original", name: "Pink + White", artist: "Frank Ocean" }],
+    radioAgent: {
+      handle: async (input: Record<string, unknown>) => {
+        reported.push(input);
+        return {
+          controlsPlayback: false,
+          event: { uid: "42", sessionId: 9, type: input.type as "queue_low", priority: "warm", payload: {}, createdAt: "" },
+          programWindow: input.type === "program_repair_needed"
+            ? {
+                ...window,
+                id: "window-repaired",
+                candidateTasks: [
+                  { query: "Miguel Adorn", reason: "Repaired non-duplicate R&B candidate.", style: "R&B", negativeConstraints: [] },
+                ],
+              }
+            : window,
+        };
+      },
+    },
+    executor: {
+      prepareFirstPlayable: async (programWindow: RadioAgentProgramWindow) => {
+        calls.push(`executor:${programWindow.id}`);
+        if (programWindow.id === "window-1") {
+          return {
+            ...preparedTrack(),
+            track: remixTrack,
+            url: "/audio/pink-remix",
+            selectionReason: { type: "radio_agent_program", text: "R&B remix candidate.", traceId: "trace-remix" },
+            decisionTrace: {
+              ...preparedTrack().decisionTrace,
+              id: "trace-remix",
+              selectedTrack: remixTrack,
+              verificationAttempts: ["Frank Ocean Pink + White remix"],
+            },
+          };
+        }
+        const repairedTrack = { id: "miguel", name: "Adorn", artist: "Miguel" };
+        return {
+          ...preparedTrack(),
+          track: repairedTrack,
+          url: "/audio/miguel",
+          selectionReason: { type: "radio_agent_program", text: "Repaired non-duplicate R&B candidate.", traceId: "trace-miguel" },
+          decisionTrace: {
+            ...preparedTrack().decisionTrace,
+            id: "trace-miguel",
+            selectedTrack: repairedTrack,
+            verificationAttempts: ["Miguel Adorn"],
+          },
+        };
+      },
+      latestAttemptedQueries: () => ["Frank Ocean Pink + White remix"],
+    },
+  });
+
+  const queued = await tryQueueRadioAgentAssistedTrack(deps as any);
+
+  assert.equal(queued, true);
+  assert.equal(reported[1]?.type, "program_repair_needed");
+  assert.equal(reported[1]?.reason, "program_executor_duplicate_track");
+  assert.deepEqual(reported[1]?.attemptedQueries, ["Frank Ocean Pink + White remix", "SZA Good Days"]);
+  assert.deepEqual(calls, ["executor:window-1", "executor:window-repaired", "trace", "tts", "queue:tts-hash"]);
+  assert.deepEqual(fallbackReasons, []);
+});
+
+test("assisted queue rechecks live playback state before queueing a prepared track", async () => {
+  const reported: Record<string, unknown>[] = [];
+  const liveReadyQueue: Track[] = [];
+  const { deps, calls, fallbackReasons } = assistedDeps({
+    getPlaybackSnapshot: () => ({
+      currentTrack: null,
+      readyQueue: liveReadyQueue,
+    }),
+    radioAgent: {
+      handle: async (input: Record<string, unknown>) => {
+        reported.push(input);
+        return {
+          controlsPlayback: false,
+          event: { uid: "42", sessionId: 9, type: input.type as "queue_low", priority: "warm", payload: {}, createdAt: "" },
+          programWindow: input.type === "queue_low" ? window : undefined,
+        };
+      },
+    },
+    executor: {
+      prepareFirstPlayable: async () => {
+        calls.push("executor");
+        liveReadyQueue.push(track);
+        return preparedTrack();
+      },
+      latestAttemptedQueries: () => ["SZA Good Days"],
+    },
+  });
+
+  const queued = await tryQueueRadioAgentAssistedTrack(deps as any);
+
+  assert.equal(queued, false);
+  assert.equal(reported[1]?.type, "program_repair_needed");
+  assert.equal(reported[1]?.reason, "program_executor_duplicate_track");
+  assert.deepEqual(reported[1]?.readyQueue, [track]);
+  assert.deepEqual(calls, ["executor"]);
+  assert.deepEqual(fallbackReasons, ["program_executor_duplicate_track"]);
+});
+
 test("assisted queue logs and falls back before queueing when trace save fails", async () => {
   const reported: Record<string, unknown>[] = [];
   const { deps, calls, fallbackReasons } = assistedDeps({

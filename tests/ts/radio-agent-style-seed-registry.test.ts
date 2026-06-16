@@ -53,6 +53,20 @@ test("registry returns fresh queries before recently promoted seed queries", () 
   assert.equal(queries[0], "jazz piano bar academy reading");
 });
 
+test("registry keeps enough fresh R&B queries after recent contract playback", () => {
+  const registry = defaultStyleSeedRegistry();
+  const queries = registry.queriesFor("play rnb", [
+    track("Broken Clocks", "SZA"),
+    track("Pink + White", "Frank Ocean"),
+    track("Japanese Denim", "Daniel Caesar"),
+    track("Focus", "H.E.R."),
+  ]);
+
+  assert.ok(queries.length >= 6);
+  assert.ok(queries.every((query) => !/Broken Clocks|Pink \+ White|pinkpuss|Japanese Denim|H\.E\.R\. Focus/i.test(query)));
+  assert.ok(queries.some((query) => /Brent Faiyaz|Kelela|Summer Walker|Giveon|Miguel|Sonder/i.test(query)));
+});
+
 test("registry reports seed group exhaustion after cooldown window", () => {
   const registry = defaultStyleSeedRegistry();
   const quietJazz = registry.match("play quiet jazz for reading");

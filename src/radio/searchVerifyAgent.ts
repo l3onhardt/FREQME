@@ -65,8 +65,8 @@ export class SearchVerifyAgent {
       }
       queryResults.push({ query, results });
 
-      const localScene = this.locallyVerifiedSceneFallback(candidates, musicTask, contextPack);
-      if (localScene && !attemptedEarlySceneSongIds.has(localScene.id)) {
+      for (const localScene of this.locallyVerifiedSceneFallbacks(candidates, musicTask, contextPack)) {
+        if (attemptedEarlySceneSongIds.has(localScene.id)) continue;
         attemptedEarlySceneSongIds.add(localScene.id);
         const resolved = await this.audioResolver.resolveWithCandidates(localScene, uid);
         earlySceneAudioAttempts.push({
@@ -156,8 +156,8 @@ export class SearchVerifyAgent {
       }
     }
 
-    const localScene = this.locallyVerifiedSceneFallback(candidates, musicTask, contextPack);
-    if (localScene) {
+    for (const localScene of this.locallyVerifiedSceneFallbacks(candidates, musicTask, contextPack)) {
+      if (attemptedEarlySceneSongIds.has(localScene.id)) continue;
       const resolved = await this.audioResolver.resolveWithCandidates(localScene, uid);
       if (resolved.ok) {
         const selectedSong = { ...localScene, id: resolved.songId || localScene.id };
@@ -629,18 +629,18 @@ Return only JSON:
     );
   }
 
-  private locallyVerifiedSceneFallback(candidates: Track[], task: MusicTask, contextPack?: MemoryPack): Track | null {
-    if (!["scene_genre_direction", "continuation", "negative_feedback"].includes(task.type)) return null;
+  private locallyVerifiedSceneFallbacks(candidates: Track[], task: MusicTask, contextPack?: MemoryPack): Track[] {
+    if (!["scene_genre_direction", "continuation", "negative_feedback"].includes(task.type)) return [];
     const taskText = normalizeMatchText([
       task.styleHint,
       task.workHint,
       ...task.primaryEntities.map((entity) => entity.name),
       ...task.searchGoals,
     ].join(" "));
-    if (!taskText.includes("jazz") && !this.hasRnbMarker(taskText)) return null;
+    if (!taskText.includes("jazz") && !this.hasRnbMarker(taskText)) return [];
     const recent = this.recentTrackKeys(contextPack);
-    return (
-      candidates.find((candidate) => {
+    return candidates.filter((candidate, index, list) => {
+        if (list.findIndex((item) => item.id === candidate.id) !== index) return false;
         if (recent.has(this.trackKey(candidate))) return false;
         const source = normalizeMatchText(candidate.source || "");
         const metadata = normalizeMatchText(`${candidate.artist} ${candidate.name} ${candidate.album || ""}`);
@@ -652,14 +652,11 @@ Return only JSON:
           return !this.isBadCandidate(candidate, task);
         }
         if (this.hasRnbMarker(taskText)) {
-          if (!source.includes("frankoceanpinkpuss")) return false;
-          if (!metadata.includes("pinkpuss") && !metadata.includes("pinkwhite")) return false;
-          if (!metadata.includes("frankocean") && !source.includes("frankocean")) return false;
+          if (!this.isKnownRnbSeed(source, metadata)) return false;
           return !this.isBadCandidate(candidate, task);
         }
         return !this.isBadCandidate(candidate, task);
-      }) || null
-    );
+      });
   }
 
   private canUseLocalVerificationWithoutJudge(task: MusicTask): boolean {
@@ -674,6 +671,38 @@ Return only JSON:
       { source: "milesdavisblueingreen", artist: "milesdavis", title: "blueingreen" },
     ];
     return seeds.some((seed) => source.includes(seed.source) && metadata.includes(seed.artist) && metadata.includes(seed.title));
+  }
+
+  private isKnownRnbSeed(source: string, metadata: string): boolean {
+    const seeds = [
+      { source: "frankoceanpinkpuss", artist: "frankocean", title: "pinkwhite", titleAliases: ["pinkpuss"] },
+      { source: "danielcaesarjapanesedenim", artist: "danielcaesar", title: "japanesedenim" },
+      { source: "frankoceanpinkwhite", artist: "frankocean", title: "pinkwhite" },
+      { source: "szabrokenclocks", artist: "sza", title: "brokenclocks" },
+      { source: "summerwalkersession32", artist: "summerwalker", title: "session32" },
+      { source: "jheneaikowhilewereyoung", artist: "jheneaiko", title: "whilewereyoung" },
+      { source: "jhenaikowhilewereyoung", artist: "jhenaiko", title: "whilewereyoung" },
+      { source: "herfocus", artist: "her", title: "focus" },
+      { source: "kelelalmk", artist: "kelela", title: "lmk" },
+      { source: "brentfaiyazclouded", artist: "brentfaiyaz", title: "clouded" },
+      { source: "szasnooze", artist: "sza", title: "snooze" },
+      { source: "giveonheartbreakanniversary", artist: "giveon", title: "heartbreakanniversary" },
+      { source: "migueladorn", artist: "miguel", title: "adorn" },
+      { source: "theinternetgirl", artist: "theinternet", title: "girl" },
+      { source: "sondertoofast", artist: "sonder", title: "toofast" },
+      { source: "jorjasmithbluelights", artist: "jorjasmith", title: "bluelights" },
+      { source: "ravynlenaeskintight", artist: "ravynlenae", title: "skintight" },
+      { source: "snohaalegraiwantyouaround", artist: "snohaalegra", title: "iwantyouaround" },
+      { source: "partynextdoorrecognize", artist: "partynextdoor", title: "recognize" },
+      { source: "usherclimax", artist: "usher", title: "climax" },
+      { source: "dangelountitled", artist: "dangelo", title: "untitled" },
+    ];
+    return seeds.some((seed) => {
+      if (!source.includes(seed.source)) return false;
+      if (!metadata.includes(seed.artist)) return false;
+      const titles = [seed.title, ...(seed.titleAliases || [])];
+      return titles.some((title) => metadata.includes(title));
+    });
   }
 
   private candidateMatchesRequiredEntities(candidate: Track, task: MusicTask): boolean {

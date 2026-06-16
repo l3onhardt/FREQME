@@ -149,6 +149,16 @@ test("governor rejects normalized artist title duplicates in the recent window",
   assert.equal(result.trace.decision, "reject_duplicate_recent");
 });
 
+test("governor rejects remix or remake metadata that repeats a recent original recording", async () => {
+  const result = await governor().evaluate(baseArgs({
+    candidate: song("489877341", "frank ocean - pinkpuss\uff08pink \uff0bwhite remix\uff09", "LegoG"),
+    currentTrack: song("426194883", "Pink + White", "Frank Ocean"),
+  }));
+
+  assert.equal(result.status, "rejected");
+  assert.equal(result.trace.decision, "reject_duplicate_recent");
+});
+
 test("governor rejects duplicate ready queue items", async () => {
   const result = await governor().evaluate(baseArgs({
     readyQueue: [

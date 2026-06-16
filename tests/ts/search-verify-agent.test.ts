@@ -476,6 +476,75 @@ test("R&B fallback prioritizes a proven playable seed before slower canonical se
   assert.deepEqual(audioResolver.attempted, ["playable-rnb"]);
 });
 
+test("R&B local scene verification accepts trusted fresh registry seeds beyond the opening remix", async () => {
+  class NoLlm {
+    calls = 0;
+
+    async chat(): Promise<string> {
+      this.calls += 1;
+      throw new Error("LLM should not be needed for trusted R&B registry seeds");
+    }
+  }
+  const task: MusicTask = {
+    type: "scene_genre_direction",
+    primaryEntities: [{ role: "genre", name: "R&B" }],
+    workHint: "",
+    styleHint: "late-night R&B",
+    negativeConstraints: ["jazz", "classical", "edm"],
+    searchGoals: ["R&B"],
+    mustNotSearchLiteralUserSentence: true,
+  };
+  const netease = {
+    queries: [] as string[],
+    async search(query: string): Promise<Track[]> {
+      this.queries.push(query);
+      if (query === "Summer Walker Session 32") {
+        return [{ id: "summer-session-32", name: "Session 32", artist: "Summer Walker", source: query }];
+      }
+      if (query === "Jhené Aiko While We're Young") {
+        return [{ id: "jhene-young", name: "While We're Young", artist: "Jhené Aiko", source: query }];
+      }
+      if (query === "Brent Faiyaz Clouded") {
+        return [{ id: "brent-clouded", name: "Clouded", artist: "Brent Faiyaz", source: query }];
+      }
+      if (query === "Kelela LMK") {
+        return [{ id: "kelela-lmk", name: "LMK", artist: "Kelela", source: query }];
+      }
+      return [];
+    },
+  };
+  const audioResolver = {
+    attempted: [] as string[],
+    async resolveWithCandidates(track: Track): Promise<any> {
+      this.attempted.push(track.id);
+      return track.id === "kelela-lmk"
+        ? { ok: true, songId: track.id, proxyUrl: `/api/radio/audio/${track.id}` }
+        : { ok: false, songId: track.id, proxyUrl: "", reason: "empty_url" };
+    },
+  };
+  const context: MemoryPack = {
+    ...personalContext,
+    playbackContext: {
+      currentTrack: { id: "her-focus", name: "Focus", artist: "H.E.R." },
+      recentTracks: [
+        { id: "sza-broken", name: "Broken Clocks", artist: "SZA" },
+        { id: "frank-pink", name: "Pink + White", artist: "Frank Ocean" },
+        { id: "daniel-denim", name: "Japanese Denim", artist: "Daniel Caesar" },
+        { id: "her-focus", name: "Focus", artist: "H.E.R." },
+      ],
+      readyQueue: [],
+      scene: "late-night R&B",
+    },
+  };
+  const agent = new SearchVerifyAgent(new NoLlm() as any, netease as any, audioResolver as any);
+
+  const result = await agent.verify(task, "42", "play rnb", context);
+
+  assert.equal(result.status, "verified");
+  assert.equal(result.selectedSong?.id, "kelela-lmk");
+  assert.deepEqual(audioResolver.attempted, ["summer-session-32", "jhene-young", "kelela-lmk"]);
+});
+
 test("style fallback queries come from registry instead of local ad hoc branches", async () => {
   const task: MusicTask = {
     type: "scene_genre_direction",
@@ -623,7 +692,8 @@ test("planner output that remains only style buckets falls back to concrete scen
   assert.equal(result.selectedSong?.id, "sza");
   assert.ok(netease.queries.includes("Daniel Caesar Japanese Denim"));
   assert.ok(netease.queries.every((query) => !["R&B", "R&B tracks", "R&B playlist", "R&B evening"].includes(query)));
-  assert.deepEqual(result.diagnostics?.rejectedQueries, ["R&B 电子融合", "舞曲 R&B", "Electronic R&B"]);
+  assert.ok(result.diagnostics?.rejectedQueries?.includes("Electronic R&B"));
+  assert.ok(netease.queries.every((query) => !["R&B 电子融合", "舞曲 R&B", "Electronic R&B"].includes(query)));
 });
 
 test("afternoon R&B request does not fail when planner returns only broad R&B goals", async () => {

@@ -31,12 +31,12 @@ export class RadioAgentProgramExecutor implements RadioAgentProgramExecutionDiag
     return [...this.attemptedQueries];
   }
 
-  async prepareFirstPlayable(window: RadioAgentProgramWindow): Promise<RadioAgentPreparedTrack | null> {
+  async prepareFirstPlayable(window: RadioAgentProgramWindow, options: { skipCandidates?: number } = {}): Promise<RadioAgentPreparedTrack | null> {
     this.attemptedQueries = [];
     const traceId = this.traceId();
     const rejectedCandidates: string[] = [];
     const verificationAttempts: string[] = [];
-    const candidates = window.candidateTasks.slice(0, MAX_PROGRAM_CANDIDATES);
+    const candidates = window.candidateTasks.slice(Math.max(0, options.skipCandidates || 0), MAX_PROGRAM_CANDIDATES);
 
     for (let index = 0; index < candidates.length; index += 1) {
       const candidate = candidates[index];

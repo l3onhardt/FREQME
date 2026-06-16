@@ -59,6 +59,48 @@ It must:
 - learn from explicit corrections without turning one skip into permanent dislike;
 - degrade safely to the older playback stack if the agent cannot produce a safe action.
 
+## Finite v1 Completion Target
+
+The implementable target is not "make the DJ infinitely smart." The implementable target is:
+
+> A single long-running AI DJ service that can start fast, remember the listener, hold a short program direction, recover from misses, speak naturally when useful, and keep music moving across a normal session.
+
+This is considered done only when the acceptance gates below pass with live evidence. It is not done merely because one genre, one request, or one local test works.
+
+To keep the work finite, v1 is split into four release slices:
+
+1. **Playback ownership slice:** the service owns session start, user text, correction, track end, queue low, and fallback routing. The browser must not stall after a song ends.
+2. **Program direction slice:** an explicit listener direction produces a 3-5 track window, not one isolated replacement. The next 3 tracks must either stay on contract or record a deliberate bridge with a return requirement.
+3. **Memory slice:** library/playback/correction evidence is distilled into durable facts, tentative hypotheses, and session-only feedback; repeated explicit evidence survives restart and changes later opening or continuation choices.
+4. **Host slice:** the DJ speaks only for meaningful moments, uses listener-facing language, and stays silent for ordinary continuation.
+
+The slices may be implemented incrementally, but none of them should be replaced by genre-specific tuning.
+
+## Execution Reset
+
+The previous R&B work is useful only as a regression case. It exposed these product failures:
+
+- the station could drift without a strong program contract;
+- correction could update text without owning the next playable item;
+- old queued items could leak after a new request;
+- fallback search could spend too long on abstract or unplayable candidates.
+
+Those failures must now be solved through general agent mechanisms. Going forward:
+
+- do not add another genre-specific seed, local verifier, or hard-coded track unless it is part of a generic style-seed registry with cross-genre tests;
+- do not call a fix successful unless it improves at least one acceptance gate;
+- do not use R&B as the only live proof for direction retention, correction, search execution, or host speech;
+- do not keep editing the search layer when the real failure is ownership, memory, queue timing, browser playback, or host policy;
+- prefer one acceptance gate per implementation cycle, with a failing test or failing live smoke captured first.
+
+The next engineering focus should be gate-driven in this order:
+
+1. **Browser no-stall and first-track proof:** verify the visible browser starts and continues playback, not only the anonymous websocket.
+2. **Three-track direction retention:** prove a direction remains coherent for 3 tracks across R&B, jazz, quiet/focus, and one Chinese mood request.
+3. **Durable memory restart:** prove repeated explicit preference/avoid evidence survives restart and changes a later opening or continuation decision.
+4. **Host corpus review:** collect opening, direction acknowledgement, correction, recovery, explanation, and silence cases; reject fake-DJ filler and internal language.
+5. **Service boundary cleanup:** move remaining station intelligence out of `server.ts` only when it directly supports one of the gates above.
+
 ## v1 Non-Goals
 
 The v1 does not attempt:

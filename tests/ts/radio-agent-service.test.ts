@@ -345,7 +345,7 @@ test("service rejects prepared duplicate through playback governor before return
   assert.equal(notFound.governanceTrace?.decision, "reject_duplicate_recent");
 });
 
-test("service can execute an explicit direction through the queue adapter", async () => {
+test("service can execute an explicit direction through the queue adapter when direct preparation is unavailable", async () => {
   const calls: string[] = [];
   const programWindow = radioWindow({
     id: "window-jazz",
@@ -368,9 +368,6 @@ test("service can execute an explicit direction through the queue adapter", asyn
         },
         programWindow,
       } satisfies RadioAgentHandleResult;
-    },
-    prepareProgramWindow: async () => {
-      throw new Error("queue adapter should own program execution when available");
     },
     queueProgramWindow: async (window) => {
       calls.push(`queue:${window.id}`);
@@ -497,6 +494,348 @@ test("service times out explicit direction queueing so request fallback can cont
   assert.equal(result.programQueued, false);
   assert.equal(result.fallbackReason, "radio_agent_user_text_queue_timeout");
   assert.deepEqual(calls, ["agent", "queue-start", "host:user_text"]);
+});
+
+test("service prepares a request track directly when background queueing times out", async () => {
+  const preparedTrack = prepared(
+    { id: "sza-good-days", name: "Good Days", artist: "SZA" },
+    { type: "radio_agent_program", text: "Known R&B anchor." },
+  );
+  const programWindow = radioWindow({
+    id: "window-timeout-direct",
+    stationBrief: "Late-night R&B.",
+    mainDirection: "R&B vocals and groove.",
+    candidateTasks: [
+      { query: "SZA Good Days", reason: "Known R&B anchor.", style: "R&B", negativeConstraints: [] },
+    ],
+  });
+  const service = new RadioAgentService({
+    chooseOpeningTrack: () => null,
+    prepareTrack: async () => null,
+    handleRadioAgentEvent: async () =>
+      ({
+        controlsPlayback: false,
+        event: { uid: "42", sessionId: 7, type: "user_text", priority: "hot", payload: {}, createdAt: "2026-06-11T00:00:00.000Z" },
+        hostDecision: {
+          shouldSpeak: true,
+          event: "request_ack",
+          reason: "listener direction",
+          text: "好，先守住 R&B，人声和律动靠前，不乱跳出去。",
+        },
+        programWindow,
+      }) satisfies RadioAgentHandleResult,
+    queueProgramWindow: async () => {
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      return false;
+    },
+    prepareProgramWindow: async () => preparedTrack,
+    playbackGovernor: {
+      evaluate: async () => ({
+        status: "accepted",
+        track: preparedTrack.track,
+        url: preparedTrack.url,
+        trace: {
+          status: "accepted",
+          contractId: "contract-test",
+          requestToken: 1,
+          candidateKey: "SZA::Good Days",
+          decision: "direct_positive",
+          evidence: ["R&B anchor"],
+        },
+      }),
+    },
+    hostTextForDelivery: ({ decision }) => decision?.text || "",
+    userTextQueueTimeoutMs: 1,
+  });
+
+  const result = await service.handleUserText({
+    uid: "42",
+    sessionId: 7,
+    text: "play rnb",
+    currentTrack: null,
+    readyQueue: [],
+    shouldClearQueue: true,
+  });
+
+  assert.equal(result.preparedTrack?.track.id, "sza-good-days");
+  assert.equal(result.fallbackReason, undefined);
+  assert.ok(result.actions.some((action) => action.type === "play_now"));
+  assert.equal(result.actions.some((action) => action.type === "honest_not_found"), false);
+});
+
+test("service prepares and governs an explicit request before starting background queueing", async () => {
+  const calls: string[] = [];
+  const preparedTrack = prepared(
+    { id: "daniel-get-you", name: "Get You", artist: "Daniel Caesar" },
+    { type: "radio_agent_program", text: "Fresh R&B anchor." },
+  );
+  const programWindow = radioWindow({
+    id: "window-direct-first",
+    stationBrief: "Late-night R&B.",
+    mainDirection: "R&B vocals and groove.",
+    candidateTasks: [
+      { query: "Daniel Caesar Get You", reason: "Fresh R&B anchor.", style: "R&B", negativeConstraints: [] },
+    ],
+  });
+  const service = new RadioAgentService({
+    chooseOpeningTrack: () => null,
+    prepareTrack: async () => null,
+    handleRadioAgentEvent: async () => {
+      calls.push("agent");
+      return {
+        controlsPlayback: false,
+        event: { uid: "42", sessionId: 7, type: "user_text", priority: "hot", payload: {}, createdAt: "2026-06-11T00:00:00.000Z" },
+        hostDecision: { shouldSpeak: false, event: "request_ack", reason: "listener direction", text: "" },
+        programWindow,
+      } satisfies RadioAgentHandleResult;
+    },
+    clearReadyQueue: () => calls.push("clear"),
+    prepareProgramWindow: async () => {
+      calls.push("prepare");
+      return preparedTrack;
+    },
+    playbackGovernor: {
+      evaluate: async () => {
+        calls.push("govern");
+        return {
+          status: "accepted",
+          track: preparedTrack.track,
+          url: preparedTrack.url,
+          trace: {
+            status: "accepted",
+            contractId: "contract-test",
+            requestToken: 1,
+            candidateKey: "Daniel Caesar::Get You",
+            decision: "direct_positive",
+            evidence: ["fresh R&B anchor"],
+          },
+        };
+      },
+    },
+    queueProgramWindow: async () => {
+      calls.push("queue-start");
+      return true;
+    },
+    hostTextForDelivery: ({ decision }) => decision?.text || "",
+  });
+
+  const result = await service.handleUserText({
+    uid: "42",
+    sessionId: 7,
+    text: "play rnb",
+    currentTrack: null,
+    readyQueue: [],
+    shouldClearQueue: true,
+  });
+
+  assert.equal(result.preparedTrack?.track.id, "daniel-get-you");
+  assert.deepEqual(calls, ["agent", "clear", "prepare", "govern"]);
+  assert.equal(result.programQueued, false);
+});
+
+test("service starts explicit request preparation from concrete candidates before generic style queries", async () => {
+  const preparedTrack = prepared(
+    { id: "daniel-japanese-denim", name: "Japanese Denim", artist: "Daniel Caesar" },
+    { type: "radio_agent_program", text: "Concrete R&B anchor." },
+  );
+  const preparedOffsets: Array<number | undefined> = [];
+  const programWindow = radioWindow({
+    id: "window-generic-first",
+    stationBrief: "rnb",
+    mainDirection: "rnb",
+    candidateTasks: [
+      { query: "rnb", reason: "Generic style direction.", style: "R&B", negativeConstraints: [] },
+      { query: "Daniel Caesar Japanese Denim", reason: "Concrete R&B anchor.", style: "R&B", negativeConstraints: [] },
+      { query: "SZA Broken Clocks", reason: "Concrete R&B backup.", style: "R&B", negativeConstraints: [] },
+    ],
+  });
+  const service = new RadioAgentService({
+    chooseOpeningTrack: () => null,
+    prepareTrack: async () => null,
+    handleRadioAgentEvent: async () =>
+      ({
+        controlsPlayback: false,
+        event: { uid: "42", sessionId: 7, type: "user_text", priority: "hot", payload: {}, createdAt: "2026-06-11T00:00:00.000Z" },
+        hostDecision: { shouldSpeak: false, event: "request_ack", reason: "listener direction", text: "" },
+        programWindow,
+      }) satisfies RadioAgentHandleResult,
+    prepareProgramWindow: async (_window, options?: { skipCandidates?: number }) => {
+      preparedOffsets.push(options?.skipCandidates);
+      return options?.skipCandidates === 1 ? preparedTrack : null;
+    },
+    playbackGovernor: {
+      evaluate: async () => ({
+        status: "accepted",
+        track: preparedTrack.track,
+        url: preparedTrack.url,
+        trace: {
+          status: "accepted",
+          contractId: "contract-test",
+          requestToken: 1,
+          candidateKey: "Daniel Caesar::Japanese Denim",
+          decision: "direct_positive",
+          evidence: ["concrete R&B anchor"],
+        },
+      }),
+    },
+    hostTextForDelivery: ({ decision }) => decision?.text || "",
+  });
+
+  const result = await service.handleUserText({
+    uid: "42",
+    sessionId: 7,
+    text: "play rnb",
+    currentTrack: null,
+    readyQueue: [],
+    shouldClearQueue: true,
+  });
+
+  assert.equal(result.preparedTrack?.track.id, "daniel-japanese-denim");
+  assert.equal(preparedOffsets[0], 1);
+});
+
+test("service times out a slow candidate preparation and tries the next concrete candidate", async () => {
+  const preparedTrack = prepared(
+    { id: "sza-broken-clocks", name: "Broken Clocks", artist: "SZA" },
+    { type: "radio_agent_program", text: "Second concrete R&B anchor." },
+  );
+  const preparedOffsets: Array<number | undefined> = [];
+  const programWindow = radioWindow({
+    id: "window-slow-candidate",
+    stationBrief: "rnb",
+    mainDirection: "rnb",
+    candidateTasks: [
+      { query: "Daniel Caesar Japanese Denim", reason: "Slow candidate.", style: "R&B", negativeConstraints: [] },
+      { query: "SZA Broken Clocks", reason: "Second concrete R&B anchor.", style: "R&B", negativeConstraints: [] },
+    ],
+  });
+  const service = new RadioAgentService({
+    chooseOpeningTrack: () => null,
+    prepareTrack: async () => null,
+    handleRadioAgentEvent: async () =>
+      ({
+        controlsPlayback: false,
+        event: { uid: "42", sessionId: 7, type: "user_text", priority: "hot", payload: {}, createdAt: "2026-06-11T00:00:00.000Z" },
+        hostDecision: { shouldSpeak: false, event: "request_ack", reason: "listener direction", text: "" },
+        programWindow,
+      }) satisfies RadioAgentHandleResult,
+    prepareProgramWindow: async (_window, options?: { skipCandidates?: number }) => {
+      preparedOffsets.push(options?.skipCandidates);
+      if (!options?.skipCandidates) return await new Promise<RadioAgentPreparedTrack | null>(() => undefined);
+      return preparedTrack;
+    },
+    playbackGovernor: {
+      evaluate: async () => ({
+        status: "accepted",
+        track: preparedTrack.track,
+        url: preparedTrack.url,
+        trace: {
+          status: "accepted",
+          contractId: "contract-test",
+          requestToken: 1,
+          candidateKey: "SZA::Broken Clocks",
+          decision: "direct_positive",
+          evidence: ["second concrete R&B anchor"],
+        },
+      }),
+    },
+    hostTextForDelivery: ({ decision }) => decision?.text || "",
+    programCandidateTimeoutMs: 1,
+  });
+
+  const result = await service.handleUserText({
+    uid: "42",
+    sessionId: 7,
+    text: "play rnb",
+    currentTrack: null,
+    readyQueue: [],
+    shouldClearQueue: true,
+  });
+
+  assert.deepEqual(preparedOffsets, [undefined, 1]);
+  assert.equal(result.preparedTrack?.track.id, "sza-broken-clocks");
+});
+
+test("service tries the next program candidate when governor rejects the first prepared request track", async () => {
+  const rejectedTrack = prepared(
+    { id: "pink-remix", name: "frank ocean - pinkpuss (pink + white remix)", artist: "LegoG" },
+    { type: "radio_agent_program", text: "Rejected duplicate." },
+  );
+  const acceptedTrack = prepared(
+    { id: "daniel-get-you", name: "Get You", artist: "Daniel Caesar" },
+    { type: "radio_agent_program", text: "Fresh R&B anchor." },
+  );
+  const preparedOffsets: Array<number | undefined> = [];
+  const programWindow = radioWindow({
+    id: "window-governor-retry",
+    stationBrief: "Late-night R&B.",
+    mainDirection: "R&B vocals and groove.",
+    candidateTasks: [
+      { query: "Frank Ocean Pink + White", reason: "Current-adjacent R&B.", style: "R&B", negativeConstraints: [] },
+      { query: "Daniel Caesar Get You", reason: "Fresh R&B anchor.", style: "R&B", negativeConstraints: [] },
+    ],
+  });
+  const service = new RadioAgentService({
+    chooseOpeningTrack: () => null,
+    prepareTrack: async () => null,
+    handleRadioAgentEvent: async () =>
+      ({
+        controlsPlayback: false,
+        event: { uid: "42", sessionId: 7, type: "user_text", priority: "hot", payload: {}, createdAt: "2026-06-11T00:00:00.000Z" },
+        hostDecision: { shouldSpeak: false, event: "request_ack", reason: "listener direction", text: "" },
+        programWindow,
+      }) satisfies RadioAgentHandleResult,
+    queueProgramWindow: async () => false,
+    prepareProgramWindow: async (_window, options?: { skipCandidates?: number }) => {
+      preparedOffsets.push(options?.skipCandidates);
+      return options?.skipCandidates ? acceptedTrack : rejectedTrack;
+    },
+    playbackGovernor: {
+      evaluate: async ({ candidate }) =>
+        candidate.id === "pink-remix"
+          ? {
+              status: "rejected",
+              reason: "reject_duplicate_recent",
+              trace: {
+                status: "rejected",
+                contractId: "contract-test",
+                requestToken: 1,
+                candidateKey: "LegoG::pinkpuss",
+                decision: "reject_duplicate_recent",
+                evidence: ["candidate matches current or recent playback"],
+              },
+            }
+          : {
+              status: "accepted",
+              track: acceptedTrack.track,
+              url: acceptedTrack.url,
+              trace: {
+                status: "accepted",
+                contractId: "contract-test",
+                requestToken: 1,
+                candidateKey: "Daniel Caesar::Get You",
+                decision: "direct_positive",
+                evidence: ["fresh R&B anchor"],
+              },
+            },
+    },
+    hostTextForDelivery: ({ decision }) => decision?.text || "",
+  });
+
+  const result = await service.handleUserText({
+    uid: "42",
+    sessionId: 7,
+    text: "play rnb",
+    currentTrack: { id: "pink-white", name: "Pink + White", artist: "Frank Ocean" },
+    recentTracks: [],
+    readyQueue: [],
+    shouldClearQueue: true,
+  });
+
+  assert.deepEqual(preparedOffsets, [undefined, 1]);
+  assert.equal(result.preparedTrack?.track.id, "daniel-get-you");
+  assert.ok(result.actions.some((action) => action.type === "play_now"));
+  assert.equal(result.fallbackReason, undefined);
 });
 
 test("service repairs the active window after explicit negative feedback", async () => {

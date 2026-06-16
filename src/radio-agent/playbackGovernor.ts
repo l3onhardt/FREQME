@@ -205,7 +205,8 @@ export function trackKey(track: Track): string {
 export function sameTrack(left: Track | null | undefined, right: Track | null | undefined): boolean {
   if (!left || !right) return false;
   if (left.id && right.id && left.id === right.id) return true;
-  return trackKey(left) === trackKey(right);
+  if (trackKey(left) === trackKey(right)) return true;
+  return sameRecordingVersion(left, right);
 }
 
 export function recentDuplicate(
@@ -329,6 +330,48 @@ function candidateEvidenceText(candidate: Track): string {
     candidate.album,
     ...(candidate.aliases || []),
   ].join(" "));
+}
+
+function sameRecordingVersion(left: Track, right: Track): boolean {
+  const leftTitle = normalizeTitleForDuplicate(left.name);
+  const rightTitle = normalizeTitleForDuplicate(right.name);
+  if (!leftTitle || !rightTitle) return false;
+
+  const leftArtist = normalizeMatchText(left.artist);
+  const rightArtist = normalizeMatchText(right.artist);
+  if (leftArtist && rightArtist && leftArtist === rightArtist && titleContainsLongEnough(leftTitle, rightTitle)) {
+    return true;
+  }
+
+  const leftEvidence = candidateEvidenceText(left);
+  const rightEvidence = candidateEvidenceText(right);
+  if (titleContainsLongEnough(leftTitle, rightTitle)) {
+    return embeddedVersionEvidence(leftEvidence, rightArtist, rightTitle) || embeddedVersionEvidence(rightEvidence, leftArtist, leftTitle);
+  }
+
+  return embeddedVersionEvidence(leftEvidence, rightArtist, rightTitle) || embeddedVersionEvidence(rightEvidence, leftArtist, leftTitle);
+}
+
+function normalizeTitleForDuplicate(title: string): string {
+  return normalizeMatchText(
+    title
+      .replace(/\([^)]*(?:remix|remake|edit|version|cover|live)[^)]*\)/giu, " ")
+      .replace(/（[^）]*(?:remix|remake|edit|version|cover|live)[^）]*）/giu, " ")
+      .replace(/\b(?:remix|remake|edit|version|cover|live)\b/giu, " "),
+  );
+}
+
+function titleContainsLongEnough(leftTitle: string, rightTitle: string): boolean {
+  const shorter = leftTitle.length <= rightTitle.length ? leftTitle : rightTitle;
+  const longer = leftTitle.length > rightTitle.length ? leftTitle : rightTitle;
+  return shorter.length >= 7 && longer.includes(shorter);
+}
+
+function embeddedVersionEvidence(evidence: string, artist: string, title: string): boolean {
+  if (!title || title.length < 7) return false;
+  if (!/(remix|remake|edit|version|cover|live)/i.test(evidence)) return false;
+  if (!evidence.includes(title)) return false;
+  return !artist || evidence.includes(artist);
 }
 
 function isKnownRnbArtist(contract: AgentSessionContract, artist: string): boolean {

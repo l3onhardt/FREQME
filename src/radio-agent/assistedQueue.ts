@@ -1,5 +1,6 @@
 import type { DecisionTrace } from "../radio/radioBrainTypes.js";
 import type { SelectionReason, Track } from "../types.js";
+import { sameTrack } from "./playbackGovernor.js";
 import type {
   RadioAgentHandleResult,
   RadioAgentMode,
@@ -11,6 +12,7 @@ import type {
 export type RadioAgentAssistedFallbackReason =
   | "program_window_missing"
   | "program_executor_no_track"
+  | "program_executor_duplicate_track"
   | "trace_save_failed"
   | "assisted_queue_failed";
 
@@ -19,13 +21,16 @@ export interface RadioAgentAssistedQueueDeps {
   uid: string | null;
   sessionId: number | null;
   currentTrack: Track | null;
+  recentTracks?: Track[];
   readyQueue: Track[];
+  getPlaybackSnapshot?: () => { currentTrack: Track | null; recentTracks?: Track[]; readyQueue: Track[] };
   radioAgent: {
     handle(input: {
       type: "queue_low";
       uid: string | null;
       sessionId: number | null;
       currentTrack: Track | null;
+      recentTracks?: Track[];
       readyQueue: Track[];
     } | {
       type: "program_track_queued";
@@ -37,6 +42,7 @@ export interface RadioAgentAssistedQueueDeps {
       selectionReason: string;
       hostText: string;
       currentTrack: Track | null;
+      recentTracks?: Track[];
       readyQueue: Track[];
     } | {
       type: "program_repair_needed";
@@ -46,6 +52,7 @@ export interface RadioAgentAssistedQueueDeps {
       programWindow: RadioAgentProgramWindow;
       attemptedQueries: string[];
       currentTrack: Track | null;
+      recentTracks?: Track[];
       readyQueue: Track[];
     }): Promise<RadioAgentHandleResult>;
   };
@@ -71,12 +78,14 @@ export async function tryQueueRadioAgentAssistedTrack(args: RadioAgentAssistedQu
   if (args.mode !== "assisted" && args.mode !== "active") return false;
 
   try {
+    const playbackSnapshot = playbackSnapshotForQueueing(args);
     const result = await args.radioAgent.handle({
       type: "queue_low",
       uid: args.uid,
       sessionId: args.sessionId,
-      currentTrack: args.currentTrack,
-      readyQueue: args.readyQueue,
+      currentTrack: playbackSnapshot.currentTrack,
+      recentTracks: playbackSnapshot.recentTracks,
+      readyQueue: playbackSnapshot.readyQueue,
     });
     if (!result.programWindow) {
       logFallback(args, "program_window_missing");
@@ -87,7 +96,7 @@ export async function tryQueueRadioAgentAssistedTrack(args: RadioAgentAssistedQu
     if (firstAttempt.status === "queued") return true;
 
     const repair = await reportRepairNeeded(args, result.programWindow, firstAttempt.reason, firstAttempt.attemptedQueries);
-    if (firstAttempt.reason === "program_executor_no_track" && repair?.programWindow) {
+    if (isRepairableExecutionReason(firstAttempt.reason) && repair?.programWindow) {
       const repairedAttempt = await prepareAndQueueProgramWindow(args, repair.programWindow);
       if (repairedAttempt.status === "queued") return true;
     }
@@ -111,7 +120,7 @@ export async function queueRadioAgentProgramWindow(
     if (firstAttempt.status === "queued") return true;
 
     const repair = await reportRepairNeeded(args, programWindow, firstAttempt.reason, firstAttempt.attemptedQueries);
-    if (firstAttempt.reason === "program_executor_no_track" && repair?.programWindow) {
+    if (isRepairableExecutionReason(firstAttempt.reason) && repair?.programWindow) {
       const repairedAttempt = await prepareAndQueueProgramWindow(args, repair.programWindow);
       if (repairedAttempt.status === "queued") return true;
     }
@@ -149,6 +158,14 @@ async function prepareAndQueueProgramWindow(
       attemptedQueries: attemptedQueriesFromExecutor(args, programWindow),
     };
   }
+  const playbackSnapshot = playbackSnapshotForQueueing(args);
+  if (isDuplicatePreparedTrack(prepared.track, playbackSnapshot.currentTrack, playbackSnapshot.recentTracks, playbackSnapshot.readyQueue)) {
+    return {
+      status: "failed",
+      reason: "program_executor_duplicate_track",
+      attemptedQueries: attemptedQueriesFromPrepared(args, programWindow, prepared),
+    };
+  }
 
   try {
     await args.traceStore.save(prepared.decisionTrace);
@@ -162,6 +179,14 @@ async function prepareAndQueueProgramWindow(
 
   const ttsHash = prepared.segueText ? await args.synthesize(prepared.segueText).catch(() => "") : "";
   try {
+    const latestPlaybackSnapshot = playbackSnapshotForQueueing(args);
+    if (isDuplicatePreparedTrack(prepared.track, latestPlaybackSnapshot.currentTrack, latestPlaybackSnapshot.recentTracks, latestPlaybackSnapshot.readyQueue)) {
+      return {
+        status: "failed",
+        reason: "program_executor_duplicate_track",
+        attemptedQueries: attemptedQueriesFromPrepared(args, programWindow, prepared),
+      };
+    }
     args.queue.addReady(prepared.track, prepared.url, prepared.selectionReason, {
       segueText: prepared.segueText,
       ttsHash,
@@ -182,6 +207,7 @@ function reportTrackQueued(
   programWindow: RadioAgentProgramWindow,
   prepared: RadioAgentPreparedTrack,
 ): void {
+  const playbackSnapshot = playbackSnapshotForQueueing(args);
   void args.radioAgent.handle({
     type: "program_track_queued",
     uid: args.uid,
@@ -191,8 +217,9 @@ function reportTrackQueued(
     traceId: prepared.decisionTrace.id,
     selectionReason: prepared.selectionReason.text || prepared.decisionTrace.reason || programWindow.stationBrief,
     hostText: prepared.segueText,
-    currentTrack: args.currentTrack,
-    readyQueue: args.readyQueue,
+    currentTrack: playbackSnapshot.currentTrack,
+    recentTracks: playbackSnapshot.recentTracks,
+    readyQueue: playbackSnapshot.readyQueue,
   }).catch(() => undefined);
 }
 
@@ -217,17 +244,53 @@ async function reportRepairNeeded(
       reason,
       programWindow,
       attemptedQueries: dedupeStrings([...attemptedQueries, ...programWindow.candidateTasks.map((task) => task.query).filter(Boolean)]),
-      currentTrack: args.currentTrack,
-      readyQueue: args.readyQueue,
+      ...playbackSnapshotForQueueing(args),
     });
   } catch {
     return null;
   }
 }
 
+function playbackSnapshotForQueueing(args: RadioAgentAssistedQueueDeps): { currentTrack: Track | null; recentTracks: Track[]; readyQueue: Track[] } {
+  try {
+    const snapshot = args.getPlaybackSnapshot?.();
+    if (snapshot) return {
+      currentTrack: snapshot.currentTrack,
+      recentTracks: snapshot.recentTracks || [],
+      readyQueue: snapshot.readyQueue,
+    };
+  } catch {
+  }
+  return {
+    currentTrack: args.currentTrack,
+    recentTracks: args.recentTracks || [],
+    readyQueue: args.readyQueue,
+  };
+}
+
 function attemptedQueriesFromExecutor(args: RadioAgentAssistedQueueDeps, programWindow: RadioAgentProgramWindow): string[] {
   const latest = args.executor.latestAttemptedQueries?.() || [];
   return dedupeStrings([...latest, ...programWindow.candidateTasks.map((task) => task.query).filter(Boolean)]);
+}
+
+function attemptedQueriesFromPrepared(
+  args: RadioAgentAssistedQueueDeps,
+  programWindow: RadioAgentProgramWindow,
+  prepared: RadioAgentPreparedTrack,
+): string[] {
+  return dedupeStrings([
+    ...(args.executor.latestAttemptedQueries?.() || []),
+    ...prepared.decisionTrace.verificationAttempts,
+    ...programWindow.candidateTasks.map((task) => task.query).filter(Boolean),
+  ]);
+}
+
+function isRepairableExecutionReason(reason: Exclude<RadioAgentAssistedFallbackReason, "program_window_missing">): boolean {
+  return reason === "program_executor_no_track" || reason === "program_executor_duplicate_track";
+}
+
+function isDuplicatePreparedTrack(track: Track, currentTrack: Track | null, recentTracks: Track[], readyQueue: Track[]): boolean {
+  return [currentTrack, ...recentTracks, ...readyQueue].some((existing) => sameTrack(track, existing));
 }
 
 function dedupeStrings(values: string[]): string[] {

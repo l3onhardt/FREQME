@@ -5,6 +5,7 @@ import type {
   RadioAgentMemory,
   RadioAgentProgramWindow,
 } from "./types.js";
+import { defaultStyleSeedRegistry } from "./styleSeedRegistry.js";
 
 export interface ProgramPlanningModel {
   chat(
@@ -24,6 +25,7 @@ const MAX_CANDIDATE_TASKS = 5;
 const HOST_TEXT_LIMIT = 140;
 const PROGRAM_DIRECTOR_MAX_TOKENS = 1100;
 const PROGRAM_DIRECTOR_TIMEOUT_MS = 14000;
+const EXPLICIT_CONTINUATION_MODEL_TIMEOUT_MS = 120;
 const PROGRAM_DIRECTOR_SYSTEM =
   "You are FREQME's personal AI radio program director. Return only valid JSON. Never mention models, prompts, traces, verification, tool calls, or internal systems.";
 const DEFAULT_FALLBACK_QUERY = "warm vocal radio discovery";
@@ -44,6 +46,8 @@ const HOST_EVENTS: RadioAgentHostIntent["event"][] = [
   "recovery",
   "silent",
 ];
+const STYLE_SEEDS = defaultStyleSeedRegistry();
+const RADIO_AGENT_DEBUG = process.env.FREQME_RADIO_AGENT_DEBUG === "1";
 
 export class RadioAgentProgramDirector {
   constructor(
@@ -54,20 +58,25 @@ export class RadioAgentProgramDirector {
   async plan(context: RadioAgentContextSnapshot): Promise<RadioAgentProgramWindow> {
     const createdAt = this.now();
     if (shouldExecuteExplicitDirectionImmediately(context)) return buildFallbackWindow(context, createdAt);
+    const explicitContinuation = shouldUseFastExplicitContinuation(context);
 
     if (this.model) {
       try {
         const prompt = buildPrompt(context, createdAt);
-        const raw = await this.model.chat(prompt, {
-          maxTokens: PROGRAM_DIRECTOR_MAX_TOKENS,
-          system: PROGRAM_DIRECTOR_SYSTEM,
-          responseFormat: { type: "json_object" },
-          timeoutMs: PROGRAM_DIRECTOR_TIMEOUT_MS,
-        });
+        const raw = await withPlanningTimeout(
+          this.model.chat(prompt, {
+            maxTokens: PROGRAM_DIRECTOR_MAX_TOKENS,
+            system: PROGRAM_DIRECTOR_SYSTEM,
+            responseFormat: { type: "json_object" },
+            timeoutMs: explicitContinuation ? EXPLICIT_CONTINUATION_MODEL_TIMEOUT_MS : PROGRAM_DIRECTOR_TIMEOUT_MS,
+          }),
+          explicitContinuation ? EXPLICIT_CONTINUATION_MODEL_TIMEOUT_MS : 0,
+        );
         const parsed = parseJsonObject(raw);
         const window = buildWindowFromParsed(context, parsed, createdAt, "model");
         if (window.candidateTasks.length > 0) return window;
-      } catch {
+      } catch (error) {
+        debugProgramDirector("model_plan_failed", { reason: error instanceof Error ? error.message : String(error) });
         // The agent can keep programming from durable context when planning fails.
       }
     }
@@ -78,6 +87,11 @@ export class RadioAgentProgramDirector {
 
 function shouldExecuteExplicitDirectionImmediately(context: RadioAgentContextSnapshot): boolean {
   return context.eventType === "user_text" && Boolean(latestExplicitUserDirection(context));
+}
+
+function shouldUseFastExplicitContinuation(context: RadioAgentContextSnapshot): boolean {
+  if (context.eventType !== "queue_low" && context.eventType !== "track_completed") return false;
+  return Boolean(latestExplicitUserDirection(context));
 }
 
 function buildPrompt(context: RadioAgentContextSnapshot, createdAt: string): string {
@@ -108,7 +122,11 @@ function buildWindowFromParsed(
   createdAt: string,
   source: ProgramWindowSource,
 ): RadioAgentProgramWindow {
-  const explicitDirectionTasks = explicitDirectionCandidateTasks(latestExplicitUserDirection(context), fallbackNegativeConstraints(context));
+  const explicitDirectionTasks = explicitDirectionCandidateTasks(
+    latestExplicitUserDirection(context),
+    fallbackNegativeConstraints(context),
+    recentPlaybackTracks(context),
+  );
   const parsedCandidateTasks = arrayValue(valueFor(parsed, "candidateTasks"))
     .map(toCandidateTask)
     .filter((task): task is RadioAgentCandidateTask => task !== null);
@@ -216,7 +234,8 @@ function fallbackCandidateTasks(context: RadioAgentContextSnapshot): RadioAgentC
   const failedQueries = repairFailedQueries(context.repair);
   const avoids = fallbackNegativeConstraints(context);
   const explicitDirection = latestExplicitUserDirection(context);
-  const explicitDirectionTasks = explicitDirectionCandidateTasks(explicitDirection, avoids);
+  const recentTracks = recentPlaybackTracks(context);
+  const explicitDirectionTasks = explicitDirectionCandidateTasks(explicitDirection, avoids, recentTracks);
   const explicitContractQueries = explicitContractFallbackQueries(context);
   const continuityAnchors = explicitDirection
     ? []
@@ -335,10 +354,14 @@ function replacementDirectionFromCorrection(text: string): string {
   return "";
 }
 
-function explicitDirectionCandidateTasks(direction: string, avoids: string[]): RadioAgentCandidateTask[] {
+function explicitDirectionCandidateTasks(
+  direction: string,
+  avoids: string[],
+  recentTracks: RadioAgentProgramWindow["recentTracks"] = [],
+): RadioAgentCandidateTask[] {
   if (!direction) return [];
   const style = styleFromDirection(direction);
-  return directionFallbackQueries(direction).map((query) => ({
+  return directionFallbackQueries(direction, recentTracks).map((query) => ({
     query,
     reason: explicitDirectionReason(direction),
     style,
@@ -352,7 +375,7 @@ function explicitDirectionReason(direction: string): string {
   return `\u6309\u4f60\u8bf4\u7684 ${direction} \u65b9\u5411\uff0c\u5148\u627e\u4e00\u9996\u80fd\u7a33\u5b9a\u64ad\u653e\u7684\u3002`;
 }
 
-function directionFallbackQueries(direction: string): string[] {
+function directionFallbackQueries(direction: string, recentTracks: RadioAgentProgramWindow["recentTracks"] = []): string[] {
   const normalized = direction.toLowerCase();
   if (/\bjazz\b|爵士/u.test(normalized)) {
     if (/\b(quiet|calm|soft|mellow|reading|read|late|night|study|studying)\b|安静|阅读/u.test(normalized)) {
@@ -374,7 +397,7 @@ function directionFallbackQueries(direction: string): string[] {
     ];
   }
   if (isRnbText(direction)) {
-    return uniqueStrings([direction, ...contractDefaultQueries("R&B")]);
+    return uniqueStrings([direction, ...rnbContractQueries(recentTracks)]);
   }
   if (/\bneo[-\s]?soul\b|\bsoul\b|灵魂/u.test(normalized)) {
     return [
@@ -726,7 +749,7 @@ function explicitContractFallbackQueries(context: RadioAgentContextSnapshot): st
   if (isRnbContractGoal(contract)) {
     return uniqueStrings([
       listenerFacingContractAnchor(contract),
-      ...contractDefaultQueries(contract),
+      ...rnbContractQueries(recentPlaybackTracks(context)),
     ]);
   }
 
@@ -829,7 +852,7 @@ function queryMatchesAvoids(query: string, avoids: string[]): boolean {
 }
 
 function taskMatchesAvoids(task: RadioAgentCandidateTask, avoids: string[]): boolean {
-  return queryMatchesAvoids([task.query, task.reason, task.style, ...(task.negativeConstraints || [])].join(" "), avoids);
+  return queryMatchesAvoids([task.query, task.reason, task.style].join(" "), avoids);
 }
 
 function taskMatchesContractMoves(task: RadioAgentCandidateTask, moves: string[]): boolean {
@@ -1086,13 +1109,11 @@ function queryFitsRnbContract(query: string): boolean {
 
 function contractDefaultQueries(contractGoal: string): string[] {
   if (!isRnbContractGoal(contractGoal)) return [];
-  return [
-    "Daniel Caesar Japanese Denim",
-    "Frank Ocean Pink + White",
-    "SZA Broken Clocks",
-    "H.E.R. Focus",
-    "Brent Faiyaz Clouded",
-  ];
+  return rnbContractQueries([]);
+}
+
+function rnbContractQueries(recentTracks: RadioAgentProgramWindow["recentTracks"] = []): string[] {
+  return STYLE_SEEDS.queriesFor("R&B", recentTracks || []);
 }
 
 function isRnbText(text: string): boolean {
@@ -1231,4 +1252,17 @@ function hostEventValue(value: unknown): RadioAgentHostIntent["event"] {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+async function withPlanningTimeout(work: Promise<string>, timeoutMs: number): Promise<string> {
+  if (timeoutMs <= 0) return await work;
+  return await Promise.race([
+    work,
+    new Promise<string>((_resolve, reject) => setTimeout(() => reject(new Error("program_director_model_timeout")), timeoutMs)),
+  ]);
+}
+
+function debugProgramDirector(event: string, payload: Record<string, unknown>): void {
+  if (!RADIO_AGENT_DEBUG) return;
+  console.log(`[RADIO_AGENT_PROGRAM_DIRECTOR_DEBUG] ${event} ${JSON.stringify(payload)}`);
 }

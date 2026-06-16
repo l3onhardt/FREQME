@@ -83,10 +83,14 @@ export interface RadioAgentServiceDeps {
   handleRadioAgentEvent?: (event: Record<string, unknown>) => Promise<RadioAgentHandleResult | null>;
   clearReadyQueue?: () => void;
   queueProgramWindow?: (programWindow: RadioAgentProgramWindow) => Promise<boolean>;
-  prepareProgramWindow?: (programWindow: RadioAgentProgramWindow) => Promise<RadioAgentPreparedTrack | null>;
+  prepareProgramWindow?: (
+    programWindow: RadioAgentProgramWindow,
+    options?: { skipCandidates?: number },
+  ) => Promise<RadioAgentPreparedTrack | null>;
   hostTextForDelivery?: (args: RadioAgentHostTextArgs) => string;
   trackEndTimeoutMs?: number;
   userTextQueueTimeoutMs?: number;
+  programCandidateTimeoutMs?: number;
   contractController?: ContractController;
   activeContractStore?: ActiveContractStore;
   playbackGovernor?: Pick<PlaybackGovernor, "evaluate">;
@@ -97,8 +101,15 @@ export interface ActiveContractStore {
   set(contract: AgentSessionContract): void;
 }
 
-const DEFAULT_TRACK_END_TIMEOUT_MS = 2500;
+const DEFAULT_TRACK_END_TIMEOUT_MS = 7000;
 const DEFAULT_USER_TEXT_QUEUE_TIMEOUT_MS = 12000;
+const DEFAULT_PROGRAM_CANDIDATE_TIMEOUT_MS = 3500;
+const RADIO_AGENT_DEBUG = process.env.FREQME_RADIO_AGENT_DEBUG === "1";
+
+function debugRadioAgentService(label: string, payload: Record<string, unknown> = {}): void {
+  if (!RADIO_AGENT_DEBUG) return;
+  console.log(`[RADIO_AGENT_SERVICE_DEBUG] ${label} ${JSON.stringify(payload)}`);
+}
 
 export class RadioAgentService {
   private readonly deps: Required<Pick<RadioAgentServiceDeps, "chooseOpeningTrack">> & Omit<RadioAgentServiceDeps, "chooseOpeningTrack">;
@@ -226,21 +237,33 @@ export class RadioAgentService {
         })
       : null;
     const programWindow = agentResult?.programWindow;
-    const preparedTrack =
-      programWindow && this.deps.prepareProgramWindow
-        ? await this.deps.prepareProgramWindow(programWindow)
-        : null;
-    const governedPrepared = programWindow && preparedTrack
-      ? await this.governPreparedTrack({
+    debugRadioAgentService("track_end_program_window", {
+      uid: args.uid,
+      sessionId: args.sessionId,
+      currentTrack: args.currentTrack,
+      recentTracks: args.recentTracks || [],
+      readyQueue: args.readyQueue,
+      programWindowId: programWindow?.id || "",
+      candidates: programWindow?.candidateTasks.map((task) => task.query) || [],
+    });
+    const preparedAttempt = programWindow
+      ? await this.prepareGovernedProgramTrack({
           uid: args.uid,
           sessionId: args.sessionId,
           currentTrack: args.currentTrack,
           recentTracks: args.recentTracks || [],
           readyQueue: args.readyQueue,
           programWindow,
-          preparedTrack,
         })
       : null;
+    const preparedTrack = preparedAttempt?.preparedTrack ?? null;
+    const governedPrepared = preparedAttempt?.governedPrepared ?? null;
+    debugRadioAgentService("track_end_prepared_attempt", {
+      preparedTrack: preparedTrack?.track || null,
+      governedStatus: governedPrepared?.status || "",
+      governedReason: governedPrepared?.status === "rejected" ? governedPrepared.reason : "",
+      governedTrace: governedPrepared?.trace || null,
+    });
     const programQueued =
       !preparedTrack && programWindow && this.deps.queueProgramWindow
         ? await this.deps.queueProgramWindow(programWindow)
@@ -376,35 +399,33 @@ export class RadioAgentService {
       : null;
     const programWindow = agentResult?.programWindow;
     if (programWindow && shouldClearQueue) this.deps.clearReadyQueue?.();
-    const queueResult = programWindow && this.deps.queueProgramWindow
-      ? await this.withUserTextQueueTimeout(this.deps.queueProgramWindow(programWindow))
-      : { queued: false };
-    const programQueued = queueResult.queued;
-    const preparedTrack =
-      programWindow && !programQueued && !this.deps.queueProgramWindow && this.deps.prepareProgramWindow
-        ? await this.deps.prepareProgramWindow(programWindow)
-        : null;
-    const governedPrepared = programWindow && preparedTrack
-      ? await this.governPreparedTrack({
+    const preparedAttempt = programWindow
+      ? await this.prepareGovernedProgramTrack({
           uid: args.uid,
           sessionId: args.sessionId,
           currentTrack: args.currentTrack,
           recentTracks: args.recentTracks || [],
           readyQueue: args.readyQueue,
           programWindow,
-          preparedTrack,
         })
       : null;
+    const preparedTrack = preparedAttempt?.preparedTrack ?? null;
+    const governedPrepared = preparedAttempt?.governedPrepared ?? null;
+    const queueResult = programWindow && !preparedTrack && this.deps.queueProgramWindow
+      ? await this.withUserTextQueueTimeout(this.deps.queueProgramWindow(programWindow))
+      : { queued: false };
+    const programQueued = queueResult.queued;
     const hostText =
       agentResult && this.deps.hostTextForDelivery
         ? this.deliverableHostText(agentResult)
         : "";
     const acceptedPreparedTrack = governedPrepared?.status === "accepted" ? preparedTrack : null;
     const governanceTrace = governedPrepared?.trace;
-    const fallbackReason =
-      queueResult.fallbackReason ||
-      (governedPrepared?.status === "rejected" ? governedPrepared.reason : undefined) ||
-      (programWindow && !programQueued && !acceptedPreparedTrack ? "no_playable_candidate" : undefined);
+    const fallbackReason = acceptedPreparedTrack
+      ? undefined
+      : queueResult.fallbackReason ||
+        (governedPrepared?.status === "rejected" ? governedPrepared.reason : undefined) ||
+        (programWindow && !programQueued ? "no_playable_candidate" : undefined);
     const actions = this.userTextActions({
       rawUserText: args.text,
       contract,
@@ -425,7 +446,7 @@ export class RadioAgentService {
       programQueued,
       hostText,
       shouldClearQueue,
-      ...(queueResult.fallbackReason ? { fallbackReason: queueResult.fallbackReason } : {}),
+      ...(fallbackReason ? { fallbackReason } : {}),
     };
   }
 
@@ -594,6 +615,50 @@ export class RadioAgentService {
     });
   }
 
+  private async prepareGovernedProgramTrack(args: {
+    uid: string | null;
+    sessionId: number | null;
+    currentTrack: Record<string, unknown> | null;
+    recentTracks: Record<string, unknown>[];
+    readyQueue: Record<string, unknown>[];
+    programWindow: RadioAgentProgramWindow;
+  }): Promise<{ preparedTrack: RadioAgentPreparedTrack | null; governedPrepared: PlaybackGovernorResult | null }> {
+    if (!this.deps.prepareProgramWindow) return { preparedTrack: null, governedPrepared: null };
+
+    const candidateOffsets = prioritizedCandidateOffsets(args.programWindow);
+    const maxAttempts = Math.max(1, Math.min(5, candidateOffsets.length || 1));
+    let lastGoverned: PlaybackGovernorResult | null = null;
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      const offset = candidateOffsets[attempt] ?? attempt;
+      const preparedTrack = await this.withProgramCandidateTimeout(
+        this.deps.prepareProgramWindow(
+          args.programWindow,
+          offset === 0 ? undefined : { skipCandidates: offset },
+        ),
+      );
+      if (!preparedTrack) continue;
+      const governedPrepared = await this.governPreparedTrack({
+        ...args,
+        preparedTrack,
+      });
+      if (governedPrepared.status === "accepted") {
+        return { preparedTrack, governedPrepared };
+      }
+      lastGoverned = governedPrepared;
+    }
+
+    return { preparedTrack: null, governedPrepared: lastGoverned };
+  }
+
+  private async withProgramCandidateTimeout(work: Promise<RadioAgentPreparedTrack | null>): Promise<RadioAgentPreparedTrack | null> {
+    const timeoutMs = Math.max(0, this.deps.programCandidateTimeoutMs ?? DEFAULT_PROGRAM_CANDIDATE_TIMEOUT_MS);
+    if (timeoutMs === 0) return await work;
+    return await Promise.race([
+      work,
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), timeoutMs)),
+    ]);
+  }
+
   private async governReadyTrack(args: {
     uid: string | null;
     sessionId: number | null;
@@ -671,6 +736,23 @@ function asTrack(value: Record<string, unknown> | null | undefined): Track | nul
 
 function searchedQueriesFor(programWindow: RadioAgentProgramWindow | undefined): string[] {
   return programWindow?.candidateTasks.map((task) => task.query).filter(Boolean) || [];
+}
+
+function prioritizedCandidateOffsets(programWindow: RadioAgentProgramWindow): number[] {
+  return programWindow.candidateTasks
+    .map((task, index) => ({ index, score: candidateSpecificityScore(task.query) }))
+    .sort((left, right) => right.score - left.score || left.index - right.index)
+    .map((item) => item.index);
+}
+
+function candidateSpecificityScore(query: string): number {
+  const text = String(query || "").trim();
+  if (!text) return 0;
+  let score = Math.min(6, text.split(/\s+/u).filter(Boolean).length);
+  if (/[-:]\s*\S/u.test(text)) score += 3;
+  if (/\b[A-Z][A-Za-z0-9.'&]+\s+[A-Z][A-Za-z0-9.'&]+/u.test(text)) score += 2;
+  if (/^(r\s*&?\s*b|rnb|jazz|ambient|focus|quiet|electronic|classical)$/iu.test(text)) score -= 5;
+  return score;
 }
 
 function hostDeliveryCandidates(agentResult: RadioAgentHandleResult): RadioHostDecision[] {

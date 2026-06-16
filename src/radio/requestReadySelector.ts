@@ -1,6 +1,9 @@
 import type { QueueItem } from "./playbackQueue.js";
 import type { PlaybackQueue } from "./playbackQueue.js";
+import type { BoundaryGuard } from "./boundaryGuard.js";
+import type { StationContract } from "./radioBrainTypes.js";
 import type { SelectionReason, Track } from "../types.js";
+import { sameTrack } from "../radio-agent/playbackGovernor.js";
 
 export type ReadyItemSnapshot = ReadonlySet<QueueItem>;
 
@@ -55,6 +58,37 @@ export function removeReadyItemsBefore(queue: PlaybackQueue, target: QueueItem |
   }
   if (!staleAhead.size) return 0;
   return queue.removeReadyWhere((item) => staleAhead.has(item));
+}
+
+export function removeReadyItemsOutsideStationContract(
+  queue: PlaybackQueue,
+  stationContract: StationContract | null | undefined,
+  boundaryGuard: Pick<BoundaryGuard, "evaluate">,
+): number {
+  if (!stationContract) return 0;
+  return queue.removeReadyWhere((item) => {
+    const decision = boundaryGuard.evaluate({
+      contract: stationContract,
+      query: item.selectionReason.text || item.selectionReason.understoodIntent || "ready queue promotion",
+      candidate: item.track,
+      fallbackLevel: "recent_verified",
+      itemStyle: item.track.source || item.selectionReason.text || "",
+    });
+    return decision.status.startsWith("reject_");
+  });
+}
+
+export function removeReadyItemsMatchingRecentPlayback(
+  queue: PlaybackQueue,
+  currentTrack: Track | null | undefined,
+  recentTracks: Track[],
+  windowSize = 8,
+): number {
+  const protectedTracks = [currentTrack, ...recentTracks.slice(0, windowSize)].filter((track): track is Track => Boolean(track));
+  if (!protectedTracks.length) return 0;
+  return queue.removeReadyWhere((item) =>
+    protectedTracks.some((protectedTrack) => sameTrack(item.track, protectedTrack)),
+  );
 }
 
 export function isCurrentRequestToken(activeToken: number | null, requestToken: number): boolean {

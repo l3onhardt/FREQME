@@ -11,9 +11,11 @@ export type TrackEndRecoverySource =
 
 export interface TrackEndRecoveryArgs {
   readyCount: () => number;
+  sanitizeReadyItems?: () => void;
   trackEndAction: TrackEndRecoveryAction;
   allowContinuation: boolean;
   hasActiveRequest: boolean;
+  hasActiveStationContract?: boolean;
   fillLegacyQueue: () => Promise<void>;
   addRecentPlayableFallback: () => Promise<boolean>;
   kickBrainContinuation: () => ReadyItemSnapshot;
@@ -30,20 +32,20 @@ export interface TrackEndRecoveryResult {
 const DEFAULT_LEGACY_FILL_TIMEOUT_MS = 1200;
 
 export async function ensureTrackEndReadyItem(args: TrackEndRecoveryArgs): Promise<TrackEndRecoveryResult> {
-  if (args.readyCount() > 0) return result("ready");
+  if (sanitizedReadyCount(args) > 0) return result("ready");
 
   const legacyFillTimedOut = await runLegacyFillWithTimeout(args);
-  if (args.readyCount() > 0) return result("legacy_fill", legacyFillTimedOut);
+  if (sanitizedReadyCount(args) > 0) return result("legacy_fill", legacyFillTimedOut);
+
+  const preferContinuationBeforeRecentFallback = Boolean(args.hasActiveStationContract);
+  if (preferContinuationBeforeRecentFallback && (await tryBrainContinuation(args))) {
+    return result("brain_continuation", legacyFillTimedOut);
+  }
 
   if (await addRecentPlayable(args)) return result("recent_playable_fallback", legacyFillTimedOut);
 
-  if (args.allowContinuation && !args.hasActiveRequest) {
-    const beforeContinuation = args.kickBrainContinuation();
-    const ready = await args.waitForNewBrainReadyItem(beforeContinuation);
-    if (ready) {
-      const prepared = args.prepareFreshBrainReadyForPromotion(beforeContinuation);
-      if (prepared || args.readyCount() > 0) return result("brain_continuation", legacyFillTimedOut);
-    }
+  if (!preferContinuationBeforeRecentFallback && (await tryBrainContinuation(args))) {
+    return result("brain_continuation", legacyFillTimedOut);
   }
 
   if (await addRecentPlayable(args)) return result("recent_playable_fallback", legacyFillTimedOut);
@@ -63,10 +65,24 @@ async function runLegacyFillWithTimeout(args: TrackEndRecoveryArgs): Promise<boo
   return completed === "timed_out";
 }
 
+async function tryBrainContinuation(args: TrackEndRecoveryArgs): Promise<boolean> {
+  if (!args.allowContinuation || args.hasActiveRequest) return false;
+  const beforeContinuation = args.kickBrainContinuation();
+  const ready = await args.waitForNewBrainReadyItem(beforeContinuation);
+  if (!ready) return false;
+  const prepared = args.prepareFreshBrainReadyForPromotion(beforeContinuation);
+  return Boolean(prepared || sanitizedReadyCount(args) > 0);
+}
+
 async function addRecentPlayable(args: TrackEndRecoveryArgs): Promise<boolean> {
-  if (args.readyCount() > 0) return true;
+  if (sanitizedReadyCount(args) > 0) return true;
   const added = await args.addRecentPlayableFallback().catch(() => false);
-  return added && args.readyCount() > 0;
+  return added && sanitizedReadyCount(args) > 0;
+}
+
+function sanitizedReadyCount(args: TrackEndRecoveryArgs): number {
+  args.sanitizeReadyItems?.();
+  return args.readyCount();
 }
 
 function timeout(ms: number): Promise<"timed_out"> {

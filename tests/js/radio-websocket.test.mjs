@@ -120,6 +120,7 @@ function loadRadio({ fetchImpl, spectrumBarCount = 0 } = {}) {
     'request-input',
     'scene-label',
     'start-radio-btn',
+    'guest-radio-btn',
     'track-artist',
     'track-name',
     'lyrics-panel',
@@ -292,6 +293,24 @@ test('closed radio websocket can reconnect after onclose', async () => {
 
   assert.equal(sockets.length, 2);
   assert.equal(sockets[1].readyState, sockets[1].constructor.CONNECTING);
+});
+
+test('guest preview starts an anonymous browser radio session from the login screen', async () => {
+  const { elements, sockets, context } = loadRadio();
+  const guestButton = elements.get('guest-radio-btn');
+
+  await guestButton.click();
+
+  assert.equal(elements.get('login-screen').activeClasses.has('active'), false);
+  assert.equal(elements.get('player-screen').activeClasses.has('active'), true);
+  assert.equal(sockets.length, 1);
+  sockets[0].readyState = sockets[0].constructor.OPEN;
+  sockets[0].onopen();
+
+  const sent = JSON.parse(sockets[0].sent[0]);
+  assert.equal(sent.type, 'handshake');
+  assert.equal(sent.uid, null);
+  assert.equal(context.window.localStorage.getItem('freqme.radioState.v1'), null);
 });
 
 test('bootAuth refreshes persisted login before falling back to QR', async () => {
@@ -758,6 +777,34 @@ test('next-track retry is cancelled once playback resumes', async () => {
   assert.deepEqual(sockets[0].sent.map((raw) => JSON.parse(raw).type), ['track_ended']);
   assert.equal(audioMain.src, '/api/radio/audio/2');
   assert.equal(elements.get('track-name').textContent, 'Next');
+});
+
+test('plain continuation clears stale host speech instead of pinning old DJ copy to the next track', async () => {
+  const { context, elements } = loadRadio();
+
+  await context.handleMessage({
+    type: 'session_start',
+    scene: 'night',
+    intro_text: 'Welcome line.',
+    tts_ready: false,
+    tts_hash: '',
+  });
+  await context.handleMessage({
+    type: 'play_track',
+    track: { name: 'First', artist: 'Artist' },
+    url: '/api/radio/audio/1',
+  });
+
+  assert.equal(elements.get('dj-text').textContent, 'Welcome line.');
+
+  await context.handleMessage({
+    type: 'play_track',
+    track: { name: 'Second', artist: 'Artist' },
+    url: '/api/radio/audio/2',
+  });
+
+  assert.notEqual(elements.get('dj-text').textContent, 'Welcome line.');
+  assert.match(elements.get('dj-text').textContent, /让音乐继续|涓嶆墦鎵?/);
 });
 
 test('play track fetches lyrics and syncs the visible lyric with audio time', async () => {

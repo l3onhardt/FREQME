@@ -190,3 +190,92 @@ test("generic station contracts reject explicitly blocked styles", () => {
 
   assert.equal(decision.status, "reject_off_contract");
 });
+
+test("generic jazz station contracts reject unrelated recent-playable fallbacks", () => {
+  const guard = new BoundaryGuard();
+  const quietJazzContract = {
+    ...contract,
+    id: "quiet-jazz-contract",
+    mainDirection: "quiet jazz for reading",
+    rawUserText: "play quiet jazz for reading",
+    allowedAdjacent: ["soft jazz piano", "ambient jazz instrumentals", "light acoustic jazz"],
+    disallowed: ["upbeat jazz", "vocal jazz", "electronic remixes", "dance tracks"],
+    positiveSeeds: ["quiet jazz for reading"],
+    negativeConstraints: ["upbeat jazz", "vocal jazz", "electronic remixes", "dance tracks"],
+  };
+
+  const rejected = guard.evaluate({
+    contract: quietJazzContract,
+    query: "recent playable fallback",
+    candidate: song("飞飞飞", "LegoG"),
+    fallbackLevel: "recent_verified",
+  });
+  const accepted = guard.evaluate({
+    contract: quietJazzContract,
+    query: "quiet jazz piano for reading",
+    candidate: song("Italian Dinner Background Music", "Jazz Piano Bar Academy"),
+    fallbackLevel: "recent_verified",
+    itemStyle: "soft jazz piano",
+  });
+
+  assert.equal(rejected.status, "reject_off_contract");
+  assert.equal(accepted.status, "accept_as_adjacent");
+});
+
+test("generic jazz station contracts do not let quiet-jazz query text launder off-contract tracks", () => {
+  const guard = new BoundaryGuard();
+  const quietJazzContract = {
+    ...contract,
+    id: "quiet-jazz-contract",
+    mainDirection: "quiet jazz for reading",
+    rawUserText: "play quiet jazz for reading",
+    allowedAdjacent: ["soft jazz piano", "ambient jazz instrumentals", "light acoustic jazz"],
+    disallowed: ["electronic remixes", "dance tracks"],
+    positiveSeeds: ["quiet jazz for reading"],
+    negativeConstraints: ["electronic remixes", "dance tracks"],
+  };
+
+  const altRnb = guard.evaluate({
+    contract: quietJazzContract,
+    query: "quiet jazz continuation",
+    candidate: song("Frank Ocean - White Ferrari (MyClosest remake)", "MyClosest"),
+    fallbackLevel: "recent_verified",
+    itemStyle: "quiet jazz continuation",
+  });
+  const melodicElectronic = guard.evaluate({
+    contract: quietJazzContract,
+    query: "quiet jazz continuation",
+    candidate: song("Beyond Beliefs (Cold Blue Rework)", "Ben Bohmer"),
+    fallbackLevel: "recent_verified",
+    itemStyle: "quiet jazz continuation",
+  });
+
+  assert.equal(altRnb.status, "reject_off_contract");
+  assert.equal(melodicElectronic.status, "reject_off_contract");
+});
+
+test("generic jazz station contracts do not let search source text launder off-contract tracks", () => {
+  const guard = new BoundaryGuard();
+  const quietJazzContract = {
+    ...contract,
+    id: "quiet-jazz-contract",
+    mainDirection: "quiet jazz for reading",
+    rawUserText: "play quiet jazz for reading",
+    allowedAdjacent: ["soft jazz piano", "ambient jazz instrumentals", "light acoustic jazz"],
+    disallowed: ["electronic remixes", "dance tracks"],
+    positiveSeeds: ["quiet jazz for reading"],
+    negativeConstraints: ["electronic remixes", "dance tracks"],
+  };
+
+  const decision = guard.evaluate({
+    contract: quietJazzContract,
+    query: "recent playable fallback",
+    candidate: {
+      ...song("Frank Ocean - White Ferrari (MyClosest remake)", "MyClosest"),
+      source: "quiet jazz for reading",
+    },
+    fallbackLevel: "recent_verified",
+  });
+
+  assert.equal(decision.status, "reject_off_contract");
+});

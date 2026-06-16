@@ -14,11 +14,17 @@ export class BoundaryGuard {
   evaluate(args: BoundaryGuardArgs): BoundaryDecision {
     if (!args.contract) return { status: "accept", reason: "No active station contract." };
 
-    const searchable = normalizeMatchText([args.query, args.itemStyle, args.candidate.name, args.candidate.artist].join(" "));
+    const candidateEvidence = normalizeMatchText([
+      args.candidate.name,
+      args.candidate.artist,
+      args.candidate.album,
+      ...(args.candidate.aliases || []),
+    ].join(" "));
+    const searchable = normalizeMatchText([args.query, args.itemStyle, args.candidate.source, candidateEvidence].join(" "));
     const query = normalizeMatchText(args.query);
     const artist = normalizeMatchText(args.candidate.artist);
     const name = normalizeMatchText(args.candidate.name);
-    const candidateText = `${name}${artist}`;
+    const candidateText = candidateEvidence || `${name}${artist}`;
 
     if (query.includes("maxrichter") && artist.includes("sviatoslavrichter")) {
       return {
@@ -73,6 +79,14 @@ export class BoundaryGuard {
       };
     }
 
+    if (this.requiresPositiveGenericFit(args.contract, args.fallbackLevel) && !this.genericContractFit(candidateText, args.contract)) {
+      return {
+        status: "reject_off_contract",
+        reason: "Candidate has no clear evidence for the active station direction.",
+        contractId: args.contract.id,
+      };
+    }
+
     return { status: "accept_as_adjacent", reason: "No deterministic boundary violation found.", contractId: args.contract.id };
   }
 
@@ -91,5 +105,57 @@ export class BoundaryGuard {
       if (normalized && searchable.includes(normalized)) return move;
     }
     return "";
+  }
+
+  private requiresPositiveGenericFit(contract: StationContract, fallbackLevel: DecisionTrace["fallbackLevel"]): boolean {
+    if (fallbackLevel !== "recent_verified") return false;
+    const text = normalizeMatchText([
+      contract.mainDirection,
+      contract.rawUserText,
+      ...contract.positiveSeeds,
+      ...contract.allowedAdjacent,
+    ].join(" "));
+    return text.length >= 4;
+  }
+
+  private genericContractFit(searchable: string, contract: StationContract): boolean {
+    const anchors = [
+      contract.mainDirection,
+      contract.rawUserText,
+      ...contract.positiveSeeds,
+      ...contract.allowedAdjacent,
+    ].flatMap((value) => this.anchorTokens(value));
+    const unique = Array.from(new Set(anchors));
+    return unique.some((token) => searchable.includes(token));
+  }
+
+  private anchorTokens(value: string): string[] {
+    const normalized = normalizeMatchText(value);
+    if (!normalized) return [];
+    const rawTokens = value.match(/[A-Za-z0-9][A-Za-z0-9'.+&-]*|[\u4e00-\u9fff]+/gu) || [];
+    const stop = new Set([
+      "for",
+      "the",
+      "and",
+      "with",
+      "music",
+      "song",
+      "songs",
+      "track",
+      "tracks",
+      "reading",
+      "quiet",
+      "soft",
+      "light",
+      "late",
+      "night",
+      "play",
+      "put",
+      "listen",
+    ]);
+    const tokens = rawTokens
+      .map((token) => normalizeMatchText(token))
+      .filter((token) => token.length >= 3 && !stop.has(token));
+    return tokens.length ? tokens : [normalized].filter((token) => token.length >= 4);
   }
 }

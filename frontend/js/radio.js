@@ -16,6 +16,7 @@ let activeSegueId = '';
 let pendingSegueTimer = null;
 let nextTrackRetryTimer = null;
 let nextTrackRetryCount = 0;
+let hasVisibleTrack = false;
 let userVolume = 0.8;
 let isDucked = false;
 let mainVolumeFadeTimer = null;
@@ -75,6 +76,7 @@ const requestForm = document.getElementById('request-form');
 const requestInput = document.getElementById('request-input');
 const accountList = document.getElementById('account-list');
 const addAccountBtn = document.getElementById('add-account-btn');
+const guestRadioBtn = document.getElementById('guest-radio-btn');
 const onboardingPrevBtn = document.getElementById('onboarding-prev-btn');
 const onboardingNextBtn = document.getElementById('onboarding-next-btn');
 const stepDots = Array.from(document.querySelectorAll('#step-indicator .step-dot'));
@@ -576,9 +578,13 @@ async function playTTS(hash, text, onEnd) {
   });
 }
 
-async function playTrack(track, url) {
+async function playTrack(track, url, options = {}) {
+  const plainContinuation = hasVisibleTrack && !options.keepHostText;
   document.getElementById('track-name').textContent = track.name || '--';
   document.getElementById('track-artist').textContent = track.artist || '--';
+  if (plainContinuation) {
+    document.getElementById('dj-text').textContent = '让音乐继续，我先不打扰。';
+  }
   resetLyrics();
   void loadLyrics(track);
   audioMain.src = url;
@@ -591,6 +597,7 @@ async function playTrack(track, url) {
   audioMain.play().catch(() => {});
   isPlaying = true;
   document.getElementById('btn-play').textContent = '⏸';
+  hasVisibleTrack = true;
   startProgressLoop();
 }
 
@@ -1135,11 +1142,12 @@ async function fetchAuthStatus() {
   return statusResp.json();
 }
 
-function showPlayerAndConnect() {
+function showPlayerAndConnect({ remember = true } = {}) {
   const startButton = document.getElementById('start-radio-btn');
   startButton.disabled = true;
   startButton.style.display = 'none';
-  saveRadioState(true);
+  if (remember) saveRadioState(true);
+  else saveRadioState(false);
   document.getElementById('login-screen').classList.remove('active');
   document.getElementById('onboarding-screen').classList.remove('active');
   document.getElementById('player-screen').classList.add('active');
@@ -1301,6 +1309,15 @@ document.getElementById('start-radio-btn').addEventListener('click', async () =>
 if (addAccountBtn) {
   addAccountBtn.addEventListener('click', () => {
     startQrLogin();
+  });
+}
+
+if (guestRadioBtn) {
+  guestRadioBtn.addEventListener('click', () => {
+    stopLoginPolling();
+    uid = null;
+    onboardingSettings = null;
+    showPlayerAndConnect({ remember: false });
   });
 }
 

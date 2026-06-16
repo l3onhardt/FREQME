@@ -124,3 +124,80 @@ test("track-end recovery keeps an immediate legacy fill ahead of recent fallback
   assert.equal(result.legacyFillTimedOut, false);
   assert.deepEqual(calls, ["fill"]);
 });
+
+test("track-end recovery asks the agent continuation before recent fallback when a station contract is active", async () => {
+  const calls: string[] = [];
+  let readyCount = 0;
+
+  const result = await ensureTrackEndReadyItem({
+    readyCount: () => readyCount,
+    trackEndAction: "legacy_fallback",
+    allowContinuation: true,
+    hasActiveRequest: false,
+    hasActiveStationContract: true,
+    fillLegacyQueue: async () => {
+      calls.push("fill");
+    },
+    addRecentPlayableFallback: async () => {
+      calls.push("recent");
+      readyCount = 1;
+      return true;
+    },
+    kickBrainContinuation: () => {
+      calls.push("brain");
+      return new Set() as ReadyItemSnapshot;
+    },
+    waitForNewBrainReadyItem: async () => {
+      calls.push("wait");
+      readyCount = 1;
+      return { track: { id: "agent-1", name: "Blue in Green", artist: "Miles Davis" } } as any;
+    },
+    prepareFreshBrainReadyForPromotion: () => {
+      calls.push("prepare");
+      return { track: { id: "agent-1", name: "Blue in Green", artist: "Miles Davis" } } as any;
+    },
+    legacyFillTimeoutMs: 1,
+  });
+
+  assert.equal(result.source, "brain_continuation");
+  assert.deepEqual(calls, ["fill", "brain", "wait", "prepare"]);
+});
+
+test("track-end recovery sanitizes ready items before deciding recovery is unnecessary", async () => {
+  const calls: string[] = [];
+  let readyCount = 1;
+  let staleReadyItems = 1;
+
+  const result = await ensureTrackEndReadyItem({
+    readyCount: () => readyCount,
+    sanitizeReadyItems: () => {
+      calls.push("sanitize");
+      if (staleReadyItems > 0) {
+        readyCount -= staleReadyItems;
+        staleReadyItems = 0;
+      }
+    },
+    trackEndAction: "promote_ready",
+    allowContinuation: true,
+    hasActiveRequest: false,
+    hasActiveStationContract: true,
+    fillLegacyQueue: async () => {
+      calls.push("fill");
+    },
+    addRecentPlayableFallback: async () => {
+      calls.push("recent");
+      readyCount = 1;
+      return true;
+    },
+    kickBrainContinuation: () => {
+      calls.push("brain");
+      return new Set() as ReadyItemSnapshot;
+    },
+    waitForNewBrainReadyItem: async () => null,
+    prepareFreshBrainReadyForPromotion: () => null,
+    legacyFillTimeoutMs: 1,
+  });
+
+  assert.equal(result.source, "recent_playable_fallback");
+  assert.deepEqual(calls, ["sanitize", "fill", "sanitize", "brain", "sanitize", "recent", "sanitize"]);
+});

@@ -449,6 +449,48 @@ test("explicit listener directions return an executable window without waiting f
   assert.equal(window.hostIntent.text, "好，接下来收进安静爵士，适合阅读，我先给你找一首稳的。");
 });
 
+test("explicit listener direction continuation falls back quickly when the model is slow", async () => {
+  let modelCalls = 0;
+  const model: ProgramPlanningModel = {
+    chat: async () => {
+      modelCalls += 1;
+      return await new Promise<string>(() => undefined);
+    },
+  };
+  const director = new RadioAgentProgramDirector(model, () => NOW);
+
+  const result = await Promise.race([
+    director.plan({
+      ...contextSnapshot(),
+      eventType: "queue_low",
+      currentTrack: { id: "frank-pink", name: "Pink + White", artist: "Frank Ocean" },
+      recentTracks: [
+        { id: "frank-pink", name: "Pink + White", artist: "Frank Ocean" },
+        { id: "sza-broken", name: "Broken Clocks", artist: "SZA" },
+      ],
+      readyQueue: [],
+      recentEvents: [
+        {
+          uid: "42",
+          sessionId: 7,
+          type: "user_text",
+          priority: "hot",
+          payload: { text: "play rnb" },
+          createdAt: "2026-06-03T01:01:00.000Z",
+        },
+      ],
+      contract: "# Program Contract\nstation_goal: rnb",
+    }),
+    new Promise<"timed-out">((resolve) => setTimeout(() => resolve("timed-out"), 150)),
+  ]);
+
+  assert.notEqual(result, "timed-out");
+  assert.equal(modelCalls, 1);
+  assert.equal(result.source, "deterministic_fallback");
+  assert.ok(result.candidateTasks.length > 0);
+  assert.ok(result.candidateTasks.every((task) => !/Pink \+ White|Broken Clocks/i.test(task.query)));
+});
+
 test("latest correction with a replacement direction overrides the previous explicit direction", async () => {
   const director = new RadioAgentProgramDirector(null, () => NOW);
 
@@ -1366,6 +1408,177 @@ test("fallback planning turns a fresh R&B session contract into concrete first m
   assert.match(window.mainDirection, /afternoon.*R&B|relaxed.*vocal/i);
   assert.match(window.hostIntent.text, /R&B|afternoon/i);
   assert.doesNotMatch(window.hostIntent.text, /profile|model|candidate|trace|JSON/i);
+});
+
+test("fallback planning keeps fresh R&B continuation candidates after recent contract playback", async () => {
+  const director = new RadioAgentProgramDirector(null, () => NOW);
+
+  const window = await director.plan({
+    ...contextSnapshot(),
+    eventType: "track_ended",
+    profile: "",
+    memoryFacts: [],
+    memoryHypotheses: [],
+    currentTrack: { id: "her-focus", name: "Focus", artist: "H.E.R." },
+    readyQueue: [],
+    recentTracks: [
+      { id: "sza-broken", name: "Broken Clocks", artist: "SZA" },
+      { id: "frank-pink", name: "Pink + White", artist: "Frank Ocean" },
+      { id: "daniel-denim", name: "Japanese Denim", artist: "Daniel Caesar" },
+      { id: "her-focus", name: "Focus", artist: "H.E.R." },
+    ],
+    contract:
+      "# Program Contract\nstation_goal: current R&B radio with soft vocal anchors\navoid: classical chamber music, generic electronic",
+    session:
+      "# Listener Session\nactive_request: R&B\naccepted_direction: Keep this session centered on R&B vocals and groove.\nnext_promise: Stay in R&B until the listener asks to move elsewhere.",
+  });
+
+  const queries = window.candidateTasks.map((task) => task.query);
+
+  assert.equal(window.source, "deterministic_fallback");
+  assert.ok(queries.length >= 5);
+  assert.ok(queries.every((query) => !/Broken Clocks|Pink \+ White|Japanese Denim|H\.E\.R\. Focus/i.test(query)));
+  assert.ok(queries.some((query) => /Brent Faiyaz|Kelela|Summer Walker|Giveon|Miguel|Sonder/i.test(query)));
+});
+
+test("fallback planning rotates explicit R&B direction seeds during track-end continuation", async () => {
+  const director = new RadioAgentProgramDirector(null, () => NOW);
+
+  const window = await director.plan({
+    ...contextSnapshot(),
+    eventType: "track_ended",
+    profile: "",
+    memoryFacts: [],
+    memoryHypotheses: [],
+    currentTrack: { id: "sza-broken", name: "Broken Clocks", artist: "SZA" },
+    readyQueue: [],
+    recentTracks: [
+      { id: "frank-pink", name: "Pink + White", artist: "Frank Ocean" },
+      { id: "sza-broken", name: "Broken Clocks", artist: "SZA" },
+    ],
+    recentEvents: [
+      {
+        uid: "42",
+        sessionId: 7,
+        type: "user_text",
+        priority: "hot",
+        payload: { text: "play rnb" },
+        createdAt: "2026-06-03T01:01:00.000Z",
+      },
+    ],
+    contract: "# Program Contract\nstation_goal: rnb",
+    session:
+      "# Listener Session\nactive_request: R&B\naccepted_direction: Keep this session centered on R&B vocals and groove.\nnext_promise: Stay in R&B until the listener asks to move elsewhere.",
+  });
+
+  const queries = window.candidateTasks.map((task) => task.query);
+
+  assert.equal(window.source, "deterministic_fallback");
+  assert.ok(queries.length >= 5);
+  assert.ok(queries.every((query) => !/frank ocean pinkpuss|Pink \+ White|Broken Clocks/i.test(query)));
+  assert.ok(queries.some((query) => /Summer Walker|Kelela|Brent Faiyaz|Giveon|Miguel/i.test(query)));
+});
+
+test("model planning rotates explicit R&B direction seeds during track-end continuation", async () => {
+  const model: ProgramPlanningModel = {
+    chat: async () => JSON.stringify({
+      station_brief: "Current R&B radio with soft vocal anchors.",
+      main_direction: "Keep R&B central.",
+      candidate_tasks: [
+        { query: "SZA Broken Clocks", reason: "Soft R&B vocal anchor.", style: "R&B" },
+        { query: "Frank Ocean Pink + White", reason: "Warm alt-R&B vocal anchor.", style: "alt-R&B" },
+        { query: "Kelela LMK", reason: "Fresh alt-R&B vocal continuation.", style: "alt-R&B" },
+      ],
+    }),
+  };
+  const director = new RadioAgentProgramDirector(model, () => NOW);
+
+  const window = await director.plan({
+    ...contextSnapshot(),
+    uid: null,
+    sessionId: -123,
+    eventType: "queue_low",
+    profile: "",
+    memoryFacts: [],
+    memoryHypotheses: [],
+    currentTrack: { id: "frank-pink", name: "Pink + White", artist: "Frank Ocean" },
+    recentTracks: [
+      { id: "sza-broken", name: "Broken Clocks", artist: "SZA" },
+      { id: "frank-pink", name: "Pink + White", artist: "Frank Ocean" },
+    ],
+    readyQueue: [],
+    recentEvents: [
+      {
+        uid: null,
+        sessionId: -123,
+        type: "user_text",
+        priority: "hot",
+        payload: { text: "play rnb" },
+        createdAt: "2026-06-03T01:01:00.000Z",
+      },
+    ],
+    contract: "# Program Contract\nstation_goal: rnb",
+    session:
+      "# Listener Session\nactive_request: R&B\naccepted_direction: Keep this session centered on R&B vocals and groove.\nnext_promise: Stay in R&B until the listener asks to move elsewhere.",
+  });
+
+  const queries = window.candidateTasks.map((task) => task.query);
+
+  assert.equal(window.source, "model");
+  assert.ok(queries.length > 0);
+  assert.ok(queries.every((query) => !/frank ocean pinkpuss|Pink \+ White|Broken Clocks/i.test(query)));
+  assert.ok(queries.some((query) => /Summer Walker|Kelela|Brent Faiyaz|Giveon|Miguel/i.test(query)));
+});
+
+test("model planning keeps fresh explicit R&B seeds when the contract has avoid guardrails", async () => {
+  const model: ProgramPlanningModel = {
+    chat: async () => JSON.stringify({
+      station_brief: "Current R&B radio with soft vocal anchors.",
+      main_direction: "Keep R&B central.",
+      candidate_tasks: [
+        { query: "SZA Broken Clocks", reason: "Soft R&B vocal anchor.", style: "R&B" },
+        { query: "Frank Ocean Pink + White", reason: "Warm alt-R&B vocal anchor.", style: "alt-R&B" },
+      ],
+    }),
+  };
+  const director = new RadioAgentProgramDirector(model, () => NOW);
+
+  const window = await director.plan({
+    ...contextSnapshot(),
+    uid: null,
+    sessionId: -123,
+    eventType: "queue_low",
+    profile: "",
+    memoryFacts: [],
+    memoryHypotheses: [],
+    currentTrack: { id: "frank-pink", name: "Pink + White", artist: "Frank Ocean" },
+    recentTracks: [
+      { id: "sza-broken", name: "Broken Clocks", artist: "SZA" },
+      { id: "frank-pink", name: "Pink + White", artist: "Frank Ocean" },
+    ],
+    readyQueue: [],
+    recentEvents: [
+      {
+        uid: null,
+        sessionId: -123,
+        type: "user_text",
+        priority: "hot",
+        payload: { text: "play rnb" },
+        createdAt: "2026-06-03T01:01:00.000Z",
+      },
+    ],
+    contract:
+      "# Program Contract\nstation_goal: rnb\navoid: classical chamber music, generic electronic",
+    session:
+      "# Listener Session\nactive_request: R&B\naccepted_direction: Keep this session centered on R&B vocals and groove.\nnext_promise: Stay in R&B until the listener asks to move elsewhere.",
+  });
+
+  const queries = window.candidateTasks.map((task) => task.query);
+
+  assert.equal(window.source, "model");
+  assert.ok(queries.length > 0);
+  assert.ok(queries.every((query) => !/frank ocean pinkpuss|Pink \+ White|Broken Clocks/i.test(query)));
+  assert.ok(queries.some((query) => /Summer Walker|Kelela|Brent Faiyaz|Giveon|Miguel/i.test(query)));
 });
 
 test("model planning under an explicit R&B contract drops off-contract electronic candidates", async () => {

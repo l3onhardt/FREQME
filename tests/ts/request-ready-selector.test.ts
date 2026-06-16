@@ -7,9 +7,13 @@ import {
   isCurrentRequestToken,
   prepareFreshBrainReadyOrReplaceWithFallback,
   prepareFreshBrainReadyForPromotion,
+  removeReadyItemsMatchingRecentPlayback,
+  removeReadyItemsOutsideStationContract,
   removeReadyItemsBefore,
   snapshotReadyItems,
 } from "../../src/radio/requestReadySelector.js";
+import { BoundaryGuard } from "../../src/radio/boundaryGuard.js";
+import type { StationContract } from "../../src/radio/radioBrainTypes.js";
 import type { SelectionReason, Track } from "../../src/types.js";
 
 function track(id: string): Track {
@@ -117,4 +121,141 @@ test("sync fallback replacement clears stale items and queues fallback when no f
   assert.equal(result.source, "fallback");
   assert.equal(result.item.track.id, "fallback");
   assert.deepEqual(queue.readyItems().map((item) => item.track.id), ["fallback"]);
+});
+
+test("contract filter removes stale ready items before promotion while keeping matching agent items", () => {
+  const queue = new PlaybackQueue(3);
+  const contract: StationContract = {
+    id: "quiet-jazz",
+    mainDirection: "quiet jazz for reading",
+    rawUserText: "play quiet jazz for reading",
+    allowedAdjacent: ["soft jazz piano"],
+    softBridge: [],
+    disallowed: ["electronic remixes", "dance tracks"],
+    positiveSeeds: ["quiet jazz for reading"],
+    negativeConstraints: ["electronic remixes", "dance tracks"],
+    driftBudget: 1,
+    bridgeCount: 0,
+    mustReturnToContract: false,
+    hostStyle: "standard",
+    createdAt: "2026-06-11T00:00:00.000Z",
+    updatedAt: "2026-06-11T00:00:00.000Z",
+  };
+  queue.addReady(
+    { id: "radiohead", name: "How to Disappear Completely", artist: "Radiohead" },
+    "radiohead-url",
+    reason({ type: "ai_station_director", text: "old continuation" }),
+  );
+  queue.addReady(
+    { id: "jazz", name: "Magical Piano", artist: "Jazz Piano Bar Academy" },
+    "jazz-url",
+    reason({ type: "radio_agent_program", text: "quiet jazz continuation" }),
+  );
+
+  const removed = removeReadyItemsOutsideStationContract(queue, contract, new BoundaryGuard());
+
+  assert.equal(removed, 1);
+  assert.deepEqual(queue.readyItems().map((item) => item.track.id), ["jazz"]);
+});
+
+test("contract filter removes off-contract tracks even when stale reasons mention the active direction", () => {
+  const queue = new PlaybackQueue(3);
+  const contract: StationContract = {
+    id: "quiet-jazz",
+    mainDirection: "quiet jazz for reading",
+    rawUserText: "play quiet jazz for reading",
+    allowedAdjacent: ["soft jazz piano"],
+    softBridge: [],
+    disallowed: ["electronic remixes", "dance tracks"],
+    positiveSeeds: ["quiet jazz for reading"],
+    negativeConstraints: ["electronic remixes", "dance tracks"],
+    driftBudget: 1,
+    bridgeCount: 0,
+    mustReturnToContract: false,
+    hostStyle: "standard",
+    createdAt: "2026-06-11T00:00:00.000Z",
+    updatedAt: "2026-06-11T00:00:00.000Z",
+  };
+  queue.addReady(
+    { id: "frank", name: "Frank Ocean - White Ferrari (MyClosest remake)", artist: "MyClosest" },
+    "frank-url",
+    reason({ type: "ai_radio_episode", text: "quiet jazz continuation", traceId: "old-trace" }),
+  );
+  queue.addReady(
+    { id: "bohmer", name: "Beyond Beliefs (Cold Blue Rework)", artist: "Ben Bohmer" },
+    "bohmer-url",
+    reason({ type: "ai_radio_episode", text: "quiet jazz continuation", traceId: "old-trace-2" }),
+  );
+  queue.addReady(
+    { id: "jazz", name: "Magical Piano", artist: "Jazz Piano Bar Academy" },
+    "jazz-url",
+    reason({ type: "radio_agent_program", text: "quiet jazz continuation" }),
+  );
+
+  const removed = removeReadyItemsOutsideStationContract(queue, contract, new BoundaryGuard());
+
+  assert.equal(removed, 2);
+  assert.deepEqual(queue.readyItems().map((item) => item.track.id), ["jazz"]);
+});
+
+test("recent playback filter removes ready items matching the current track before promotion", () => {
+  const queue = new PlaybackQueue(3);
+  const currentTrack = { id: "current", name: "Japanese Denim", artist: "Daniel Caesar" };
+  queue.addReady(
+    { id: "current", name: "Japanese Denim", artist: "Daniel Caesar" },
+    "current-url",
+    reason({ type: "radio_agent_program", text: "rnb continuation" }),
+  );
+  queue.addReady(
+    { id: "next", name: "Broken Clocks", artist: "SZA" },
+    "next-url",
+    reason({ type: "radio_agent_program", text: "rnb continuation" }),
+  );
+
+  const removed = removeReadyItemsMatchingRecentPlayback(queue, currentTrack, []);
+
+  assert.equal(removed, 1);
+  assert.deepEqual(queue.readyItems().map((item) => item.track.id), ["next"]);
+});
+
+test("recent playback filter removes ready items matching recent artist and title", () => {
+  const queue = new PlaybackQueue(3);
+  queue.addReady(
+    { id: "sza-ready", name: "Broken Clocks", artist: "SZA" },
+    "sza-url",
+    reason({ type: "radio_agent_program", text: "rnb continuation" }),
+  );
+  queue.addReady(
+    { id: "usher", name: "Climax", artist: "Usher" },
+    "usher-url",
+    reason({ type: "radio_agent_program", text: "rnb continuation" }),
+  );
+
+  const removed = removeReadyItemsMatchingRecentPlayback(queue, null, [
+    { id: "sza-recent", name: "Broken Clocks", artist: "SZA" },
+  ]);
+
+  assert.equal(removed, 1);
+  assert.deepEqual(queue.readyItems().map((item) => item.track.id), ["usher"]);
+});
+
+test("recent playback filter removes remix or remake metadata matching a recent recording", () => {
+  const queue = new PlaybackQueue(3);
+  queue.addReady(
+    { id: "pink-remix", name: "frank ocean - pinkpuss (pink + white remix)", artist: "LegoG" },
+    "pink-remix-url",
+    reason({ type: "radio_agent_program", text: "rnb continuation" }),
+  );
+  queue.addReady(
+    { id: "miguel", name: "Adorn", artist: "Miguel" },
+    "miguel-url",
+    reason({ type: "radio_agent_program", text: "rnb continuation" }),
+  );
+
+  const removed = removeReadyItemsMatchingRecentPlayback(queue, null, [
+    { id: "pink-original", name: "Pink + White", artist: "Frank Ocean" },
+  ]);
+
+  assert.equal(removed, 1);
+  assert.deepEqual(queue.readyItems().map((item) => item.track.id), ["miguel"]);
 });
