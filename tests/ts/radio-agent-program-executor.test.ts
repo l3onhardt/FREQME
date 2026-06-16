@@ -3,7 +3,7 @@ import test from "node:test";
 
 import { RadioAgentProgramExecutor } from "../../src/radio-agent/programExecutor.js";
 import type { RadioAgentProgramWindow } from "../../src/radio-agent/types.js";
-import type { MusicTask, SearchVerification } from "../../src/types.js";
+import type { MemoryPack, MusicTask, SearchVerification } from "../../src/types.js";
 
 const internalTerms =
   /candidate|trace|verification|model|JSON|prompt|tool call|deterministic|radio memory|current (?:station )?contract|station contract|model-selected|model selected|listener has|library evidence|playlist titles repeatedly/i;
@@ -89,6 +89,52 @@ test("program executor verifies the first candidate through search tools", async
   assert.equal(prepared?.decisionTrace.selectedTrack.name, "Good Days");
   assert.equal(prepared?.decisionTrace.selectedTrack.artist, "SZA");
   assert.doesNotMatch(prepared?.decisionTrace.reason ?? "", internalTerms);
+});
+
+test("program executor passes playback context to the search verifier for repeat avoidance", async () => {
+  let receivedContext: MemoryPack | undefined;
+  const verifier = {
+    verify: async (
+      _task: MusicTask,
+      _uid?: string | null,
+      _stationBrief?: string,
+      context?: MemoryPack,
+    ): Promise<SearchVerification> => {
+      receivedContext = context;
+      return {
+        status: "not_found",
+        verification: {},
+        fallbackCandidates: [],
+        recoveryOptions: [],
+        failureReason: "sample",
+      };
+    },
+  };
+  const executor = new RadioAgentProgramExecutor(verifier as any, () => "trace-playback-context");
+
+  await executor.prepareFirstPlayable(
+    programWindow({
+      currentTrack: { id: "played-jazz", name: "Italian Dinner Background Music", artist: "Jazz Piano Bar Academy" },
+      recentTracks: [
+        { id: "played-jazz", name: "Italian Dinner Background Music", artist: "Jazz Piano Bar Academy" },
+      ],
+      readyQueue: [
+        { id: "ready-jazz", name: "Magical Piano", artist: "Jazz Piano Bar Academy" },
+      ],
+    } as Partial<RadioAgentProgramWindow>),
+  );
+
+  assert.deepEqual(receivedContext?.playbackContext.currentTrack, {
+    id: "played-jazz",
+    name: "Italian Dinner Background Music",
+    artist: "Jazz Piano Bar Academy",
+  });
+  assert.deepEqual(receivedContext?.playbackContext.recentTracks, [
+    { id: "played-jazz", name: "Italian Dinner Background Music", artist: "Jazz Piano Bar Academy" },
+  ]);
+  assert.deepEqual(receivedContext?.playbackContext.readyQueue, [
+    { id: "ready-jazz", name: "Magical Piano", artist: "Jazz Piano Bar Academy" },
+  ]);
 });
 
 test("program executor returns null when no candidate verifies", async () => {

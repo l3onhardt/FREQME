@@ -9,6 +9,10 @@ const listenerUnsafeProgramTerms =
   /deterministic|radio memory|current (?:station )?contract|station contract|model-selected|model selected|candidate|trace|verification|prompt|tool call|listener has|library evidence|playlist titles repeatedly/i;
 const unsafeHostSpeechText =
   /旁边|质感|当前电台方向|继续保持这个感觉|主线还是|鎴|銆|鐨|涓|杩|俙|閹|娑|鐢|鍙|姘|绋|濂|鏀|浣/u;
+const mojibakeHostMarkers =
+  /[\uFFFD\u93B4\u9352\u95AD\u951B\u6D93\u9286\u9422\u7ECB\u6D63\u9359\u6FC2\u6769\u4FD9\u95B9\u5A11\u95C1]/u;
+const naturalChineseHostTerms =
+  /[\u6211\u5148\u7A33\u63A5\u65B9\u5411\u4EBA\u58F0\u5F8B\u52A8\u7535\u53F0\u521A\u624D\u6362\u7EE7\u7EED]/u;
 
 test("model JSON planning creates an agent-owned radio window from compact context", async () => {
   const prompts: string[] = [];
@@ -167,6 +171,330 @@ test("fallback planning turns session reflection into executable anchors and tem
   assert.match(window.mainDirection, /Frank Ocean/i);
   assert.match(window.hostIntent.text, /Frank Ocean/i);
   assert.doesNotMatch(window.hostIntent.text, /鎴|銆|鐨|涓|杩|俙|旁边|质感/);
+});
+
+test("program director carries explicit recent playback tracks into the program window", async () => {
+  const director = new RadioAgentProgramDirector(null, () => NOW);
+
+  const window = await director.plan({
+    ...contextSnapshot(),
+    eventType: "queue_low",
+    currentTrack: { id: "current", name: "Piano Instrumental Music", artist: "Jazz Piano Bar Academy" },
+    recentTracks: [
+      { id: "italian", name: "Italian Dinner Background Music", artist: "Jazz Piano Bar Academy" },
+      { id: "piano", name: "Piano Instrumental Music", artist: "Jazz Piano Bar Academy" },
+    ],
+    readyQueue: [],
+    contract: "# Program Contract\nstation_goal: quiet jazz for reading",
+  });
+
+  assert.deepEqual(
+    window.recentTracks?.map((track) => track.name),
+    ["Piano Instrumental Music", "Italian Dinner Background Music"],
+  );
+});
+
+test("fallback planning turns anonymous explicit listener direction into concrete session-local tasks", async () => {
+  const director = new RadioAgentProgramDirector(null, () => NOW);
+
+  const currentTrack = { id: "current", name: "Best Part", artist: "Daniel Caesar" };
+  const window = await director.plan({
+    ...contextSnapshot(),
+    uid: null,
+    sessionId: null,
+    eventType: "user_text",
+    profile: "",
+    now: "",
+    contract: "",
+    session: "",
+    reflection: "",
+    repair: "",
+    memoryFacts: [],
+    memoryHypotheses: [],
+    sessionEvidence: [],
+    currentTrack,
+    readyQueue: [],
+    recentEvents: [
+      {
+        uid: null,
+        sessionId: null,
+        type: "user_text",
+        priority: "hot",
+        payload: {
+          text: "play quiet jazz for reading",
+          currentTrack,
+          readyQueue: [],
+        },
+        createdAt: "2026-06-03T01:01:00.000Z",
+      },
+    ],
+  });
+
+  assert.equal(window.source, "deterministic_fallback");
+  assert.match(window.stationBrief, /quiet jazz|reading/i);
+  assert.match(window.mainDirection, /quiet jazz|reading/i);
+  assert.ok(window.candidateTasks.length > 0);
+  assert.ok(window.candidateTasks.some((task) => /Miles Davis|Bill Evans|Chet Baker|Stan Getz/i.test(task.query)));
+  assert.ok(window.candidateTasks.every((task) => !/Daniel Caesar|阿森|warm vocal radio discovery/i.test(task.query)));
+  assert.ok(window.candidateTasks.every((task) => !/^play quiet jazz for reading$/i.test(task.query)));
+  assert.ok(window.candidateTasks.every((task) => !/playlist|study|studying|sleep|lofi|white noise|rain sounds/i.test(task.query)));
+  assert.equal(window.hostIntent.event, "request_ack");
+});
+
+test("explicit listener directions prioritize executable deterministic tasks before broad model classics", async () => {
+  let modelCalls = 0;
+  const model: ProgramPlanningModel = {
+    chat: async () => {
+      modelCalls += 1;
+      return (
+      JSON.stringify({
+        station_brief: "Quiet jazz for reading.",
+        main_direction: "Quiet, instrumental jazz for reading.",
+        candidate_tasks: [
+          { query: "Miles Davis Blue in Green", reason: "Classic quiet jazz.", style: "quiet jazz" },
+          { query: "Bill Evans Peace Piece", reason: "Quiet piano jazz.", style: "quiet jazz" },
+        ],
+      })
+      );
+    },
+  };
+  const director = new RadioAgentProgramDirector(model, () => NOW);
+
+  const window = await director.plan({
+    ...contextSnapshot(),
+    uid: null,
+    sessionId: null,
+    eventType: "user_text",
+    profile: "",
+    now: "",
+    contract: "",
+    session: "",
+    reflection: "",
+    repair: "",
+    memoryFacts: [],
+    memoryHypotheses: [],
+    sessionEvidence: [],
+    currentTrack: { id: "current", name: "Best Part", artist: "Daniel Caesar" },
+    readyQueue: [],
+    recentEvents: [
+      {
+        uid: null,
+        sessionId: null,
+        type: "user_text",
+        priority: "hot",
+        payload: { text: "play quiet jazz for reading" },
+        createdAt: "2026-06-03T01:01:00.000Z",
+      },
+    ],
+  });
+
+  assert.equal(modelCalls, 0);
+  assert.equal(window.source, "deterministic_fallback");
+  assert.deepEqual(
+    window.candidateTasks.slice(0, 3).map((task) => task.query),
+    ["quiet jazz for reading", "quiet jazz piano for reading", "soft instrumental jazz for reading"],
+  );
+});
+
+test("model planning uses listener-facing Chinese copy for explicit direction execution", async () => {
+  const model: ProgramPlanningModel = {
+    chat: async () =>
+      JSON.stringify({
+        station_brief: "Quiet jazz for reading.",
+        main_direction: "Quiet, instrumental jazz for reading.",
+        candidate_tasks: [
+          { query: "Miles Davis Blue in Green", reason: "Classic quiet jazz.", style: "quiet jazz" },
+          { query: "Bill Evans Peace Piece", reason: "Quiet piano jazz.", style: "quiet jazz" },
+        ],
+        host_intent: {
+          should_speak: true,
+          event: "request_ack",
+          reason: "listener direction",
+          text: "Okay, continuing with quiet jazz to match your reading mood. Here's a classic track to start.",
+        },
+      }),
+  };
+  const director = new RadioAgentProgramDirector(model, () => NOW);
+
+  const window = await director.plan({
+    ...contextSnapshot(),
+    uid: null,
+    sessionId: null,
+    eventType: "user_text",
+    profile: "",
+    now: "",
+    contract: "",
+    session: "",
+    reflection: "",
+    repair: "",
+    memoryFacts: [],
+    memoryHypotheses: [],
+    sessionEvidence: [],
+    currentTrack: { id: "current", name: "Best Part", artist: "Daniel Caesar" },
+    readyQueue: [],
+    recentEvents: [
+      {
+        uid: null,
+        sessionId: null,
+        type: "user_text",
+        priority: "hot",
+        payload: { text: "play quiet jazz for reading" },
+        createdAt: "2026-06-03T01:01:00.000Z",
+      },
+    ],
+  });
+
+  assert.equal(window.candidateTasks[0]?.reason, "按你说的安静爵士阅读氛围，先找一首能稳定播放的。");
+  assert.equal(window.hostIntent.text, "好，接下来收进安静爵士，适合阅读，我先给你找一首稳的。");
+  assert.doesNotMatch(window.hostIntent.text, /Okay|classic track|continuing/i);
+  assert.ok(window.candidateTasks.every((task) => !/^This executes the listener/i.test(task.reason)));
+});
+
+test("model planning treats Chinese quiet jazz reading requests as the quiet jazz lane", async () => {
+  const model: ProgramPlanningModel = {
+    chat: async () =>
+      JSON.stringify({
+        station_brief: "Quiet jazz for reading.",
+        main_direction: "Quiet, instrumental jazz for reading.",
+        candidate_tasks: [{ query: "Miles Davis Blue in Green", reason: "Classic quiet jazz.", style: "quiet jazz" }],
+        host_intent: {
+          should_speak: true,
+          event: "request_ack",
+          reason: "listener direction",
+          text: "Okay, continuing with quiet jazz to match your reading mood.",
+        },
+      }),
+  };
+  const director = new RadioAgentProgramDirector(model, () => NOW);
+
+  const window = await director.plan({
+    ...contextSnapshot(),
+    uid: null,
+    sessionId: null,
+    eventType: "user_text",
+    profile: "",
+    now: "",
+    contract: "",
+    session: "",
+    reflection: "",
+    repair: "",
+    memoryFacts: [],
+    memoryHypotheses: [],
+    sessionEvidence: [],
+    currentTrack: { id: "current", name: "Best Part", artist: "Daniel Caesar" },
+    readyQueue: [],
+    recentEvents: [
+      {
+        uid: null,
+        sessionId: null,
+        type: "user_text",
+        priority: "hot",
+        payload: { text: "播放安静爵士阅读" },
+        createdAt: "2026-06-03T01:01:00.000Z",
+      },
+    ],
+  });
+
+  assert.equal(window.candidateTasks[0]?.reason, "按你说的安静爵士阅读氛围，先找一首能稳定播放的。");
+  assert.equal(window.hostIntent.text, "好，接下来收进安静爵士，适合阅读，我先给你找一首稳的。");
+  assert.ok(window.candidateTasks.some((task) => /quiet jazz|soft instrumental jazz|安静爵士/i.test(task.query)));
+});
+
+test("explicit listener directions return an executable window without waiting for a slow model", async () => {
+  let modelCalls = 0;
+  const model: ProgramPlanningModel = {
+    chat: async () => {
+      modelCalls += 1;
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      return JSON.stringify({
+        candidate_tasks: [{ query: "Miles Davis Blue in Green", reason: "Classic quiet jazz.", style: "quiet jazz" }],
+      });
+    },
+  };
+  const director = new RadioAgentProgramDirector(model, () => NOW);
+
+  const started = Date.now();
+  const window = await director.plan({
+    ...contextSnapshot(),
+    uid: null,
+    sessionId: null,
+    eventType: "user_text",
+    profile: "",
+    now: "",
+    contract: "",
+    session: "",
+    reflection: "",
+    repair: "",
+    memoryFacts: [],
+    memoryHypotheses: [],
+    sessionEvidence: [],
+    currentTrack: { id: "current", name: "Best Part", artist: "Daniel Caesar" },
+    readyQueue: [],
+    recentEvents: [
+      {
+        uid: null,
+        sessionId: null,
+        type: "user_text",
+        priority: "hot",
+        payload: { text: "播放安静爵士阅读" },
+        createdAt: "2026-06-03T01:01:00.000Z",
+      },
+    ],
+  });
+
+  assert.equal(modelCalls, 0);
+  assert.ok(Date.now() - started < 50);
+  assert.equal(window.source, "deterministic_fallback");
+  assert.equal(window.candidateTasks[0]?.query, "安静爵士阅读");
+  assert.equal(window.hostIntent.text, "好，接下来收进安静爵士，适合阅读，我先给你找一首稳的。");
+});
+
+test("latest correction with a replacement direction overrides the previous explicit direction", async () => {
+  const director = new RadioAgentProgramDirector(null, () => NOW);
+
+  const window = await director.plan({
+    ...contextSnapshot(),
+    uid: null,
+    sessionId: null,
+    eventType: "user_text",
+    profile: "",
+    now: "",
+    contract: "",
+    session: "",
+    reflection: "",
+    repair: "",
+    memoryFacts: [],
+    memoryHypotheses: [],
+    sessionEvidence: [],
+    currentTrack: { id: "current", name: "Italian Dinner Background Music", artist: "Jazz Piano Bar Academy" },
+    readyQueue: [{ id: "jazz-ready", name: "Piano Instrumental Music", artist: "Jazz Piano Bar Academy" }],
+    recentEvents: [
+      {
+        uid: null,
+        sessionId: null,
+        type: "user_text",
+        priority: "hot",
+        payload: { text: "播放安静爵士阅读" },
+        createdAt: "2026-06-03T01:01:00.000Z",
+      },
+      {
+        uid: null,
+        sessionId: null,
+        type: "user_text",
+        priority: "hot",
+        payload: { text: "不要爵士了，换成晚上听的R&B" },
+        createdAt: "2026-06-03T01:02:00.000Z",
+      },
+    ],
+  });
+
+  assert.equal(window.source, "deterministic_fallback");
+  assert.match(window.stationBrief, /R&B/i);
+  assert.match(window.mainDirection, /R&B/i);
+  assert.match(window.hostIntent.text, /R&B/i);
+  assert.ok(window.candidateTasks.length > 0);
+  assert.ok(window.candidateTasks.every((task) => !/jazz|爵士|Jazz Piano Bar Academy|Miles Davis|Bill Evans|Chet Baker/i.test([task.query, task.reason, task.style].join(" "))));
+  assert.ok(window.candidateTasks.some((task) => /Daniel Caesar|SZA|H\.E\.R\.|Brent Faiyaz|R&B/i.test(task.query)));
 });
 
 test("fallback planning treats completed track artists as positive behavior anchors", async () => {
@@ -545,7 +873,9 @@ test("program director replaces model mojibake or awkward host text with safe ha
     assert.equal(window.hostIntent.shouldSpeak, true);
     assert.equal(window.hostIntent.event, "return_to_contract");
     assert.match(window.hostIntent.text, /R&B|SZA Snooze|人声|律动/i);
+    assert.match(window.hostIntent.text, naturalChineseHostTerms);
     assert.doesNotMatch(window.hostIntent.text, unsafeHostSpeechText);
+    assert.doesNotMatch(window.hostIntent.text, mojibakeHostMarkers);
   }
 });
 
@@ -623,7 +953,9 @@ test("fallback planning speaks once with a concrete continuity handoff on first 
   assert.equal(window.hostIntent.event, "return_to_contract");
   assert.match(window.hostIntent.text, /SZA/);
   assert.doesNotMatch(window.hostIntent.text, listenerUnsafeProgramTerms);
+  assert.match(window.hostIntent.text, naturalChineseHostTerms);
   assert.doesNotMatch(window.hostIntent.text, /旁边|质感/);
+  assert.doesNotMatch(window.hostIntent.text, mojibakeHostMarkers);
 });
 
 test("fallback planning still speaks when repeated queue pressure has not produced an agent item yet", async () => {
@@ -648,6 +980,8 @@ test("fallback planning still speaks when repeated queue pressure has not produc
   assert.equal(window.hostIntent.shouldSpeak, true);
   assert.equal(window.hostIntent.event, "return_to_contract");
   assert.match(window.hostIntent.text, /SZA/);
+  assert.match(window.hostIntent.text, naturalChineseHostTerms);
+  assert.doesNotMatch(window.hostIntent.text, mojibakeHostMarkers);
 });
 
 test("fallback planning stays quiet once an agent-program item is already ready", async () => {
@@ -690,6 +1024,77 @@ test("fallback planning uses the current contract when no playback or memory anc
   assert.ok(window.candidateTasks.length > 0);
   assert.match(window.candidateTasks[0]?.query ?? "", /late-night R&B|neo soul|vocals/i);
   assert.ok(window.candidateTasks.every((task) => typeof task.style === "string"));
+});
+
+test("fallback planning normalizes session-local contract text instead of nesting Follow and Stay with wrappers", async () => {
+  const director = new RadioAgentProgramDirector(null, () => NOW);
+
+  const window = await director.plan({
+    ...contextSnapshot(),
+    memoryFacts: [],
+    memoryHypotheses: [],
+    currentTrack: { id: "jazz-1", name: "Magical Piano", artist: "Jazz Piano Bar Academy" },
+    readyQueue: [],
+    contract: [
+      "# Program Contract",
+      "",
+      "station_goal: Stay with Follow quiet jazz for reading as the active listener direction. as the active station direction.",
+      "",
+      "## Allowed Moves",
+      "- Stay with Follow quiet jazz for reading as the active listener direction. as the active station direction.",
+      "- Follow quiet jazz for reading as the active listener direction.",
+      "",
+      "## Blocked Moves",
+      "- none",
+    ].join("\n"),
+  });
+
+  assert.equal(window.source, "deterministic_fallback");
+  assert.match(window.stationBrief, /quiet jazz for reading/i);
+  assert.match(window.mainDirection, /quiet jazz for reading/i);
+  assert.doesNotMatch(window.stationBrief, /Stay with Follow|Follow .* active listener direction|active station direction/i);
+  assert.doesNotMatch(window.mainDirection, /Stay with Follow|Follow .* active listener direction|active station direction/i);
+  assert.equal(window.candidateTasks[0]?.query, "quiet jazz for reading");
+});
+
+test("fallback planning keeps explicit listener direction as listener-facing text", async () => {
+  const director = new RadioAgentProgramDirector(null, () => NOW);
+
+  const window = await director.plan({
+    ...contextSnapshot(),
+    memoryFacts: [],
+    memoryHypotheses: [],
+    recentEvents: [
+      {
+        uid: "42",
+        sessionId: 7,
+        type: "user_text",
+        priority: "hot",
+        payload: { text: "play quiet jazz for reading" },
+        createdAt: "2026-06-03T01:01:00.000Z",
+      },
+    ],
+    currentTrack: { id: "jazz-1", name: "Magical Piano", artist: "Jazz Piano Bar Academy" },
+    readyQueue: [],
+    contract: [
+      "# Program Contract",
+      "",
+      "station_goal: Follow quiet jazz for reading as the active listener direction.",
+      "",
+      "## Allowed Moves",
+      "- Follow quiet jazz for reading as the active listener direction.",
+      "",
+      "## Blocked Moves",
+      "- none",
+    ].join("\n"),
+  });
+
+  assert.equal(window.source, "deterministic_fallback");
+  assert.equal(window.stationBrief, "quiet jazz for reading");
+  assert.equal(window.mainDirection, "quiet jazz for reading");
+  assert.doesNotMatch(window.stationBrief, /Use the latest listener direction|Follow .*active listener direction/i);
+  assert.doesNotMatch(window.mainDirection, /Use the latest listener direction|Follow .*active listener direction/i);
+  assert.equal(window.candidateTasks[0]?.query, "quiet jazz for reading");
 });
 
 test("fallback planning uses durable user profile anchors when memory rows are temporarily empty", async () => {
@@ -845,6 +1250,38 @@ test("fallback planning prioritizes an explicit artist session contract over sta
   assert.match(window.candidateTasks[0]?.query ?? "", /Frank Ocean/i);
   assert.doesNotMatch(window.candidateTasks[0]?.query ?? "", /Anyma/i);
   assert.match(window.mainDirection, /Frank Ocean/i);
+  assert.doesNotMatch(window.hostIntent.text, /Anyma/i);
+});
+
+test("fallback planning prioritizes an explicit style session contract over stale taste anchors", async () => {
+  const director = new RadioAgentProgramDirector(null, () => NOW);
+
+  const window = await director.plan({
+    ...contextSnapshot(),
+    memoryFacts: [
+      {
+        uid: "42",
+        key: "artist:Anyma",
+        kind: "taste_fact",
+        value: "Listener has repeated library evidence for Anyma.",
+        confidence: 0.91,
+        evidenceCount: 6,
+        evidenceRefs: ["track:anyma-1"],
+        updatedAt: "2026-06-03T01:00:00.000Z",
+      },
+    ],
+    currentTrack: { id: "old-anchor", name: "Pictures Of You", artist: "Anyma" },
+    readyQueue: [],
+    contract:
+      "# Program Contract\nstation_goal: Keep the current radio session centered on quiet jazz for reading until the listener asks to move elsewhere.\n\n## Allowed Moves\n- Use quiet jazz for reading as the primary session direction.\n- Use adjacent artists, eras, or textures only when they clearly support the requested style direction.\n\n## Blocked Moves\n- Do not let older profile anchors override this explicit session request.",
+    session:
+      "# Listener Session\nactive_request: quiet jazz for reading\naccepted_direction: Keep this session close to quiet jazz for reading.\nnext_promise: Stay close to quiet jazz for reading until the listener asks to move elsewhere.",
+  });
+
+  assert.equal(window.source, "deterministic_fallback");
+  assert.match(window.candidateTasks[0]?.query ?? "", /quiet jazz|jazz|reading/i);
+  assert.doesNotMatch(window.candidateTasks[0]?.query ?? "", /Anyma/i);
+  assert.match(window.mainDirection, /quiet jazz|reading/i);
   assert.doesNotMatch(window.hostIntent.text, /Anyma/i);
 });
 
@@ -1225,6 +1662,7 @@ test("fallback planning treats the next move after execution repair as recovery"
   assert.match(window.hostIntent.text, /刚才|接稳|R&B|换|稳|继续|Daniel Caesar|H\.E\.R\.|Brent Faiyaz/i);
   assert.doesNotMatch(window.hostIntent.text, /recover|miss|candidate|model|trace|prompt|contract/i);
   assert.doesNotMatch(window.hostIntent.text, listenerUnsafeProgramTerms);
+  assert.doesNotMatch(window.hostIntent.text, mojibakeHostMarkers);
   assert.ok(window.candidateTasks.every((task) => !/^SZA$|^Frank Ocean$/i.test(task.query)));
 });
 
@@ -1276,6 +1714,7 @@ function contextSnapshot(): RadioAgentContextSnapshot {
       },
     ],
     currentTrack: { id: "s1", name: "Good Days", artist: "SZA" },
+    recentTracks: [],
     readyQueue: [{ id: "s2", name: "Pink + White", artist: "Frank Ocean" }],
   };
 }

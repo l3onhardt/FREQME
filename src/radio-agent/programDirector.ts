@@ -53,6 +53,7 @@ export class RadioAgentProgramDirector {
 
   async plan(context: RadioAgentContextSnapshot): Promise<RadioAgentProgramWindow> {
     const createdAt = this.now();
+    if (shouldExecuteExplicitDirectionImmediately(context)) return buildFallbackWindow(context, createdAt);
 
     if (this.model) {
       try {
@@ -73,6 +74,10 @@ export class RadioAgentProgramDirector {
 
     return buildFallbackWindow(context, createdAt);
   }
+}
+
+function shouldExecuteExplicitDirectionImmediately(context: RadioAgentContextSnapshot): boolean {
+  return context.eventType === "user_text" && Boolean(latestExplicitUserDirection(context));
 }
 
 function buildPrompt(context: RadioAgentContextSnapshot, createdAt: string): string {
@@ -103,10 +108,12 @@ function buildWindowFromParsed(
   createdAt: string,
   source: ProgramWindowSource,
 ): RadioAgentProgramWindow {
+  const explicitDirectionTasks = explicitDirectionCandidateTasks(latestExplicitUserDirection(context), fallbackNegativeConstraints(context));
   const parsedCandidateTasks = arrayValue(valueFor(parsed, "candidateTasks"))
     .map(toCandidateTask)
     .filter((task): task is RadioAgentCandidateTask => task !== null);
-  const safeModelTasks = parsedCandidateTasks
+  const candidatePool = dedupeCandidateTasks([...explicitDirectionTasks, ...parsedCandidateTasks]);
+  const safeModelTasks = candidatePool
     .filter((task) => !queryWasRecentlyFailed(task.query, repairFailedQueries(context.repair)))
     .filter((task) => !taskMatchesAvoids(task, fallbackNegativeConstraints(context)))
     .filter((task) => taskFitsContract(context, task))
@@ -133,6 +140,9 @@ function buildWindowFromParsed(
     returnRequirement: sanitizeWindowTextForContract(context, returnRequirement, "return", candidateTasks),
     candidateTasks,
     hostIntent: sanitizeHostIntentForContract(context, hostIntent, candidateTasks),
+    currentTrack: context.currentTrack,
+    recentTracks: recentPlaybackTracks(context),
+    readyQueue: context.readyQueue,
     traceBasis: traceBasisFromContext(context),
     source,
     createdAt,
@@ -153,48 +163,309 @@ function buildFallbackWindow(context: RadioAgentContextSnapshot, createdAt: stri
     returnRequirement: "Return to the main radio mood after one adjacent bridge.",
     candidateTasks,
     hostIntent: fallbackHostIntent(context),
+    currentTrack: context.currentTrack,
+    recentTracks: recentPlaybackTracks(context),
+    readyQueue: context.readyQueue,
     traceBasis: traceBasisFromContext(context),
     source: "deterministic_fallback",
     createdAt,
   };
 }
 
+function recentPlaybackTracks(context: RadioAgentContextSnapshot): RadioAgentProgramWindow["recentTracks"] {
+  const eventTracks = context.recentEvents
+    .filter((event) => event.type === "playback_started")
+    .map((event) => extractEventTrack(event.payload.track))
+    .filter((track): track is NonNullable<RadioAgentProgramWindow["currentTrack"]> => Boolean(track));
+  const tracks = [
+    context.currentTrack,
+    ...context.recentTracks,
+    ...eventTracks,
+    ...context.readyQueue,
+  ].filter((track): track is NonNullable<RadioAgentProgramWindow["currentTrack"]> => Boolean(track));
+  const seen = new Set<string>();
+  const unique: NonNullable<RadioAgentProgramWindow["recentTracks"]> = [];
+  for (const track of tracks) {
+    const key = trackIdentityKey(track);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    unique.push(track);
+  }
+  return unique.slice(0, 8);
+}
+
+function trackIdentityKey(track: NonNullable<RadioAgentProgramWindow["currentTrack"]>): string {
+  const name = (track.name || "").toLowerCase().replace(/\s+/gu, " ").trim();
+  const artist = (track.artist || "").toLowerCase().replace(/\s+/gu, " ").trim();
+  if (name || artist) return `${artist}:${name}`;
+  return track.id || "";
+}
+
+function extractEventTrack(value: unknown): NonNullable<RadioAgentProgramWindow["currentTrack"]> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const source = value as Record<string, unknown>;
+  const id = typeof source.id === "string" ? source.id : "";
+  const name = typeof source.name === "string" ? source.name : "";
+  const artist = typeof source.artist === "string" ? source.artist : "";
+  if (!id && !name) return null;
+  return { id, name, artist };
+}
+
 function fallbackCandidateTasks(context: RadioAgentContextSnapshot): RadioAgentCandidateTask[] {
   const contract = contractAnchor(context.contract);
   const failedQueries = repairFailedQueries(context.repair);
   const avoids = fallbackNegativeConstraints(context);
+  const explicitDirection = latestExplicitUserDirection(context);
+  const explicitDirectionTasks = explicitDirectionCandidateTasks(explicitDirection, avoids);
   const explicitContractQueries = explicitContractFallbackQueries(context);
-  const anchors = [
-    ...explicitContractQueries,
-    ...reflectionCompletedArtists(context.reflection),
-    ...reflectionPositiveAnchors(context.reflection),
-    ...context.memoryHypotheses.map(memoryAnchor),
-    ...context.memoryFacts.map(memoryAnchor),
-    ...profileAnchors(context.profile),
-    context.currentTrack?.artist,
-    ...context.readyQueue.map((track) => track.artist),
-    ...contractDefaultQueries(contract),
-    ...(explicitContractQueries.length ? [] : [contract]),
-    DEFAULT_FALLBACK_QUERY,
-  ]
+  const continuityAnchors = explicitDirection
+    ? []
+    : [
+        ...explicitContractQueries,
+        ...reflectionCompletedArtists(context.reflection),
+        ...reflectionPositiveAnchors(context.reflection),
+        ...context.memoryHypotheses.map(memoryAnchor),
+        ...context.memoryFacts.map(memoryAnchor),
+        ...profileAnchors(context.profile),
+        context.currentTrack?.artist,
+        ...context.readyQueue.map((track) => track.artist),
+        ...contractDefaultQueries(contract),
+        ...(explicitContractQueries.length ? [] : [contract]),
+        DEFAULT_FALLBACK_QUERY,
+      ];
+  const anchors = continuityAnchors
     .filter((anchor): anchor is string => Boolean(anchor?.trim()))
     .map((anchor) => anchor.trim())
     .filter((anchor) => !queryMatchesAvoids(anchor, avoids));
 
   const uniqueAnchors = Array.from(new Set(anchors));
-  const tasks = uniqueAnchors.map((anchor) => ({
-    query: anchor,
-    reason: "This stays close to known taste while keeping the current radio mood coherent.",
-    style: styleFromContract(context.contract),
-    negativeConstraints: fallbackNegativeConstraints(context),
-  }));
+  const tasks = [
+    ...explicitDirectionTasks,
+    ...uniqueAnchors.map((anchor) => ({
+      query: anchor,
+      reason: "This stays close to known taste while keeping the current radio mood coherent.",
+      style: styleFromContract(context.contract),
+      negativeConstraints: fallbackNegativeConstraints(context),
+    })),
+  ];
 
-  return tasks
+  return dedupeCandidateTasks(tasks)
     .filter(isAllowedCandidateTask)
     .filter((task) => !queryWasRecentlyFailed(task.query, failedQueries))
     .filter((task) => !queryMatchesAvoids(task.query, avoids))
     .filter((task) => taskFitsContract(context, task))
     .slice(0, MAX_CANDIDATE_TASKS);
+}
+
+function latestExplicitUserDirection(context: RadioAgentContextSnapshot): string {
+  let latest: { direction: string; createdAtMs: number; id: number; index: number } | null = null;
+  for (const [index, event] of context.recentEvents.entries()) {
+    if (event.type !== "user_text") continue;
+    const direction = explicitDirectionFromUserText(stringValue(event.payload.text));
+    if (!direction) continue;
+    const createdAtMs = Date.parse(event.createdAt);
+    const candidate = {
+      direction,
+      createdAtMs: Number.isFinite(createdAtMs) ? createdAtMs : Number.NEGATIVE_INFINITY,
+      id: typeof event.id === "number" && Number.isFinite(event.id) ? event.id : Number.NEGATIVE_INFINITY,
+      index,
+    };
+    if (!latest || isNewerExplicitDirection(candidate, latest)) latest = candidate;
+  }
+  return latest?.direction || "";
+}
+
+function isNewerExplicitDirection(
+  candidate: { createdAtMs: number; id: number; index: number },
+  current: { createdAtMs: number; id: number; index: number },
+): boolean {
+  if (candidate.createdAtMs !== current.createdAtMs) return candidate.createdAtMs > current.createdAtMs;
+  if (candidate.id !== current.id) return candidate.id > current.id;
+  if (candidate.createdAtMs === Number.NEGATIVE_INFINITY && candidate.id === Number.NEGATIVE_INFINITY) {
+    return candidate.index < current.index;
+  }
+  return candidate.index > current.index;
+}
+
+function explicitDirectionFromUserText(text: string): string {
+  const compact = text.replace(/\s+/g, " ").trim();
+  if (!compact) return "";
+  if (isExplanationLikeUserText(compact)) return "";
+
+  const hasDirectionCue = hasExplicitDirectionCue(compact);
+  const hasMusicSignal = hasMusicDirectionSignal(compact);
+  if (!hasDirectionCue && !hasMusicSignal) return "";
+
+  let direction = replacementDirectionFromCorrection(compact) || compact;
+  if (isNegativeDirectionText(direction)) return "";
+
+  direction = direction
+    .replace(/^\s*(?:please|pls|can you|could you|would you)\s+/iu, "")
+    .replace(
+      /^\s*(?:play|put on|queue|find|search|give me|i want|i need|want|need|switch to|change to|more of|more)\s+(?:some\s+|more\s+|me\s+)?/iu,
+      "",
+    )
+    .replace(/^\s*(?:播放|放点|播点|来点|听点|想听|换成|换点|给我来点|给我放点)\s*/u, "")
+    .replace(/\b(?:please|pls|now|next|tonight|today)\b[.!?。！？，,]*$/iu, "")
+    .replace(/[.!?。！？，,]+$/u, "")
+    .trim();
+
+  if (!direction || direction.length < 2) return "";
+  if (RAW_COMMAND_QUERY.test(direction) || UTILITY_AUDIO_QUERY.test(direction)) return "";
+  if (isExplanationLikeUserText(direction) || isNegativeDirectionText(direction)) return "";
+  if (/^(?:continue|keep going|whatever|anything|surprise me|same vibe)$/iu.test(direction)) return "";
+  return direction.slice(0, 120).trim();
+}
+
+function replacementDirectionFromCorrection(text: string): string {
+  const patterns = [
+    /\b(?:switch|change|move|turn)\s+(?:it\s+)?(?:to|into)\s+(.+)$/iu,
+    /\b(?:replace|swap)\s+(?:it\s+)?(?:with|to)\s+(.+)$/iu,
+    /(?:换成|换到|换回|换点|改成|改到|转成|转到|切到|切成|来点|放点)\s*(.+)$/u,
+  ];
+  for (const pattern of patterns) {
+    const candidate = text.match(pattern)?.[1]?.trim() || "";
+    if (!candidate) continue;
+    const cleaned = candidate
+      .replace(/[。！？!?，,]+$/u, "")
+      .replace(/^(?:some|more|一点|一些|点)\s+/iu, "")
+      .trim();
+    if (cleaned && hasMusicDirectionSignal(cleaned)) return cleaned;
+  }
+  return "";
+}
+
+function explicitDirectionCandidateTasks(direction: string, avoids: string[]): RadioAgentCandidateTask[] {
+  if (!direction) return [];
+  const style = styleFromDirection(direction);
+  return directionFallbackQueries(direction).map((query) => ({
+    query,
+    reason: explicitDirectionReason(direction),
+    style,
+    negativeConstraints: avoids,
+  }));
+}
+
+function explicitDirectionReason(direction: string): string {
+  if (isQuietJazzText(direction)) return "\u6309\u4f60\u8bf4\u7684\u5b89\u9759\u7235\u58eb\u9605\u8bfb\u6c1b\u56f4\uff0c\u5148\u627e\u4e00\u9996\u80fd\u7a33\u5b9a\u64ad\u653e\u7684\u3002";
+  if (isRnbText(direction)) return "\u6309\u4f60\u8bf4\u7684 R&B \u65b9\u5411\uff0c\u5148\u627e\u4e00\u9996\u4eba\u58f0\u548c\u5f8b\u52a8\u90fd\u7a33\u7684\u3002";
+  return `\u6309\u4f60\u8bf4\u7684 ${direction} \u65b9\u5411\uff0c\u5148\u627e\u4e00\u9996\u80fd\u7a33\u5b9a\u64ad\u653e\u7684\u3002`;
+}
+
+function directionFallbackQueries(direction: string): string[] {
+  const normalized = direction.toLowerCase();
+  if (/\bjazz\b|爵士/u.test(normalized)) {
+    if (/\b(quiet|calm|soft|mellow|reading|read|late|night|study|studying)\b|安静|阅读/u.test(normalized)) {
+      return [
+        direction,
+        "quiet jazz piano for reading",
+        "soft instrumental jazz for reading",
+        "Miles Davis Blue in Green",
+        "Bill Evans Peace Piece",
+        "Chet Baker Almost Blue",
+      ];
+    }
+    return [
+      direction,
+      "Miles Davis So What",
+      "John Coltrane Naima",
+      "Bill Evans Waltz for Debby",
+      "Chet Baker My Funny Valentine",
+    ];
+  }
+  if (isRnbText(direction)) {
+    return uniqueStrings([direction, ...contractDefaultQueries("R&B")]);
+  }
+  if (/\bneo[-\s]?soul\b|\bsoul\b|灵魂/u.test(normalized)) {
+    return [
+      "Erykah Badu On & On",
+      "D'Angelo Untitled",
+      "Jill Scott A Long Walk",
+      "Maxwell Ascension",
+      direction,
+    ];
+  }
+  if (/\bhip[-\s]?hop\b|\brap\b|说唱/u.test(normalized)) {
+    return [
+      "A Tribe Called Quest Electric Relaxation",
+      "Nujabes Feather",
+      "J Dilla Time The Donut of the Heart",
+      direction,
+    ];
+  }
+  if (/\bcity\s*pop\b|城市流行/u.test(normalized)) {
+    return [
+      "Mariya Takeuchi Plastic Love",
+      "Anri Remember Summer Days",
+      "Taeko Ohnuki 4:00 AM",
+      direction,
+    ];
+  }
+  return [direction];
+}
+
+function styleFromDirection(direction: string): string {
+  if (/\bjazz\b|爵士/iu.test(direction)) return /\bquiet|calm|soft|mellow|reading|read\b|安静|阅读/iu.test(direction) ? "quiet jazz" : "jazz";
+  if (isRnbText(direction)) return "R&B";
+  if (/\bneo[-\s]?soul\b|\bsoul\b|灵魂/iu.test(direction)) return "soul";
+  if (/\bhip[-\s]?hop\b|\brap\b|说唱/iu.test(direction)) return "hip-hop";
+  if (/\bcity\s*pop\b|城市流行/iu.test(direction)) return "city pop";
+  return direction;
+}
+
+function isQuietJazzText(text: string): boolean {
+  return /\bjazz\b|爵士/iu.test(text) && /\bquiet|calm|soft|mellow|reading|read\b|安静|阅读/iu.test(text);
+}
+
+function taskFitsExplicitDirection(direction: string, task: RadioAgentCandidateTask): boolean {
+  const taskText = normalizeQueryForRepair([task.query, task.reason, task.style].join(" "));
+  const keywords = explicitDirectionKeywords(direction);
+  if (!keywords.length) return true;
+  return keywords.some((keyword) => taskText.includes(keyword));
+}
+
+function explicitDirectionKeywords(direction: string): string[] {
+  const normalized = normalizeQueryForRepair(direction);
+  const keywords: string[] = [];
+  if (/\bjazz\b|爵士/iu.test(direction)) keywords.push("jazz");
+  if (isRnbText(direction)) keywords.push("r&b", "rnb", "soul", "vocal");
+  if (/\bneo[-\s]?soul\b|\bsoul\b|灵魂/iu.test(direction)) keywords.push("soul");
+  if (/\bhip[-\s]?hop\b|\brap\b|说唱/iu.test(direction)) keywords.push("hip hop", "rap");
+  keywords.push(
+    ...normalized
+      .split(/\s+/u)
+      .filter((token) => token.length >= 3)
+      .filter((token) => !/^(?:play|put|queue|give|want|need|some|more|music|song|songs|track|tracks|for|with|the|and|please|now|next|today|tonight)$/u.test(token)),
+  );
+  return uniqueStrings(keywords.map(normalizeQueryForRepair)).slice(0, 8);
+}
+
+function hasExplicitDirectionCue(text: string): boolean {
+  return /^\s*(?:please\s+|pls\s+)?(?:play|put on|queue|give me|i want|i need|want|need|switch to|change to|more of|more)\b|^\s*(?:播放|放点|播点|来点|听点|想听|换成|换点|给我来点|给我放点)/iu.test(text);
+}
+
+function hasMusicDirectionSignal(text: string): boolean {
+  return /\br\s*&?\s*b\b|\brnb\b|\bjazz\b|\bhip[-\s]?hop\b|\bsoul\b|\bpop\b|\brock\b|\bambient\b|\bclassical\b|\belectronic\b|\bcity\s*pop\b|爵士|古典|电子|氛围|民谣|摇滚|流行|说唱|灵魂|人声|律动/iu.test(text);
+}
+
+function isExplanationLikeUserText(text: string): boolean {
+  return /\bwhy\b|\breason\b|\bexplain\b|为什么|为啥|理由|原因/iu.test(text);
+}
+
+function isNegativeDirectionText(text: string): boolean {
+  return /^\s*(?:less|avoid|skip|no|don't|dont|do not|dislike)\b|不要|别放|别播|不想听|少来点/u.test(text);
+}
+
+function dedupeCandidateTasks(tasks: RadioAgentCandidateTask[]): RadioAgentCandidateTask[] {
+  const seen = new Set<string>();
+  const result: RadioAgentCandidateTask[] = [];
+  for (const task of tasks) {
+    const key = normalizeQueryForRepair(task.query);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    result.push(task);
+  }
+  return result;
 }
 
 function toCandidateTask(value: unknown): RadioAgentCandidateTask | null {
@@ -218,6 +489,8 @@ function isAllowedCandidateTask(task: RadioAgentCandidateTask): boolean {
 
 function taskFitsContract(context: RadioAgentContextSnapshot, task: RadioAgentCandidateTask): boolean {
   const goal = contractAnchor(context.contract);
+  const explicitDirection = latestExplicitUserDirection(context);
+  if (explicitDirection) return taskFitsExplicitDirection(explicitDirection, task);
   if (taskMatchesContractMoves(task, [...contractBlockedMoves(context.contract), ...contractBridgeOnlyMoves(context.contract)])) return false;
   if (!isRnbContractGoal(goal)) return true;
 
@@ -266,6 +539,11 @@ function sanitizeHostIntentForContract(
   hostIntent: RadioAgentHostIntent,
   tasks: RadioAgentCandidateTask[],
 ): RadioAgentHostIntent {
+  const explicitDirection = latestExplicitUserDirection(context);
+  if (explicitDirection && context.eventType === "user_text") {
+    return explicitDirectionHostIntent(explicitDirection);
+  }
+
   const contract = contractAnchor(context.contract);
   if (hostIntent.event === "silent" && hostIntent.reason === "unsafe_model_host_text") {
     return safeReplacementHostIntent(context, tasks, "replaced unsafe model host text");
@@ -334,7 +612,30 @@ function silentHostIntent(reason: string): RadioAgentHostIntent {
   return { shouldSpeak: false, event: "silent", reason, text: "" };
 }
 
+function explicitDirectionHostIntent(direction: string): RadioAgentHostIntent {
+  const text = sanitizeHostText(explicitDirectionHostText(direction));
+  return text
+    ? {
+        shouldSpeak: true,
+        event: "request_ack",
+        reason: "listener changed the active music direction",
+        text,
+      }
+    : silentHostIntent("explicit_direction_host_text_filtered");
+}
+
+function explicitDirectionHostText(direction: string): string {
+  if (isQuietJazzText(direction)) return "\u597d\uff0c\u63a5\u4e0b\u6765\u6536\u8fdb\u5b89\u9759\u7235\u58eb\uff0c\u9002\u5408\u9605\u8bfb\uff0c\u6211\u5148\u7ed9\u4f60\u627e\u4e00\u9996\u7a33\u7684\u3002";
+  if (isRnbText(direction)) return "\u597d\uff0c\u63a5\u4e0b\u6765\u6536\u8fdb R&B\uff0c\u6211\u5148\u627e\u4e00\u9996\u4eba\u58f0\u548c\u5f8b\u52a8\u90fd\u7a33\u7684\u3002";
+  return `\u597d\uff0c\u63a5\u4e0b\u6765\u6309 ${direction} \u8d70\uff0c\u6211\u5148\u627e\u4e00\u9996\u7a33\u7684\u3002`;
+}
+
 function fallbackHostIntent(context: RadioAgentContextSnapshot): RadioAgentHostIntent {
+  const explicitDirection = latestExplicitUserDirection(context);
+  if (explicitDirection && context.eventType === "user_text") {
+    return explicitDirectionHostIntent(explicitDirection);
+  }
+
   if (!shouldFallbackHostSpeak(context)) return silentHostIntent("fallback_low_interruption");
 
   if (hasExecutionRepair(context.repair)) {
@@ -394,6 +695,9 @@ function fallbackRecoveryAnchor(context: RadioAgentContextSnapshot): string {
 }
 
 function fallbackHostAnchor(context: RadioAgentContextSnapshot): string {
+  const explicitDirection = latestExplicitUserDirection(context);
+  if (explicitDirection) return explicitDirection;
+
   const contract = contractAnchor(context.contract);
   const explicitContract = explicitContractFallbackQueries(context)[0] || "";
   if (explicitContract && isRnbContractGoal(contract)) return listenerFacingContractAnchor(contract);
@@ -561,7 +865,10 @@ function toSnakeCase(value: string): string {
 }
 
 function fallbackStationBrief(context: RadioAgentContextSnapshot): string {
-  const contractGoal = firstContractLine(context.contract, "station_goal");
+  const explicitDirection = latestExplicitUserDirection(context);
+  if (explicitDirection) return explicitDirection;
+
+  const contractGoal = normalizedContractGoal(firstContractLine(context.contract, "station_goal"));
   const profileGoal = listenerFacingProfileGoal(context.profile);
   if (contractGoal && profileGoal && isGenericContractGoal(contractGoal)) {
     return `${contractGoal}; keep it close to ${profileGoal}.`;
@@ -570,9 +877,12 @@ function fallbackStationBrief(context: RadioAgentContextSnapshot): string {
 }
 
 function fallbackMainDirection(context: RadioAgentContextSnapshot): string {
+  const explicitDirection = latestExplicitUserDirection(context);
+  if (explicitDirection) return explicitDirection;
+
   const contract = contractAnchor(context.contract);
   const explicitContract = explicitContractFallbackQueries(context)[0] || "";
-  if (explicitContract) return `Stay with ${explicitContract} as the active station direction.`;
+  if (explicitContract) return explicitContract;
   const avoids = fallbackNegativeConstraints(context);
   const anchor = [
     ...reflectionCompletedArtists(context.reflection),
@@ -734,14 +1044,30 @@ function uniqueStrings(items: string[]): string[] {
 }
 
 function styleFromContract(contract: string): string {
-  const goal = firstContractLine(contract, "station_goal");
+  const goal = normalizedContractGoal(firstContractLine(contract, "station_goal"));
   return RAW_MEMORY_EVIDENCE_TERMS.test(goal) ? "" : goal;
 }
 
 function contractAnchor(contract: string): string {
-  const goal = firstContractLine(contract, "station_goal");
+  const goal = normalizedContractGoal(firstContractLine(contract, "station_goal"));
   if (!RAW_MEMORY_EVIDENCE_TERMS.test(goal)) return goal;
   return evidenceAnchorsFromText(goal)[0] ?? "";
+}
+
+function normalizedContractGoal(goal: string): string {
+  let text = goal.replace(/\s+/gu, " ").trim();
+  for (let index = 0; index < 4; index += 1) {
+    const previous = text;
+    text = text
+      .replace(/^Stay with\s+/iu, "")
+      .replace(/^Follow\s+/iu, "")
+      .replace(/\s+as the active listener direction\.?$/iu, "")
+      .replace(/\s+as the active station direction\.?$/iu, "")
+      .replace(/[.。]+$/u, "")
+      .trim();
+    if (text === previous) break;
+  }
+  return text;
 }
 
 function anchorFitsContract(contractGoal: string, anchor: string): boolean {

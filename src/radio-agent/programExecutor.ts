@@ -1,5 +1,5 @@
 import type { DecisionTrace } from "../radio/radioBrainTypes.js";
-import type { MusicTask, SearchVerification, SelectionReason, StationEnvironment, Track } from "../types.js";
+import type { MemoryPack, MusicTask, SearchVerification, SelectionReason, StationEnvironment, Track } from "../types.js";
 import { compactText, dedupe } from "../utils/text.js";
 import type {
   RadioAgentCandidateTask,
@@ -9,7 +9,7 @@ import type {
 } from "./types.js";
 
 export interface ProgramVerifier {
-  verify(task: MusicTask, uid?: string | null, context?: string): Promise<SearchVerification>;
+  verify(task: MusicTask, uid?: string | null, context?: string, contextPack?: MemoryPack): Promise<SearchVerification>;
 }
 
 const MAX_PROGRAM_CANDIDATES = 5;
@@ -43,7 +43,7 @@ export class RadioAgentProgramExecutor implements RadioAgentProgramExecutionDiag
       if (!candidate) continue;
 
       const musicTask = musicTaskForCandidate(window, candidate);
-      const verification = await this.verifier.verify(musicTask, window.uid, verifierContext(window)).catch(() => null);
+      const verification = await this.verifier.verify(musicTask, window.uid, verifierContext(window), verifierMemoryPack(window)).catch(() => null);
       const attemptedQueries = attemptedQueriesForVerification(verification, candidate.query);
       this.attemptedQueries = dedupe([...this.attemptedQueries, ...attemptedQueries]);
       const attemptedQuery = attemptedQueries[0] || compactText(candidate.query, 120);
@@ -101,6 +101,27 @@ export class RadioAgentProgramExecutor implements RadioAgentProgramExecutionDiag
 
     return null;
   }
+}
+
+function verifierMemoryPack(window: RadioAgentProgramWindow): MemoryPack {
+  return {
+    userProfileDigest: window.traceBasis.profile || "",
+    sessionWorkingMemory: {
+      stationBrief: window.stationBrief,
+      mainDirection: window.mainDirection,
+      returnRequirement: window.returnRequirement,
+    },
+    recentTurns: [],
+    retrievedMemories: [],
+    playbackContext: {
+      currentTrack: window.currentTrack || null,
+      recentTracks: window.recentTracks || [],
+      readyQueue: window.readyQueue || [],
+      scene: window.mainDirection,
+    },
+    userSettings: {},
+    hardConstraints: window.disallowed || [],
+  };
 }
 
 function attemptedQueriesForVerification(verification: SearchVerification | null, fallbackQuery: string): string[] {
