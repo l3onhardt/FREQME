@@ -1437,32 +1437,11 @@ async function handleRadioSocket(socket: WebSocketType): Promise<void> {
       recentTracks: recentPlaybackTrackInfos(),
       readyQueue: queue.readyItems().map((readyItem) => trackInfo(readyItem.track)),
     });
-    const acceptedPlayback = radioAgentAcceptedPlayback(trackEndResult.actions);
-    if (acceptedPlayback) {
-      queue.addReady(acceptedPlayback.track, acceptedPlayback.url, acceptedPlayback.reason, {
-        segueText: acceptedPlayback.hostText || "",
-      });
-      debugRadioAgent("track_end_accepted_playback", {
-        track: trackInfo(acceptedPlayback.track),
-        reason: acceptedPlayback.reason.text || "",
-        hostText: acceptedPlayback.hostText || "",
-        trace: acceptedPlayback.governanceTrace,
-      });
-      mirrorSocketRadioAgent({
-        type: "program_track_queued",
-        uid,
-        sessionId,
-        track: trackInfo(acceptedPlayback.track),
-        programWindowId: trackEndResult.programWindow?.id || "",
-        governanceTrace: acceptedPlayback.governanceTrace,
-        traceId: acceptedPlayback.reason.traceId || "",
-        selectionReason: acceptedPlayback.reason.text || trackEndResult.programWindow?.stationBrief || "",
-        hostText: acceptedPlayback.hostText || trackEndResult.hostText || "",
-        currentTrack: currentTrack ? trackInfo(currentTrack) : null,
-        recentTracks: recentPlaybackTrackInfos(),
-        readyQueue: queue.readyItems().map((readyItem) => trackInfo(readyItem.track)),
-      });
-    }
+    const actionSummary = await executeRadioAgentActions(trackEndResult.actions);
+    debugRadioAgent("track_end_action_summary", {
+      actionSummary,
+      readyQueue: queue.readyItems().map((readyItem) => trackInfo(readyItem.track)),
+    });
     const sanitizeReadyItemsForPromotion = (): void => {
       const before = RADIO_AGENT_DEBUG ? queue.readyItems().map((readyItem) => trackInfo(readyItem.track)) : [];
       removeReadyItemsOutsideStationContract(queue, currentStationContract(), boundaryGuard);

@@ -31,6 +31,32 @@ test("server does not duplicate direct prepared-track queueing after executing a
   assert.equal(legacyPreparedQueue, -1);
 });
 
+test("server executes correction actions through the action runner before any fallback", () => {
+  const source = fs.readFileSync("src/server.ts", "utf8");
+  const correctionCall = source.indexOf("radioAgentService.handleCorrection");
+  const actionExecution = source.indexOf("executeRadioAgentActions(agentTextResult.actions)", correctionCall);
+
+  assert.ok(correctionCall >= 0, "expected correction to enter radioAgentService.handleCorrection");
+  assert.ok(actionExecution > correctionCall, "correction result actions must be executed through action runner");
+
+  const preExecutionWindow = source.slice(correctionCall, actionExecution);
+  assert.doesNotMatch(preExecutionWindow, /queue\.addReady|fillQueue\(1,\s*false\)|radioBrain\.handleUserText/);
+});
+
+test("server routes queue-low continuation through service actions before recovery fallback", () => {
+  const source = fs.readFileSync("src/server.ts", "utf8");
+  const trackEndCall = source.indexOf("radioAgentService.handleTrackEnded");
+  const actionExecution = source.indexOf("executeRadioAgentActions(trackEndResult.actions)", trackEndCall);
+  const recoveryCall = source.indexOf("ensureTrackEndReadyItem", trackEndCall);
+
+  assert.ok(trackEndCall >= 0, "expected queue-low/track-end to enter radioAgentService.handleTrackEnded");
+  assert.ok(actionExecution > trackEndCall, "track-end queue-low actions must be executed through action runner");
+  assert.ok(recoveryCall === -1 || recoveryCall > actionExecution, "legacy recovery must run only after action execution");
+
+  const preExecutionWindow = source.slice(trackEndCall, actionExecution);
+  assert.doesNotMatch(preExecutionWindow, /queue\.addReady|fillQueue\(1,\s*false\)|kickBrainContinuation|addRecentPlayableFallback/);
+});
+
 test("server delegates the first playback attempt to RadioAgentService with durable avoids", () => {
   const source = fs.readFileSync("src/server.ts", "utf8");
   const handshake = source.indexOf('if (type === "handshake")');
@@ -668,25 +694,22 @@ test("server queues governed track-end play actions before recovery promotion", 
   const source = fs.readFileSync("src/server.ts", "utf8");
   const sendPreparedNextStart = source.indexOf("const runSendPreparedNext =");
   const serviceContinuation = source.indexOf("const trackEndResult = await radioAgentService.handleTrackEnded", sendPreparedNextStart);
-  const acceptedPlayback = source.indexOf("radioAgentAcceptedPlayback(trackEndResult.actions)", serviceContinuation);
-  const queueAccepted = source.indexOf("queue.addReady(acceptedPlayback.track", acceptedPlayback);
+  const actionExecution = source.indexOf("executeRadioAgentActions(trackEndResult.actions)", serviceContinuation);
   const recoveryCall = source.indexOf("await ensureTrackEndReadyItem", serviceContinuation);
   const promoteNext = source.indexOf("const item = queue.promoteNext(previousEvent)", recoveryCall);
 
   assert.ok(sendPreparedNextStart >= 0);
   assert.ok(serviceContinuation > sendPreparedNextStart);
-  assert.ok(acceptedPlayback > serviceContinuation);
-  assert.ok(queueAccepted > acceptedPlayback);
-  assert.ok(recoveryCall > queueAccepted);
+  assert.ok(actionExecution > serviceContinuation);
+  assert.ok(recoveryCall > actionExecution);
   assert.ok(promoteNext > recoveryCall);
-  assert.match(source.slice(acceptedPlayback, recoveryCall), /governanceTrace:\s*acceptedPlayback\.governanceTrace/);
-  assert.match(source.slice(acceptedPlayback, recoveryCall), /program_track_queued/);
+  assert.doesNotMatch(source.slice(serviceContinuation, recoveryCall), /queue\.addReady\(acceptedPlayback\.track/);
 });
 
 test("server mirrors radio agent governance traces into runtime status events", () => {
   const source = fs.readFileSync("src/server.ts", "utf8");
-  const acceptedHelper = source.indexOf("function radioAgentAcceptedPlayback");
-  const rejectedHelper = source.indexOf("function radioAgentRejectedPlayback");
+  const actionRunnerHelper = source.indexOf("const executeRadioAgentActions =");
+  const actionRunnerHelperEnd = source.indexOf("const withUserRequestAgentTimeout", actionRunnerHelper);
   const songRequestHandler = source.indexOf('if (type === "song_request")');
   const readyBranch = source.indexOf("if (ready)", songRequestHandler);
   const requestTrace = source.indexOf("radioAgentAcceptedPlayback(agentTextResult.actions)", readyBranch);
@@ -695,8 +718,8 @@ test("server mirrors radio agent governance traces into runtime status events", 
   const actionGuard = source.indexOf("radioAgentRejectedPlayback(trackEndResult.actions)", sendPreparedNextStart);
   const rejectedMirror = source.indexOf('type: "playback_recovery_needed"', actionGuard);
 
-  assert.ok(acceptedHelper >= 0);
-  assert.ok(rejectedHelper > acceptedHelper);
+  assert.ok(actionRunnerHelper >= 0);
+  assert.ok(actionRunnerHelperEnd > actionRunnerHelper);
   assert.ok(songRequestHandler >= 0);
   assert.ok(readyBranch > songRequestHandler);
   assert.ok(requestTrace > readyBranch);
@@ -704,8 +727,9 @@ test("server mirrors radio agent governance traces into runtime status events", 
   assert.ok(sendPreparedNextStart >= 0);
   assert.ok(actionGuard > sendPreparedNextStart);
   assert.ok(rejectedMirror > actionGuard);
-  assert.match(source.slice(acceptedHelper, rejectedHelper), /action\.type === "play_now"/);
-  assert.match(source.slice(acceptedHelper, rejectedHelper), /Boolean\(action\.governanceTrace\)/);
+  assert.match(source.slice(actionRunnerHelper, actionRunnerHelperEnd), /type:\s*"program_track_queued"/);
+  assert.match(source.slice(actionRunnerHelper, actionRunnerHelperEnd), /governanceTrace/);
+  assert.match(source.slice(actionRunnerHelper, actionRunnerHelperEnd), /type:\s*"playback_recovery_needed"/);
   assert.match(source.slice(requestTrace, requestMirror + 420), /governanceTrace:\s*acceptedPlayback\.governanceTrace/);
   assert.match(source.slice(requestTrace, requestMirror + 420), /programWindowId:\s*agentProgramWindow\.id/);
   assert.match(source.slice(actionGuard, rejectedMirror + 420), /governanceTrace:\s*rejectedPlayback\.governanceTrace/);
