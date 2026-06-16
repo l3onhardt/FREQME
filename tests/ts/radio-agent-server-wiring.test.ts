@@ -68,7 +68,8 @@ test("server passes the active station contract into degraded scheduler fallback
   assert.ok(schedulerConstruction >= 0);
   assert.ok(degradedFallback >= 0);
   assert.ok(schedulerPick > degradedFallback);
-  assert.match(source.slice(schedulerPick, schedulerPick + 450), /stationContract:\s*schedulerStationContract\(uid,\s*sessionId\)/);
+  assert.match(source.slice(schedulerPick, schedulerPick + 450), /stationContract:\s*currentStationContract\(\)/);
+  assert.match(source, /const currentStationContract\s*=\s*\(\):\s*StationContract\s*\|\s*null\s*=>\s*[\s\S]*activeAgentStationContract\s*\|\|\s*schedulerStationContract\(uid,\s*sessionId\)/);
   assert.match(source, /function schedulerStationContract\(uid:\s*string\s*\|\s*null,\s*sessionId:\s*number\s*\|\s*null\):\s*StationContract\s*\|\s*null/);
   assert.match(source, /radioAgentStore\.artifact\(uid,\s*"program_contract\.md"\)/);
 });
@@ -152,7 +153,7 @@ test("server delivers safe radio agent host speech into the live DJ message chan
 
   assert.match(source, /hostTextForRadioAgentDelivery/);
   assert.match(source, /const mirrorRadioAgentHostSpeech\s*=\s*\(/);
-  assert.match(source, /radioAgent\.handle\(event\)\.then\(\(result\)/);
+  assert.match(source, /mirrorSocketRadioAgentImmediate\(event\)\.then\(\(result\)/);
   assert.match(source, /hostTextForRadioAgentDelivery\(\{\s*eventType:\s*result\.event\.type,\s*decision:\s*result\.hostDecision,/s);
   assert.match(source, /synthesizeAndSendDjMessage\(text\)/);
 });
@@ -226,11 +227,31 @@ test("server serializes next-track promotion requests", () => {
   assert.match(source.slice(skipHandler, skipHandler + 1200), /await sendPreparedNext\("skipped"\)/);
 });
 
+test("server blocks stale queued next-track promotions once a listener request is active", () => {
+  const source = fs.readFileSync("src/server.ts", "utf8");
+  const sendPreparedNextStart = source.indexOf("const sendPreparedNext = async");
+  const runSendPreparedNextStart = source.indexOf("const runSendPreparedNext = async", sendPreparedNextStart);
+  const socketHandler = source.indexOf('socket.on("message"', runSendPreparedNextStart);
+  const sendPreparedNextSource = source.slice(sendPreparedNextStart, socketHandler);
+  const promotionStart = sendPreparedNextSource.indexOf("const item = queue.promoteNext(previousEvent)");
+  const requestPromotion = source.indexOf("sendPreparedNext(\"played\", { allowContinuation: false, skipPrewarmWait: true", socketHandler);
+
+  assert.ok(sendPreparedNextStart >= 0);
+  assert.ok(runSendPreparedNextStart > sendPreparedNextStart);
+  assert.ok(socketHandler > runSendPreparedNextStart);
+  assert.ok(promotionStart > 0);
+  assert.ok(requestPromotion > socketHandler);
+  assert.match(sendPreparedNextSource, /requestToken\?:\s*number/);
+  assert.match(sendPreparedNextSource.slice(0, promotionStart), /options\.requestToken\s*==\s*null\s*&&\s*activeRequestToken\s*!=\s*null/);
+  assert.match(sendPreparedNextSource.slice(0, promotionStart), /options\.requestToken\s*!=\s*null\s*&&\s*!isCurrentRequestToken\(activeRequestToken,\s*options\.requestToken\)/);
+  assert.match(source.slice(requestPromotion, requestPromotion + 180), /requestToken/);
+});
+
 test("server executes explicit user direction with radio agent program window before legacy request planning", () => {
   const source = fs.readFileSync("src/server.ts", "utf8");
   const songRequestHandler = source.indexOf('if (type === "song_request")');
   const agentResultDeclaration = source.indexOf("const agentTextResult =", songRequestHandler);
-  const serviceDirection = source.indexOf("await radioAgentService.handleUserText", songRequestHandler);
+  const serviceDirection = source.indexOf("radioAgentService.handleUserText", songRequestHandler);
   const agentAcknowledgement = source.indexOf("const agentAckText = agentTextResult.hostText", serviceDirection);
   const agentProgramQueue = source.indexOf("agentTextResult.programQueued", agentAcknowledgement);
   const preparedFallbackQueue = source.indexOf("queue.addReady(agentTextResult.preparedTrack.track", agentProgramQueue);
@@ -256,30 +277,265 @@ test("server executes explicit user direction with radio agent program window be
   assert.match(source.slice(agentProgramQueue, legacyBrainRequest), /agentTextResult\.preparedTrack/);
   assert.ok(preparedFallbackQueue > agentProgramQueue);
   assert.match(source.slice(agentProgramQueue, legacyBrainRequest), /synthesizeAndSendDjMessage\(agentAckText\)/);
-  assert.match(source.slice(agentProgramQueue, legacyBrainRequest), /sendPreparedNext\("played",\s*\{\s*allowContinuation:\s*false,\s*skipPrewarmWait:\s*true\s*\}\)/);
+  assert.match(source.slice(agentProgramQueue, legacyBrainRequest), /sendPreparedNext\("played",\s*\{\s*allowContinuation:\s*false,\s*skipPrewarmWait:\s*true,\s*requestToken\s*\}\)/);
   assert.match(source.slice(agentProgramQueue, legacyBrainRequest), /return;/);
   assert.doesNotMatch(source.slice(songRequestHandler, legacyBrainRequest), /await\s+mirrorRadioAgentImmediate\(\{/);
 });
 
-test("server clears stale ready queue after explicit listener direction before planning replacement", () => {
+test("server acknowledges song requests before waiting on radio agent planning", () => {
+  const source = fs.readFileSync("src/server.ts", "utf8");
+  const songRequestHandler = source.indexOf('if (type === "song_request")');
+  const requestText = source.indexOf("const requestText = compactText", songRequestHandler);
+  const immediatePlanning = source.indexOf('status: "planning"', requestText);
+  const serviceCorrection = source.indexOf("radioAgentService.handleCorrection", requestText);
+  const serviceDirection = source.indexOf("radioAgentService.handleUserText", requestText);
+  const firstAgentService = Math.min(serviceCorrection, serviceDirection);
+
+  assert.ok(songRequestHandler >= 0);
+  assert.ok(requestText > songRequestHandler);
+  assert.ok(immediatePlanning > requestText);
+  assert.ok(firstAgentService > immediatePlanning);
+  assert.match(source.slice(immediatePlanning - 80, immediatePlanning + 220), /send\(\{\s*type:\s*"request_status",\s*status:\s*"planning"/);
+  assert.match(source.slice(immediatePlanning - 80, immediatePlanning + 220), /我先按这个方向找一首稳的/);
+});
+
+test("server cancels delayed generated intros as soon as a song request starts", () => {
+  const source = fs.readFileSync("src/server.ts", "utf8");
+  const songRequestHandler = source.indexOf('if (type === "song_request")');
+  const requestText = source.indexOf("const requestText = compactText", songRequestHandler);
+  const immediatePlanning = source.indexOf('status: "planning"', requestText);
+  const cancelIntro = source.indexOf("introSendCancelled = true", requestText);
+  const agentTimeout = source.indexOf("withUserRequestAgentTimeout(", immediatePlanning);
+  const logRequest = source.indexOf('store.logPlaybackEvent("song_request"', immediatePlanning);
+
+  assert.ok(songRequestHandler >= 0);
+  assert.ok(requestText > songRequestHandler);
+  assert.ok(immediatePlanning > requestText);
+  assert.ok(cancelIntro > requestText);
+  assert.ok(cancelIntro < immediatePlanning);
+  assert.ok(cancelIntro < agentTimeout);
+  assert.ok(logRequest > agentTimeout);
+});
+
+test("server skips the long legacy brain wait after radio agent request queue timeout", () => {
+  const source = fs.readFileSync("src/server.ts", "utf8");
+  const songRequestHandler = source.indexOf('if (type === "song_request")');
+  const fallbackReasonCheck = source.indexOf("agentTextResult.fallbackReason", songRequestHandler);
+  const stationFallback = source.indexOf("runStationDirectorRequestFallback", fallbackReasonCheck);
+  const legacyBrainRequest = source.indexOf("radioBrain.handleUserText", songRequestHandler);
+
+  assert.ok(songRequestHandler >= 0);
+  assert.ok(fallbackReasonCheck > songRequestHandler);
+  assert.ok(stationFallback > fallbackReasonCheck);
+  assert.ok(legacyBrainRequest > stationFallback);
+  assert.match(source.slice(fallbackReasonCheck, legacyBrainRequest), /agentTextResult\.fallbackReason/);
+  assert.match(source.slice(fallbackReasonCheck, legacyBrainRequest), /radio_agent_user_text_timeout/);
+  assert.match(source.slice(fallbackReasonCheck, legacyBrainRequest), /radio_agent_user_text_queue_timeout/);
+  assert.match(source.slice(fallbackReasonCheck, legacyBrainRequest), /return;/);
+});
+
+test("server clears active request token after the whole radio agent request times out", () => {
+  const source = fs.readFileSync("src/server.ts", "utf8");
+  const songRequestHandler = source.indexOf('if (type === "song_request")');
+  const timeoutBranch = source.indexOf('if (!("hostText" in agentTextResult))', songRequestHandler);
+  const stationFallback = source.indexOf("await runStationDirectorRequestFallback", timeoutBranch);
+  const clearToken = source.indexOf("activeRequestToken = null", stationFallback);
+  const returnAfterFallback = source.indexOf("return;", stationFallback);
+
+  assert.ok(songRequestHandler >= 0);
+  assert.ok(timeoutBranch > songRequestHandler);
+  assert.ok(stationFallback > timeoutBranch);
+  assert.ok(clearToken > stationFallback);
+  assert.ok(clearToken < returnAfterFallback);
+  assert.match(source.slice(timeoutBranch, returnAfterFallback), /isCurrentRequestToken\(activeRequestToken,\s*requestToken\)/);
+});
+
+test("server bounds the whole radio agent request attempt and guards late queue mutations", () => {
+  const source = fs.readFileSync("src/server.ts", "utf8");
+  const songRequestHandler = source.indexOf('if (type === "song_request")');
+  const helper = source.indexOf("const withUserRequestAgentTimeout =");
+  const expiredTokens = source.indexOf("expiredRequestTokens");
+  const queueAdapter = source.indexOf("const queueRadioAgentWindow =");
+  const guardedQueue = source.indexOf("guardedQueue", queueAdapter);
+  const serviceDirection = source.indexOf("withUserRequestAgentTimeout(", songRequestHandler);
+
+  assert.ok(expiredTokens >= 0);
+  assert.ok(helper >= 0);
+  assert.ok(queueAdapter >= 0);
+  assert.ok(guardedQueue > queueAdapter);
+  assert.ok(serviceDirection > songRequestHandler);
+  assert.match(source.slice(helper, queueAdapter), /radio_agent_user_text_timeout/);
+  assert.match(source.slice(helper, queueAdapter), /markRequestTokenExpired/);
+  assert.match(source.slice(queueAdapter, queueAdapter + 1200), /isRequestTokenExpired/);
+  assert.match(source.slice(queueAdapter, queueAdapter + 1200), /throw new Error\("radio_agent_request_token_expired"\)/);
+  assert.match(source.slice(queueAdapter, queueAdapter + 1200), /isCurrentRequestToken\(activeRequestToken,\s*requestTokenAtStart\)/);
+});
+
+test("server gives request fallback planning a bounded listener-visible outcome", () => {
+  const source = fs.readFileSync("src/server.ts", "utf8");
+  const fallbackTimeoutHelper = source.indexOf("const withUserRequestFallbackTimeout =");
+  const fallbackFunction = source.indexOf("const runStationDirectorRequestFallback =");
+  const stationFallbackCall = source.indexOf("withUserRequestFallbackTimeout(", fallbackFunction);
+  const stationDirectorCall = source.indexOf("stationDirector.handleUserRequest", stationFallbackCall);
+  const timeoutBranch = source.indexOf('station_director_request_timeout"', stationDirectorCall);
+  const timeoutStatus = source.indexOf('status: "not_found"', timeoutBranch);
+
+  assert.ok(fallbackTimeoutHelper >= 0);
+  assert.ok(fallbackFunction >= 0);
+  assert.ok(stationFallbackCall > fallbackFunction);
+  assert.ok(stationDirectorCall > stationFallbackCall);
+  assert.ok(timeoutBranch > stationDirectorCall);
+  assert.ok(timeoutStatus > timeoutBranch);
+  assert.match(source.slice(fallbackTimeoutHelper, fallbackFunction), /station_director_request_timeout/);
+  assert.match(source.slice(fallbackFunction, timeoutStatus + 220), /store\.logPlaybackEvent\("radio_agent_request_fallback_timeout"/);
+  assert.match(source.slice(timeoutBranch, timeoutStatus + 220), /send\(\{\s*type:\s*"request_status",\s*status:\s*"not_found"/);
+});
+
+test("server asks the radio agent service to clear stale ready queue for non-explanation listener directions", () => {
   const source = fs.readFileSync("src/server.ts", "utf8");
   const songRequestHandler = source.indexOf('if (type === "song_request")');
   const intentDecision = source.indexOf("requestIntent = intentRouter.classify(requestText)", songRequestHandler);
-  const serviceDirection = source.indexOf("await radioAgentService.handleUserText", songRequestHandler);
+  const requestToken = source.indexOf("const requestToken = ++nextRequestToken", songRequestHandler);
+  const activeToken = source.indexOf("activeRequestToken = requestToken", requestToken);
+  const readyBeforeRequest = source.indexOf("const readyBeforeRequest = snapshotReadyItems(queue)", activeToken);
+  const serviceDirection = source.indexOf("radioAgentService.handleUserText", songRequestHandler);
   const clearDecision = source.indexOf("shouldClearQueue:", serviceDirection);
-  const readyBeforeRequest = source.indexOf("const readyBeforeRequest = snapshotReadyItems(queue)", clearDecision);
+  const postAgentTokenCheck = source.indexOf("isCurrentRequestToken(activeRequestToken, requestToken)", serviceDirection);
   const agentProgramQueue = source.indexOf("agentTextResult.programQueued", readyBeforeRequest);
   const legacyBrainRequest = source.indexOf("radioBrain.handleUserText", readyBeforeRequest);
 
   assert.ok(songRequestHandler >= 0);
   assert.ok(intentDecision > songRequestHandler);
+  assert.ok(requestToken > songRequestHandler);
+  assert.ok(activeToken > requestToken);
+  assert.ok(readyBeforeRequest > activeToken);
+  assert.ok(serviceDirection > readyBeforeRequest);
   assert.ok(serviceDirection > songRequestHandler);
   assert.ok(clearDecision > serviceDirection);
-  assert.ok(readyBeforeRequest > clearDecision);
+  assert.ok(postAgentTokenCheck > serviceDirection);
   assert.ok(agentProgramQueue > readyBeforeRequest);
   assert.ok(legacyBrainRequest > agentProgramQueue);
-  assert.match(source.slice(clearDecision, readyBeforeRequest), /requestIntent\?\.shouldClearQueue\s*&&\s*!requestIntent\.shouldExplain/);
-  assert.doesNotMatch(source.slice(serviceDirection, readyBeforeRequest), /agentTextResult\.shouldClearQueue\)\s*queue\.clearReady/);
+  assert.match(source.slice(serviceDirection, clearDecision + 180), /shouldClearQueue:\s*!\s*requestIntent\?\.shouldExplain/);
+  assert.doesNotMatch(source.slice(serviceDirection, postAgentTokenCheck), /agentTextResult\.shouldClearQueue\)\s*queue\.clearReady/);
+});
+
+test("server lets radio agent program requests clear stale ready queue for any non-explanation direction", () => {
+  const source = fs.readFileSync("src/server.ts", "utf8");
+  const songRequestHandler = source.indexOf('if (type === "song_request")');
+  const serviceDirection = source.indexOf("radioAgentService.handleUserText", songRequestHandler);
+  const clearArgument = source.indexOf("shouldClearQueue:", serviceDirection);
+  const serviceDirectionEnd = source.indexOf("}),", clearArgument);
+
+  assert.ok(songRequestHandler >= 0);
+  assert.ok(serviceDirection > songRequestHandler);
+  assert.ok(clearArgument > serviceDirection);
+  assert.match(source.slice(clearArgument, serviceDirectionEnd), /!\s*requestIntent\?\.shouldExplain/);
+  assert.doesNotMatch(source.slice(clearArgument, serviceDirectionEnd), /requestIntent\?\.shouldClearQueue\s*&&/);
+});
+
+test("server keeps the latest radio agent program window as a session-local station contract", () => {
+  const source = fs.readFileSync("src/server.ts", "utf8");
+  const socketStart = source.indexOf("async function handleRadioSocket");
+  const socketEnd = source.indexOf('socket.on("close"', socketStart);
+  const socketSource = source.slice(socketStart, socketEnd);
+  const declaration = socketSource.indexOf("let activeAgentStationContract");
+  const helper = socketSource.indexOf("const rememberAgentProgramWindowContract");
+  const queueWindow = socketSource.indexOf("const queueRadioAgentWindow");
+  const helperCallInQueue = socketSource.indexOf("rememberAgentProgramWindowContract(programWindow)", queueWindow);
+  const songRequestHandler = socketSource.indexOf('if (type === "song_request")');
+  const agentProgramWindow = socketSource.indexOf("const agentProgramWindow = agentTextResult.programWindow", songRequestHandler);
+  const helperCallInRequest = socketSource.indexOf("rememberAgentProgramWindowContract(agentProgramWindow)", agentProgramWindow);
+
+  assert.ok(socketStart >= 0);
+  assert.ok(socketEnd > socketStart);
+  assert.ok(declaration >= 0);
+  assert.ok(helper > declaration);
+  assert.ok(queueWindow > helper);
+  assert.ok(helperCallInQueue > queueWindow);
+  assert.ok(songRequestHandler > queueWindow);
+  assert.ok(agentProgramWindow > songRequestHandler);
+  assert.ok(helperCallInRequest > agentProgramWindow);
+  assert.match(socketSource.slice(helper, queueWindow), /stationContractFromAgentProgramWindow\(programWindow\)/);
+});
+
+test("server passes the session-local radio agent contract into scheduler and track-end recovery", () => {
+  const source = fs.readFileSync("src/server.ts", "utf8");
+  const socketStart = source.indexOf("async function handleRadioSocket");
+  const socketEnd = source.indexOf('socket.on("close"', socketStart);
+  const socketSource = source.slice(socketStart, socketEnd);
+  const fillQueueStart = socketSource.indexOf("const fillQueue =");
+  const schedulerPick = socketSource.indexOf("scheduler.pickNext", fillQueueStart);
+  const recentFallback = socketSource.indexOf("const addRecentPlayableFallback =");
+  const recentPrepare = socketSource.indexOf("scheduler.prepareTrack(track, uid)", recentFallback);
+  const recoveryCall = socketSource.indexOf("await ensureTrackEndReadyItem");
+
+  assert.ok(fillQueueStart >= 0);
+  assert.ok(schedulerPick > fillQueueStart);
+  assert.ok(recentFallback > schedulerPick);
+  assert.ok(recentPrepare > recentFallback);
+  assert.ok(recoveryCall > recentFallback);
+  assert.match(socketSource.slice(schedulerPick, schedulerPick + 520), /stationContract:\s*currentStationContract\(\)/);
+  assert.match(socketSource.slice(recentFallback, recentPrepare), /boundaryGuard\.evaluate\(\{/);
+  assert.match(socketSource.slice(recentFallback, recentPrepare), /contract:\s*currentStationContract\(\)/);
+  assert.match(socketSource.slice(recoveryCall, recoveryCall + 900), /hasActiveStationContract:\s*Boolean\(currentStationContract\(\)\)/);
+});
+
+test("server injects the session-local station contract into radio agent runtime events", () => {
+  const source = fs.readFileSync("src/server.ts", "utf8");
+  const socketStart = source.indexOf("async function handleRadioSocket");
+  const socketEnd = source.indexOf('socket.on("close"', socketStart);
+  const socketSource = source.slice(socketStart, socketEnd);
+  const helper = socketSource.indexOf("const radioAgentEventWithCurrentContract");
+  const localMirror = socketSource.indexOf("const mirrorSocketRadioAgentImmediate");
+  const serviceConstruction = socketSource.indexOf("const radioAgentService = new RadioAgentService");
+  const serviceEnd = socketSource.indexOf("});", serviceConstruction);
+
+  assert.ok(socketStart >= 0);
+  assert.ok(socketEnd > socketStart);
+  assert.ok(helper >= 0);
+  assert.ok(localMirror > helper);
+  assert.ok(serviceConstruction > localMirror);
+  assert.match(socketSource.slice(helper, localMirror), /const\s+programContract\s*=\s*programContractMarkdownFromStationContract\(currentStationContract\(\)\)/);
+  assert.match(socketSource.slice(helper, localMirror), /programContract,/);
+  assert.match(socketSource.slice(localMirror, serviceConstruction), /mirrorRadioAgentImmediate\(radioAgentEventWithCurrentContract\(event\)\)/);
+  assert.match(socketSource.slice(localMirror, serviceConstruction), /const socketRadioAgent\s*=\s*\{/);
+  assert.match(socketSource.slice(localMirror, serviceConstruction), /const result = await mirrorSocketRadioAgentImmediate\(event\)/);
+  assert.match(socketSource.slice(localMirror, serviceConstruction), /throw new Error\("radio_agent_event_failed"\)/);
+  assert.match(socketSource.slice(serviceConstruction, serviceEnd), /handleRadioAgentEvent:\s*mirrorSocketRadioAgentImmediate/);
+  assert.match(socketSource, /radioAgent:\s*socketRadioAgent/);
+  assert.doesNotMatch(socketSource, /radioAgent:\s*radioAgent,/);
+  assert.doesNotMatch(socketSource.slice(serviceConstruction, serviceEnd), /handleRadioAgentEvent:\s*mirrorRadioAgentImmediate/);
+  assert.match(source, /function programContractMarkdownFromStationContract\(contract:\s*StationContract\s*\|\s*null\):\s*string/);
+});
+
+test("server filters stale ready items against the active agent contract before promotion", () => {
+  const source = fs.readFileSync("src/server.ts", "utf8");
+  const importLine = source.indexOf("removeReadyItemsOutsideStationContract");
+  const sendPreparedNextStart = source.indexOf("const runSendPreparedNext =");
+  const recoveryCall = source.indexOf("await ensureTrackEndReadyItem", sendPreparedNextStart);
+  const staleFilter = source.indexOf("removeReadyItemsOutsideStationContract", recoveryCall);
+  const promoteNext = source.indexOf("const item = queue.promoteNext(previousEvent)", recoveryCall);
+
+  assert.ok(importLine >= 0);
+  assert.ok(sendPreparedNextStart >= 0);
+  assert.ok(recoveryCall > sendPreparedNextStart);
+  assert.ok(staleFilter > recoveryCall);
+  assert.ok(promoteNext > staleFilter);
+  assert.match(source.slice(staleFilter, promoteNext), /currentStationContract\(\)/);
+  assert.match(source.slice(staleFilter, promoteNext), /boundaryGuard/);
+});
+
+test("server stops waiting on old prewarm work when a fresh listener direction starts", () => {
+  const source = fs.readFileSync("src/server.ts", "utf8");
+  const songRequestHandler = source.indexOf('if (type === "song_request")');
+  const requestText = source.indexOf("const requestText = compactText", songRequestHandler);
+  const cancelPrewarm = source.indexOf("prewarmTask = null", requestText);
+  const requestToken = source.indexOf("const requestToken = ++nextRequestToken", requestText);
+
+  assert.ok(songRequestHandler >= 0);
+  assert.ok(requestText > songRequestHandler);
+  assert.ok(cancelPrewarm > requestText);
+  assert.ok(cancelPrewarm < requestToken);
 });
 
 test("server delegates explicit correction requests to the radio agent correction API", () => {
@@ -288,8 +544,8 @@ test("server delegates explicit correction requests to the radio agent correctio
   const intentDeclaration = source.indexOf("let requestIntent:", songRequestHandler);
   const intentDecision = source.indexOf("requestIntent = intentRouter.classify(requestText)", intentDeclaration);
   const correctionBranch = source.indexOf("requestIntent?.type === \"correction\"", intentDecision);
-  const serviceCorrection = source.indexOf("await radioAgentService.handleCorrection", correctionBranch);
-  const serviceDirection = source.indexOf("await radioAgentService.handleUserText", serviceCorrection);
+  const serviceCorrection = source.indexOf("radioAgentService.handleCorrection", correctionBranch);
+  const serviceDirection = source.indexOf("radioAgentService.handleUserText", serviceCorrection);
   const agentAcknowledgement = source.indexOf("const agentAckText = agentTextResult.hostText", serviceCorrection);
 
   assert.ok(songRequestHandler >= 0);
@@ -312,9 +568,41 @@ test("server injects radio agent runtime, executor, and host policy into RadioAg
 
   assert.ok(serviceConstruction >= 0);
   assert.ok(serviceEnd > serviceConstruction);
-  assert.match(serviceSource, /handleRadioAgentEvent:\s*mirrorRadioAgentImmediate/);
+  assert.match(serviceSource, /handleRadioAgentEvent:\s*mirrorSocketRadioAgentImmediate/);
   assert.match(serviceSource, /clearReadyQueue:\s*\(\)\s*=>\s*queue\.clearReady\(\)/);
   assert.match(serviceSource, /queueProgramWindow:\s*queueRadioAgentWindow/);
   assert.match(serviceSource, /prepareProgramWindow:\s*\(programWindow\)\s*=>\s*radioAgentProgramExecutor\.prepareFirstPlayable\(programWindow\)/);
+  assert.match(serviceSource, /playbackGovernor:\s*radioAgentPlaybackGovernor/);
   assert.match(serviceSource, /hostTextForDelivery:\s*hostTextForRadioAgentDelivery/);
+  assert.match(serviceSource, /userTextQueueTimeoutMs:\s*\d+/);
+});
+
+test("server stops track-end promotion when radio agent action rejects ready playback", () => {
+  const source = fs.readFileSync("src/server.ts", "utf8");
+  const sendPreparedNextStart = source.indexOf("const runSendPreparedNext =");
+  const recoveryCall = source.indexOf("await ensureTrackEndReadyItem", sendPreparedNextStart);
+  const promoteNext = source.indexOf("const item = queue.promoteNext(previousEvent)", recoveryCall);
+  const actionGuard = source.indexOf("radioAgentRejectedPlayback(trackEndResult.actions)", recoveryCall);
+
+  assert.ok(sendPreparedNextStart >= 0);
+  assert.ok(recoveryCall > sendPreparedNextStart);
+  assert.ok(actionGuard > recoveryCall);
+  assert.ok(actionGuard < promoteNext);
+  assert.match(source.slice(actionGuard, promoteNext), /send\(\{\s*type:\s*"request_status",\s*status:\s*"not_found"/);
+  assert.match(source.slice(actionGuard, promoteNext), /return;/);
+  assert.match(source, /function radioAgentRejectedPlayback\(actions:/);
+  assert.match(source, /action\.type === "honest_not_found"/);
+});
+
+test("server gives anonymous websocket sessions an isolated radio agent session id", () => {
+  const source = fs.readFileSync("src/server.ts", "utf8");
+  const socketStart = source.indexOf("async function handleRadioSocket");
+  const socketEnd = source.indexOf('socket.on("close"', socketStart);
+  const socketSource = source.slice(socketStart, socketEnd);
+
+  assert.ok(socketStart >= 0);
+  assert.ok(socketEnd > socketStart);
+  assert.match(socketSource, /const anonymousSessionId = -Date\.now\(\) - Math\.floor\(Math\.random\(\) \* 1000000\);/);
+  assert.match(socketSource, /sessionId = uid \? store\.createSession\(uid\) : anonymousSessionId;/);
+  assert.doesNotMatch(socketSource, /sessionId = uid \? store\.createSession\(uid\) : null;/);
 });
