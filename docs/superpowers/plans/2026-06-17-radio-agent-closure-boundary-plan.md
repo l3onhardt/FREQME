@@ -638,7 +638,7 @@ import type { SelectionReason, Track } from "../types.js";
 import type { AgentActionContract, FallbackLevel, RadioAgentAction } from "./agentActions.js";
 import type { PlaybackGovernorResult } from "./playbackGovernor.js";
 
-export type LegacyFallbackSource = "opening" | "request" | "track_end" | "continuation";
+export type LegacyFallbackSource = "opening" | "request" | "correction" | "track_end" | "continuation";
 
 export interface LegacyFallbackCandidate {
   track: Track;
@@ -1172,7 +1172,7 @@ Inside `handleRadioSocket`, create a helper that returns a candidate only:
 
 ```ts
   const legacyFallbackCandidateSource = async (context: LegacyFallbackContext): Promise<LegacyFallbackCandidate | null> => {
-    if (context.source === "request" && context.requestText) {
+    if ((context.source === "request" || context.source === "correction") && context.requestText) {
       return await buildLegacyRequestFallbackCandidate(context.requestText, context.reason);
     }
     return await buildLegacyContinuationFallbackCandidate(context.reason);
@@ -1261,13 +1261,40 @@ if (fallbackResult.status === "action") {
 
 Do not call `runStationDirectorRequestFallback` directly from the normal request path. If its current implementation mutates queue, split it before use.
 
-- [ ] **Step 4: Add track-end fallback handling through governed action**
+- [ ] **Step 4: Add correction fallback handling through governed action**
+
+In the correction path, when `actionSummary.fallbackLevels.length > 0` after `radioAgentService.handleCorrection(...)`, call `legacyFallbackTools.fallbackToAction` and execute any returned action through the same action runner:
+
+```ts
+const fallbackResult = await legacyFallbackTools.fallbackToAction({
+  source: "correction",
+  level: "legacy_with_label",
+  reason: agentTextResult.fallbackReason || "agent_correction_fallback",
+  requestText,
+  activeRequestToken,
+  expectedRequestToken: requestToken,
+  contract: currentAgentActionContract(),
+  currentTrack: currentTrack ? trackInfo(currentTrack) : null,
+  recentTracks: recentPlaybackTracks(),
+  readyQueue: queue.readyItems().map((readyItem) => readyItem.track),
+});
+if (fallbackResult.status === "action") {
+  const fallbackSummary = await executeRadioAgentActions([fallbackResult.action]);
+  if (fallbackSummary.playbackQueued) {
+    await sendPreparedNext("played", { allowContinuation: false, skipPrewarmWait: true, requestToken });
+  }
+}
+```
+
+Use the same stale-token handling as request fallback. Do not leave correction fallback permanently logged-and-dropped.
+
+- [ ] **Step 5: Add track-end fallback handling through governed action**
 
 When `radioAgentService.handleTrackEnded` returns fallback intent and no approved ready item exists, call `legacyFallbackTools.fallbackToAction` with `source: "track_end"` and execute returned action through `executeRadioAgentActions`.
 
 Do not wire `ensureTrackEndReadyItem` callbacks to raw `fillQueue`, `kickBrainContinuation`, or recent fallback queue mutation unless those callbacks are themselves candidate sources that return through the governed fallback path.
 
-- [ ] **Step 5: Update boundary ownership guard**
+- [ ] **Step 6: Update boundary ownership guard**
 
 Commit `tests/ts/radio-agent-boundary-ownership.test.ts` from Task 3 after adjusting allowed helper names to match actual implementation.
 
@@ -1287,7 +1314,7 @@ Forbidden normal-path direct calls remain:
 - `scheduler.pickNext`
 - raw `fillQueue(1, false)` after agent decisions
 
-- [ ] **Step 6: Run focused tests**
+- [ ] **Step 7: Run focused tests**
 
 Run:
 
@@ -1299,7 +1326,7 @@ Expected:
 
 - PASS.
 
-- [ ] **Step 7: Run websocket tests**
+- [ ] **Step 8: Run websocket tests**
 
 Run:
 
@@ -1311,7 +1338,7 @@ Expected:
 
 - PASS.
 
-- [ ] **Step 8: Run typecheck**
+- [ ] **Step 9: Run typecheck**
 
 Run:
 
@@ -1323,7 +1350,7 @@ Expected:
 
 - PASS.
 
-- [ ] **Step 9: Commit**
+- [ ] **Step 10: Commit**
 
 Run:
 
