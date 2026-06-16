@@ -1098,8 +1098,8 @@ const actionSummary = await executeRadioAgentActions(agentTextResult.actions);
 Apply the same post-action handling as user text:
 
 - if `actionSummary.playbackQueued`, send ready status and promote with the active request token;
-- if `actionSummary.notFound`, report the honest not-found result and do not run legacy fallback unless an explicit fallback action is present;
-- if `actionSummary.fallbackLevels.length > 0`, call Task 6's governed fallback helper;
+- if `actionSummary.notFound`, report the honest not-found result and do not run legacy fallback in this task;
+- if `actionSummary.fallbackLevels.length > 0`, log `radio_agent_fallback_intent` and return without calling legacy systems until Task 6 wires governed fallback;
 - clear or sanitize incompatible ready items only through service-approved actions or existing contract sanitizers, not through direct legacy planner choice.
 
 Do not leave a separate correction-specific direct queue, `radioBrain.handleUserText`, or `runStationDirectorRequestFallback` branch before action execution.
@@ -1116,8 +1116,9 @@ Then:
 
 - if `actionSummary.playbackQueued`, continue to sanitize/promote the newly queued approved item;
 - if `actionSummary.preparedQueued > 0`, sanitize/promote prepared items without invoking legacy recovery first;
-- if `actionSummary.notFound`, mirror the recovery-needed status and stop unless Task 6's governed fallback helper returns an approved action;
-- call `ensureTrackEndReadyItem(...)` only after service actions did not produce an approved playable item.
+- if `actionSummary.notFound`, mirror the recovery-needed status and stop without invoking legacy recovery in this task;
+- if `actionSummary.fallbackLevels.length > 0`, log `radio_agent_fallback_intent` and stop without invoking legacy recovery until Task 6 wires governed fallback;
+- do not call `ensureTrackEndReadyItem(...)` for service-owned queue-low fallback or not-found actions in this task. Existing non-agent recovery branches may remain only if the new queue-low test proves they run after service action execution and do not call legacy mutation for service fallback/not-found.
 
 This makes queue-low an agent-owned continuation event, not a hidden legacy refill trigger.
 
@@ -1163,6 +1164,8 @@ git commit -m "Route correction and queue-low through radio agent actions"
 - Add/commit: `tests/ts/radio-agent-boundary-ownership.test.ts`
 - Test: `tests/ts/radio-agent-legacy-fallback-tools.test.ts`
 
+Task 5 intentionally stops after reporting fallback intent so that it can typecheck and commit without a half-built legacy bridge. This task is where request, correction, track-end, and queue-low fallback intent becomes governed fallback action execution.
+
 - [ ] **Step 1: Add server behavior seam for fallback candidate source**
 
 Inside `handleRadioSocket`, create a helper that returns a candidate only:
@@ -1187,7 +1190,7 @@ test("server legacy fallback candidate helpers do not mutate playback directly",
   const source = fs.readFileSync("src/server.ts", "utf8");
   for (const helperName of ["buildLegacyRequestFallbackCandidate", "buildLegacyContinuationFallbackCandidate"]) {
     const helperStart = source.indexOf(`const ${helperName}`);
-    if (helperStart < 0) continue;
+    assert.ok(helperStart >= 0, `expected ${helperName} helper to exist`);
     const nextHelper = source.indexOf("\n  const ", helperStart + 1);
     const helperBody = source.slice(helperStart, nextHelper > helperStart ? nextHelper : helperStart + 2000);
     assert.doesNotMatch(helperBody, /queue\.addReady|queue\.promoteNext|sendTrack\(|fillQueue\(1,\s*false\)|synthesizeAndSendDjMessage/);
