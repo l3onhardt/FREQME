@@ -1348,6 +1348,7 @@ function restoredSessionDirectionFromArtifacts(
 ): ActiveSessionDirection | null {
   const activeRequest = markdownField(listenerSessionMarkdown, "active_request");
   if (!activeRequest || /^(none|unknown)$/i.test(activeRequest)) return null;
+  if (/^(?:avoid|do not play|skip|less)\b/i.test(activeRequest)) return null;
 
   const stationGoal =
     markdownField(programContractMarkdown, "station_goal") ||

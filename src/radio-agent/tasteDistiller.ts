@@ -306,7 +306,7 @@ function durableNegativeArtistFacts(events: RadioAgentEvent[], existingMemories:
       .filter((event) => event.type === "user_text")
       .filter((event) => explicitNegativeArtistsFromText(stringValue(event.payload.text)).includes(artist))
       .map((event) => (event.id ? `event:${event.id}` : `event:${event.createdAt}`));
-    if (!currentRefs.length || prior.count + currentRefs.length < 2) continue;
+    if (!currentRefs.length || prior.count + currentRefs.length < 3) continue;
     result.push({
       key: `avoid_artist:${artist}`,
       kind: "taste_fact",

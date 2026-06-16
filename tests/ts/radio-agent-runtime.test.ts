@@ -455,6 +455,55 @@ test("runtime merges existing session hypotheses with new confirmations into dur
   assert.match(profile?.sourceVersion ?? "", /taste-distiller\/v3-memory-merge/);
 });
 
+test("runtime keeps three explicit preference signals durable across restart", async () => {
+  const store = runtimeStore();
+  store.memoryRows.push({
+    uid: "42",
+    key: "session_artist:Frank Ocean",
+    kind: "taste_hypothesis",
+    value: "Listener explicitly asked for more Frank Ocean across earlier sessions.",
+    confidence: 0.72,
+    evidenceCount: 2,
+    evidenceRefs: ["event:10", "event:11"],
+    updatedAt: "2026-06-02T23:00:00.000Z",
+  });
+  const runtime = new RadioAgentRuntime({ mode: "assisted", store, now: () => "2026-06-03T02:05:00.000Z" });
+
+  await runtime.handle({
+    type: "user_text",
+    uid: "42",
+    sessionId: 10,
+    text: "more Frank Ocean tonight",
+  });
+  await runtime.handle({
+    type: "track_completed",
+    uid: "42",
+    sessionId: 10,
+    track: { id: "frank-3", name: "Ivy", artist: "Frank Ocean" },
+    readyQueue: [{ id: "next-1", name: "Queued", artist: "Queued Artist" }],
+  });
+
+  const durable = store.memoryRows.find((item) => item.key === "artist:Frank Ocean");
+  assert.ok(durable);
+  assert.equal(durable?.kind, "taste_fact");
+  assert.ok((durable?.evidenceCount || 0) >= 3);
+
+  const restarted = new RadioAgentRuntime({ mode: "assisted", store, now: () => "2026-06-03T02:10:00.000Z" });
+  await restarted.handle({
+    type: "session_restored",
+    uid: "42",
+    sessionId: 11,
+    payload: { timezoneName: "Asia/Hong_Kong", localTimeBlock: "late_night" },
+  });
+
+  const profile = store.artifact("42", "user_profile.md");
+  const contract = store.artifact("42", "program_contract.md");
+  assert.match(profile?.content ?? "", /Frank Ocean/);
+  assert.match(profile?.content ?? "", /durable preference anchor/);
+  assert.match(contract?.content ?? "", /Frank Ocean/);
+  assert.doesNotMatch(contract?.content ?? "", /Blocked Moves[\s\S]*Frank Ocean/);
+});
+
 test("runtime writes session reflection artifact from completed and skipped playback", async () => {
   const store = runtimeStore();
   const runtime = new RadioAgentRuntime({ mode: "assisted", store, now: () => "2026-06-03T01:02:03.000Z" });
@@ -529,7 +578,7 @@ test("runtime turns explicit negative artist feedback into session-only avoids",
   assert.equal(store.memoryRows.some((memory) => memory.kind === "taste_fact" && /Frank Ocean|SZA/.test(memory.value)), false);
 });
 
-test("runtime promotes repeated explicit artist avoids from session evidence into durable taste facts", async () => {
+test("runtime keeps two explicit artist avoids as session-only evidence after restart", async () => {
   const store = runtimeStore();
   store.memoryRows.push({
     uid: "42",
@@ -551,15 +600,57 @@ test("runtime promotes repeated explicit artist avoids from session evidence int
   });
 
   const durableAvoid = store.memoryRows.find((memory) => memory.key === "avoid_artist:SZA");
-  assert.ok(durableAvoid);
-  assert.equal(durableAvoid?.kind, "taste_fact");
-  assert.ok((durableAvoid?.evidenceRefs || []).includes("event:38"));
-  assert.ok((durableAvoid?.evidenceRefs || []).some((ref) => /^event:\d+$/.test(ref) && ref !== "event:38"));
-  assert.match(durableAvoid?.value ?? "", /repeatedly asked to avoid SZA/i);
+  assert.equal(durableAvoid, undefined);
 
   const profile = store.artifact("42", "user_profile.md");
+  assert.match(profile?.content ?? "", /session-only avoid of SZA/i);
+  assert.match(profile?.sourceVersion ?? "", /taste-distiller\/v3-memory-merge/);
+});
+
+test("runtime promotes three explicit artist avoids from session evidence into durable taste facts after restart", async () => {
+  const store = runtimeStore();
+  store.memoryRows.push({
+    uid: "42",
+    key: "session_avoid:SZA",
+    kind: "session_evidence",
+    value: "Listener asked for a session-only avoid of SZA.",
+    confidence: 0.83,
+    evidenceCount: 2,
+    evidenceRefs: ["event:38", "event:39"],
+    updatedAt: "2026-06-02T23:00:00.000Z",
+  });
+  const runtime = new RadioAgentRuntime({ mode: "assisted", store, now: () => "2026-06-03T02:05:00.000Z" });
+
+  await runtime.handle({
+    type: "user_text",
+    uid: "42",
+    sessionId: 10,
+    text: "don't play SZA tonight",
+  });
+
+  const durableAvoid = store.memoryRows.find((memory) => memory.key === "avoid_artist:SZA");
+  assert.ok(durableAvoid);
+  assert.equal(durableAvoid?.kind, "taste_fact");
+  assert.equal(durableAvoid?.evidenceCount, 3);
+  assert.ok((durableAvoid?.evidenceRefs || []).includes("event:38"));
+  assert.ok((durableAvoid?.evidenceRefs || []).includes("event:39"));
+  assert.ok((durableAvoid?.evidenceRefs || []).some((ref) => /^event:\d+$/.test(ref) && ref !== "event:38" && ref !== "event:39"));
+  assert.match(durableAvoid?.value ?? "", /repeatedly asked to avoid SZA/i);
+
+  const restarted = new RadioAgentRuntime({ mode: "assisted", store, now: () => "2026-06-03T02:10:00.000Z" });
+  await restarted.handle({
+    type: "session_restored",
+    uid: "42",
+    sessionId: 11,
+    payload: { timezoneName: "Asia/Hong_Kong", localTimeBlock: "late_night" },
+  });
+
+  const profile = store.artifact("42", "user_profile.md");
+  const contract = store.artifact("42", "program_contract.md");
   assert.match(profile?.content ?? "", /avoid SZA/i);
   assert.match(profile?.sourceVersion ?? "", /taste-distiller\/v3-memory-merge/);
+  assert.match(contract?.content ?? "", /Blocked Moves[\s\S]*SZA/);
+  assert.doesNotMatch(contract?.content ?? "", /station_goal:.*SZA/i);
 });
 
 test("runtime writes durable artist avoids into the current program contract", async () => {

@@ -358,7 +358,7 @@ test("taste distiller turns explicit negative artist text into session-only avoi
   assert.equal(result.hypotheses.some((item) => /SZA|Frank Ocean/.test(`${item.key} ${item.value}`)), false);
 });
 
-test("taste distiller promotes repeated explicit artist avoids into a conservative durable avoid fact", () => {
+test("taste distiller keeps two explicit artist avoids as session evidence", () => {
   const result = distillTasteFacts({
     uid: "42",
     libraryTracks: [],
@@ -388,12 +388,52 @@ test("taste distiller promotes repeated explicit artist avoids into a conservati
     ],
   });
 
+  assert.equal(result.facts.some((item) => item.key === "avoid_artist:SZA"), false);
+  const sessionAvoid = result.sessionEvidence.find((item) => item.key === "session_avoid:SZA");
+  assert.ok(sessionAvoid);
+  assert.equal(sessionAvoid?.kind, "session_evidence");
+  assert.ok((sessionAvoid?.evidenceRefs || []).includes("event:41"));
+  assert.equal(result.hypotheses.some((item) => item.key === "session_artist:SZA"), false);
+});
+
+test("taste distiller promotes three explicit artist avoids into a conservative durable avoid fact", () => {
+  const result = distillTasteFacts({
+    uid: "42",
+    libraryTracks: [],
+    playlists: [],
+    existingMemories: [
+      {
+        uid: "42",
+        key: "session_avoid:SZA",
+        kind: "session_evidence",
+        value: "Listener asked for a session-only avoid of SZA.",
+        confidence: 0.83,
+        evidenceCount: 2,
+        evidenceRefs: ["event:38", "event:39"],
+        updatedAt: "2026-06-02T23:00:00.000Z",
+      },
+    ],
+    recentEvents: [
+      {
+        id: 41,
+        uid: "42",
+        sessionId: 8,
+        type: "user_text",
+        priority: "hot",
+        payload: { text: "don't play SZA tonight" },
+        createdAt: "2026-06-03T01:00:00.000Z",
+      },
+    ],
+  });
+
   const durableAvoid = result.facts.find((item) => item.key === "avoid_artist:SZA");
   assert.ok(durableAvoid);
   assert.equal(durableAvoid?.kind, "taste_fact");
-  assert.ok((durableAvoid?.confidence || 0) >= 0.7);
+  assert.ok((durableAvoid?.confidence || 0) >= 0.75);
   assert.ok((durableAvoid?.confidence || 0) < 0.9);
+  assert.equal(durableAvoid?.evidenceCount, 3);
   assert.ok((durableAvoid?.evidenceRefs || []).includes("event:38"));
+  assert.ok((durableAvoid?.evidenceRefs || []).includes("event:39"));
   assert.ok((durableAvoid?.evidenceRefs || []).includes("event:41"));
   assert.match(durableAvoid?.value || "", /repeatedly asked to avoid SZA/i);
   assert.equal(result.hypotheses.some((item) => item.key === "session_artist:SZA"), false);
