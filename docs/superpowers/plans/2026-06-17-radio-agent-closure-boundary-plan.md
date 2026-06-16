@@ -20,8 +20,8 @@ In scope:
 
 - Action runner boundary for non-fallback actions.
 - Governed legacy fallback tools that return typed actions or failure, never direct queue mutations.
-- Server request and track-end paths routed through the new boundaries.
-- Behavior tests for fallback governance, stale request tokens, no hidden queue mutation, and explicit fallback trace visibility.
+- Server session-start, user-text, correction, track-end, and queue-low paths routed through the new boundaries.
+- Behavior tests for fallback governance, stale request tokens, no hidden queue mutation, correction routing, queue-low routing, and explicit fallback trace visibility.
 - A boundary guard that catches direct legacy planner calls outside approved fallback adapters.
 
 Out of scope:
@@ -43,6 +43,7 @@ This plan was reviewed once and rewritten to address the high-risk issues:
 - `queue_window` semantics are narrowed: the runner may enqueue already-prepared tracks only, and may not select new tracks.
 - Host text attached to `play_now` must be treated as already-approved by service/governor or filtered before queueing.
 - Contract conversion must reuse existing helpers or be covered by tests before use.
+- Correction and queue-low must be explicit ownership gates, not incidental cases hidden inside `song_request` or `track_ended` code.
 
 ## File Structure
 
@@ -79,16 +80,17 @@ Modify:
   - Ensure fallback actions are descriptive and do not imply direct legacy execution.
 
 - `src/server.ts`
-  - Use `runRadioAgentActions` for agent-approved actions.
+  - Use `runRadioAgentActions` for agent-approved session-start, user-text, correction, track-end, and queue-low actions.
   - Use `LegacyFallbackTools` to transform fallback intent into a governed typed action.
   - Remove normal-path direct legacy planner calls after agent decisions.
 
 - `tests/ts/radio-agent-server-wiring.test.ts`
   - Keep coarse wiring checks only.
+  - Add targeted checks that correction and queue-low paths execute service actions through the action runner boundary.
   - Remove or weaken brittle assertions when behavior tests cover the guarantee.
 
 - `tests/ts/radio-agent-service.test.ts`
-  - Add or adjust service action-shape tests using existing fixtures.
+  - Add or adjust service action-shape tests for user text, correction, and queue-low using existing fixtures.
 
 - `tests/js/radio-websocket.test.mjs`
   - Keep frontend retry/status behavior stable if message shape changes.
@@ -821,7 +823,7 @@ test("legacy fallback tools module cannot mutate playback directly", () => {
 });
 ```
 
-This test will fail before server cleanup. Keep it failing until Tasks 4-5 remove or isolate the direct calls.
+This test will fail before server cleanup. Keep it failing until Tasks 4-6 remove or isolate the direct calls.
 
 - [ ] **Step 2: Run boundary guard to verify it fails or partially fails**
 
@@ -837,7 +839,7 @@ Expected:
 
 - [ ] **Step 3: Commit the failing guard only when paired with same-task implementation**
 
-Do not commit a permanently failing test. Implement the server helper in Task 5 before committing this test.
+Do not commit a permanently failing test. Implement the server helper in Task 6 before committing this test.
 
 ## Task 4: Wire ActionRunner For Agent-Approved Actions Only
 
@@ -953,7 +955,7 @@ const actionSummary = await executeRadioAgentActions(result.actions);
 return actionSummary.playbackQueued;
 ```
 
-Preserve existing fallback behavior only through explicit fallback handling in Task 5.
+Preserve existing fallback behavior only through explicit fallback handling in Task 6.
 
 - [ ] **Step 5: Replace user-direction direct queueing for already-approved actions**
 
@@ -966,7 +968,7 @@ const actionSummary = await executeRadioAgentActions(agentTextResult.actions);
 Then:
 
 - if `actionSummary.playbackQueued`, send ready status and call `sendPreparedNext` with request token;
-- if `actionSummary.notFound`, do not run legacy fallback unless the service also returned an explicit fallback action and Task 5's governed fallback path accepts a candidate;
+- if `actionSummary.notFound`, do not run legacy fallback unless the service also returned an explicit fallback action and Task 6's governed fallback path accepts a candidate;
 - remove duplicate direct `queue.addReady(agentTextResult.preparedTrack.track...)` for the same action.
 
 - [ ] **Step 6: Run focused tests**
@@ -1002,7 +1004,157 @@ git add src/server.ts tests/ts/radio-agent-server-wiring.test.ts
 git commit -m "Route approved radio agent actions through runner"
 ```
 
-## Task 5: Wire Governed Fallback Candidate Flow
+## Task 5: Route Correction And Queue-Low Through Agent Boundary
+
+**Files:**
+
+- Modify: `src/server.ts`
+- Modify: `tests/ts/radio-agent-server-wiring.test.ts`
+- Modify: `tests/ts/radio-agent-service.test.ts`
+- Test: `tests/ts/radio-agent-action-runner.test.ts`
+
+- [ ] **Step 1: Add failing correction wiring test**
+
+In `tests/ts/radio-agent-server-wiring.test.ts`, add a targeted source-boundary test:
+
+```ts
+test("server executes correction actions through the action runner before any fallback", () => {
+  const source = fs.readFileSync("src/server.ts", "utf8");
+  const correctionCall = source.indexOf("radioAgentService.handleCorrection");
+  const actionExecution = source.indexOf("executeRadioAgentActions(agentTextResult.actions)", correctionCall);
+  const fallbackAfterCorrection = source.indexOf("runGovernedLegacyFallback", correctionCall);
+  const oldFallbackAfterCorrection = source.indexOf("runStationDirectorRequestFallback", correctionCall);
+
+  assert.ok(correctionCall >= 0, "expected correction to enter radioAgentService.handleCorrection");
+  assert.ok(actionExecution > correctionCall, "correction result actions must be executed through action runner");
+  assert.ok(fallbackAfterCorrection === -1 || fallbackAfterCorrection > actionExecution);
+  assert.ok(oldFallbackAfterCorrection === -1 || oldFallbackAfterCorrection > actionExecution);
+
+  const preExecutionWindow = source.slice(correctionCall, actionExecution);
+  assert.doesNotMatch(preExecutionWindow, /queue\.addReady|fillQueue\(1,\s*false\)|radioBrain\.handleUserText/);
+});
+```
+
+Expected:
+
+- FAIL until correction flow executes `agentTextResult.actions` before fallback or direct queue mutation.
+
+- [ ] **Step 2: Add failing queue-low wiring test**
+
+In `tests/ts/radio-agent-server-wiring.test.ts`, add:
+
+```ts
+test("server routes queue-low continuation through service actions before recovery fallback", () => {
+  const source = fs.readFileSync("src/server.ts", "utf8");
+  const trackEndCall = source.indexOf("radioAgentService.handleTrackEnded");
+  const actionExecution = source.indexOf("executeRadioAgentActions(trackEndResult.actions)", trackEndCall);
+  const recoveryCall = source.indexOf("ensureTrackEndReadyItem", trackEndCall);
+
+  assert.ok(trackEndCall >= 0, "expected queue-low/track-end to enter radioAgentService.handleTrackEnded");
+  assert.ok(actionExecution > trackEndCall, "track-end queue-low actions must be executed through action runner");
+  assert.ok(recoveryCall === -1 || recoveryCall > actionExecution, "legacy recovery must run only after action execution");
+
+  const preExecutionWindow = source.slice(trackEndCall, actionExecution);
+  assert.doesNotMatch(preExecutionWindow, /queue\.addReady|fillQueue\(1,\s*false\)|kickBrainContinuation|addRecentPlayableFallback/);
+});
+```
+
+Expected:
+
+- FAIL until `runSendPreparedNext` executes `trackEndResult.actions` before `ensureTrackEndReadyItem` or any legacy recovery callback.
+
+- [ ] **Step 3: Add service tests for correction and queue-low action shape**
+
+In `tests/ts/radio-agent-service.test.ts`, add or adjust tests proving:
+
+- `handleCorrection(...)` returns typed actions and uses `speechRole: "correction"` or the existing equivalent correction role;
+- correction either returns an approved `play_now` / `queue_window`, or an explicit `honest_not_found` / `fallback` action;
+- `handleTrackEnded(...)` with an empty ready queue sends a `queue_low` event to `handleRadioAgentEvent`;
+- queue-low continuation returns typed actions that can be executed by the action runner.
+
+Use existing fixtures in `radio-agent-service.test.ts` rather than creating a new test harness unless necessary.
+
+- [ ] **Step 4: Run tests to verify failure before implementation**
+
+Run:
+
+```bash
+npx tsx --test tests/ts/radio-agent-server-wiring.test.ts tests/ts/radio-agent-service.test.ts
+```
+
+Expected:
+
+- FAIL for the new server wiring assertions if `server.ts` still queues or recovers directly before action execution.
+- Existing service tests should stay stable; if new service tests fail, confirm whether the service or only server wiring needs change.
+
+- [ ] **Step 5: Route correction through the shared action execution path**
+
+In `src/server.ts`, keep intent classification, but after `radioAgentService.handleCorrection(...)` returns:
+
+```ts
+const actionSummary = await executeRadioAgentActions(agentTextResult.actions);
+```
+
+Apply the same post-action handling as user text:
+
+- if `actionSummary.playbackQueued`, send ready status and promote with the active request token;
+- if `actionSummary.notFound`, report the honest not-found result and do not run legacy fallback unless an explicit fallback action is present;
+- if `actionSummary.fallbackLevels.length > 0`, call Task 6's governed fallback helper;
+- clear or sanitize incompatible ready items only through service-approved actions or existing contract sanitizers, not through direct legacy planner choice.
+
+Do not leave a separate correction-specific direct queue, `radioBrain.handleUserText`, or `runStationDirectorRequestFallback` branch before action execution.
+
+- [ ] **Step 6: Route queue-low/track-end continuation through the shared action execution path**
+
+In `runSendPreparedNext`, after `radioAgentService.handleTrackEnded(...)` and before `ensureTrackEndReadyItem(...)`:
+
+```ts
+const actionSummary = await executeRadioAgentActions(trackEndResult.actions);
+```
+
+Then:
+
+- if `actionSummary.playbackQueued`, continue to sanitize/promote the newly queued approved item;
+- if `actionSummary.preparedQueued > 0`, sanitize/promote prepared items without invoking legacy recovery first;
+- if `actionSummary.notFound`, mirror the recovery-needed status and stop unless Task 6's governed fallback helper returns an approved action;
+- call `ensureTrackEndReadyItem(...)` only after service actions did not produce an approved playable item.
+
+This makes queue-low an agent-owned continuation event, not a hidden legacy refill trigger.
+
+- [ ] **Step 7: Run focused tests**
+
+Run:
+
+```bash
+npx tsx --test tests/ts/radio-agent-action-runner.test.ts tests/ts/radio-agent-server-wiring.test.ts tests/ts/radio-agent-service.test.ts tests/ts/track-end-recovery.test.ts
+```
+
+Expected:
+
+- PASS.
+
+- [ ] **Step 8: Run typecheck**
+
+Run:
+
+```bash
+npm run typecheck
+```
+
+Expected:
+
+- PASS.
+
+- [ ] **Step 9: Commit**
+
+Run:
+
+```bash
+git add src/server.ts tests/ts/radio-agent-server-wiring.test.ts tests/ts/radio-agent-service.test.ts
+git commit -m "Route correction and queue-low through radio agent actions"
+```
+
+## Task 6: Wire Governed Fallback Candidate Flow
 
 **Files:**
 
@@ -1025,6 +1177,27 @@ Inside `handleRadioSocket`, create a helper that returns a candidate only:
 ```
 
 The `buildLegacy*Candidate` helpers may call old systems, but must return a candidate object. They must not enqueue or promote. If existing old helpers mutate queue today, first split them so candidate selection and queue mutation are separate. Do not wrap a mutating helper and call it "candidate source".
+
+- [ ] **Step 1.5: Add server guard that candidate helpers do not mutate queue**
+
+In `tests/ts/radio-agent-server-wiring.test.ts`, add a focused guard around the actual helper implementations:
+
+```ts
+test("server legacy fallback candidate helpers do not mutate playback directly", () => {
+  const source = fs.readFileSync("src/server.ts", "utf8");
+  for (const helperName of ["buildLegacyRequestFallbackCandidate", "buildLegacyContinuationFallbackCandidate"]) {
+    const helperStart = source.indexOf(`const ${helperName}`);
+    if (helperStart < 0) continue;
+    const nextHelper = source.indexOf("\n  const ", helperStart + 1);
+    const helperBody = source.slice(helperStart, nextHelper > helperStart ? nextHelper : helperStart + 2000);
+    assert.doesNotMatch(helperBody, /queue\.addReady|queue\.promoteNext|sendTrack\(|fillQueue\(1,\s*false\)|synthesizeAndSendDjMessage/);
+  }
+});
+```
+
+Expected:
+
+- FAIL if the candidate helper wraps an old mutating fallback function instead of splitting candidate selection from queue mutation.
 
 - [ ] **Step 2: Add governed fallback tool instance**
 
@@ -1156,7 +1329,7 @@ git add src/server.ts tests/ts/radio-agent-boundary-ownership.test.ts tests/ts/r
 git commit -m "Route legacy fallback through governed agent actions"
 ```
 
-## Task 6: Reduce Brittle Server String Tests
+## Task 7: Reduce Brittle Server String Tests
 
 **Files:**
 
@@ -1215,7 +1388,7 @@ git add tests/ts/radio-agent-server-wiring.test.ts
 git commit -m "Reduce brittle radio agent server wiring assertions"
 ```
 
-## Task 7: Boundary Slice Verification
+## Task 8: Boundary Slice Verification
 
 **Files:**
 
@@ -1293,6 +1466,7 @@ If focused and full verification pass, update:
 Allowed claims:
 
 - action runner boundary exists;
+- correction and queue-low routes execute service actions through the action runner boundary;
 - legacy fallback is explicit and governed in unit tests;
 - hidden normal-path legacy planner calls are guarded.
 
