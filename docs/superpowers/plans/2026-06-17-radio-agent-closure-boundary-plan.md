@@ -2,104 +2,167 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Make the Hermes-style radio agent the only normal playback decision center by extracting action execution from `src/server.ts`, making legacy playback explicit fallback tooling, and adding behavior tests that prevent hidden second-DJ paths from returning.
+**Goal:** Make the Hermes-style radio agent the only normal playback decision center by extracting typed action execution from `src/server.ts`, ensuring legacy playback can only produce governed fallback candidates, and adding tests that prevent hidden second-DJ paths from returning.
 
-**Architecture:** Keep existing useful parts: `RadioAgentRuntime`, `RadioAgentService`, `RadioAgentProgramDirector`, `RadioAgentProgramExecutor`, `PlaybackGovernor`, and current queue/audio services. Add a small `RadioAgentActionRunner` boundary so gateway code executes typed agent actions instead of inventing queue, speech, or fallback behavior. Convert old `radioBrain`, `stationDirector`, and scheduler use into explicit fallback adapters behind the agent service before deeper memory/style cleanup.
+**Architecture:** Keep the existing useful assets: `RadioAgentRuntime`, `RadioAgentService`, `RadioAgentProgramDirector`, `RadioAgentProgramExecutor`, `PlaybackGovernor`, NetEase/audio services, and current queue infrastructure. Add a narrow `RadioAgentActionRunner` for non-fallback action execution, add `LegacyFallbackTools` as candidate-producing adapters that cannot mutate playback directly, then wire `server.ts` so any legacy candidate must become an approved `play_now` action through `PlaybackGovernor` before entering the queue.
 
-**Tech Stack:** TypeScript ESM, Node `node:test`, current FREQME backend modules under `src/`, browser JS tests under `tests/js`, TypeScript tests under `tests/ts`, `npx tsx --test`, `npm run typecheck`, and existing `npm test` for full regression.
+**Tech Stack:** TypeScript ESM, Node `node:test`, `npx tsx --test` for TS tests, `node --test` for JS tests, `npm run typecheck`, and `npm test` for full regression.
 
 ---
 
 ## Scope
 
-This plan covers the first project-closure slice from the spec:
-
-- Gateway and action-runner boundary.
-- Toolized legacy fallback.
-- Behavior tests proving fallback and queue mutation cannot bypass the agent in normal paths.
-
-This plan does not yet cover:
-
-- full style registry cleanup;
-- memory curator extraction;
-- host controller extraction;
-- broad live-smoke/browser automation;
-- deleting all legacy radio code.
-
-Those are later plans after the ownership boundary is stable.
-
-Spec:
+This plan implements the first closure slice from:
 
 - `docs/superpowers/specs/2026-06-17-radio-agent-closure-audit-design.md`
+
+In scope:
+
+- Action runner boundary for non-fallback actions.
+- Governed legacy fallback tools that return typed actions or failure, never direct queue mutations.
+- Server request and track-end paths routed through the new boundaries.
+- Behavior tests for fallback governance, stale request tokens, no hidden queue mutation, and explicit fallback trace visibility.
+- A boundary guard that catches direct legacy planner calls outside approved fallback adapters.
+
+Out of scope:
+
+- full style intent registry;
+- memory curator extraction;
+- host controller rewrite;
+- broad browser/live-smoke automation;
+- deletion of all legacy radio code.
+
+## Reviewer Fixes Applied
+
+This plan was reviewed once and rewritten to address the high-risk issues:
+
+- Legacy fallback tools must not call `queue.addReady`, `fillQueue`, `radioBrain`, `stationDirector`, or scheduler in a way that mutates playback directly.
+- Fallback candidates must pass `PlaybackGovernor` under the active contract before becoming `play_now`.
+- `ActionRunner` must not execute fallback with insufficient context.
+- Server wiring string tests are allowed only as coarse guards; core guarantees need behavior tests with injected fakes.
+- `queue_window` semantics are narrowed: the runner may enqueue already-prepared tracks only, and may not select new tracks.
+- Host text attached to `play_now` must be treated as already-approved by service/governor or filtered before queueing.
+- Contract conversion must reuse existing helpers or be covered by tests before use.
 
 ## File Structure
 
 Create:
 
 - `src/radio-agent/actionRunner.ts`
-  - Owns execution of `RadioAgentAction[]` into queue, speech, status, and fallback callbacks.
-  - Has no music-selection intelligence.
-  - Provides deterministic return summaries for tests and server orchestration.
+  - Executes typed non-fallback `RadioAgentAction[]` into injected queue/speech/status callbacks.
+  - Refuses direct fallback execution. It may report fallback intent, but cannot call legacy systems.
+  - Does not import `server.ts`, `PlaybackQueue`, `RadioBrain`, `AIStationDirector`, or scheduler.
 
 - `tests/ts/radio-agent-action-runner.test.ts`
-  - Behavior tests for action execution order, queue mutation, speech delivery, not-found status, and fallback delegation.
+  - Behavior tests for action order, `play_now`, `queue_window` prepared-track semantics, `speak`, `honest_not_found`, and fallback refusal.
 
 - `src/radio-agent/legacyFallbackTools.ts`
-  - Wraps existing legacy playback systems in explicit fallback functions.
-  - Returns typed fallback outcomes rather than mutating queue invisibly.
-  - Does not import websocket/server state.
+  - Wraps legacy candidate sources as adapters.
+  - Calls an injected `governCandidate` before returning a playable action.
+  - Returns `play_now`, `honest_not_found`, `empty`, or `stale`.
+  - Cannot mutate queue or send websocket messages.
 
 - `tests/ts/radio-agent-legacy-fallback-tools.test.ts`
-  - Tests fallback labels, governor requirement hooks, stale request handling, and no hidden queue mutation.
+  - Behavior tests for accepted governed fallback, rejected fallback, stale token, empty fallback, and no queue mutation.
+
+- `tests/ts/radio-agent-boundary-ownership.test.ts`
+  - Boundary guard for forbidden direct calls to legacy planners/schedulers outside allowlisted fallback adapter modules.
 
 Modify:
 
 - `src/radio-agent/agentActions.ts`
-  - Add or refine action execution metadata only if needed by `actionRunner.ts`.
+  - Add fallback context fields only if needed by service decisions.
   - Avoid broad type churn.
 
 - `src/radio-agent/radioAgentService.ts`
-  - Route legacy fallback requests as typed actions with levels and reasons.
-  - Avoid direct assumptions that gateway will run old fallback paths.
+  - Keep producing typed actions.
+  - Ensure fallback actions are descriptive and do not imply direct legacy execution.
 
 - `src/server.ts`
-  - Replace repeated action execution and direct fallback mutation with `RadioAgentActionRunner`.
-  - Keep HTTP/WebSocket transport behavior stable.
-  - Leave legacy fallback available only through explicit fallback adapter calls.
+  - Use `runRadioAgentActions` for agent-approved actions.
+  - Use `LegacyFallbackTools` to transform fallback intent into a governed typed action.
+  - Remove normal-path direct legacy planner calls after agent decisions.
 
 - `tests/ts/radio-agent-server-wiring.test.ts`
-  - Reduce brittle string-order assertions as behavior tests replace them.
-  - Keep only high-value wiring checks.
+  - Keep coarse wiring checks only.
+  - Remove or weaken brittle assertions when behavior tests cover the guarantee.
 
 - `tests/ts/radio-agent-service.test.ts`
-  - Add service expectations for fallback action shape and no hidden promotion.
+  - Add or adjust service action-shape tests using existing fixtures.
 
 - `tests/js/radio-websocket.test.mjs`
-  - Keep frontend playback retry and status behavior stable.
-  - Add only narrow tests if server message shape changes.
+  - Keep frontend retry/status behavior stable if message shape changes.
 
 ## Implementation Rules
 
 - Use @superpowers:test-driven-development for every behavior change.
-- Do not start the local dev server as part of these tasks unless a later task explicitly calls for browser verification.
-- Do not run the old live-smoke loop while implementing this plan.
+- Write a failing test before production code.
+- Do not start the local dev server unless a later plan explicitly asks for browser verification.
+- Do not run the old live-smoke loop.
 - Do not add genre-specific patches.
 - Do not stage logs, `.codex-server.log`, `dev-server*.log`, or `tmp-*`.
 - Commit after each completed task with fresh verification evidence.
+- Do not claim Hermes Radio Agent Closure Candidate from this slice.
 
-## Task 1: Add RadioAgentActionRunner Boundary
+## Task 0: Verify Test Command Conventions
+
+**Files:**
+
+- Read: `package.json`
+- Read: `tests/ts/radio-agent-service.test.ts`
+- Read: `tests/js/radio-websocket.test.mjs`
+
+- [ ] **Step 1: Confirm current scripts**
+
+Run:
+
+```bash
+Get-Content -Raw package.json
+```
+
+Expected:
+
+- `typecheck` exists.
+- `test` exists.
+- Existing TS tests can be run with `npx tsx --test`.
+- Existing JS tests can be run with `node --test`.
+
+- [ ] **Step 2: Run a known passing focused TS test**
+
+Run:
+
+```bash
+npx tsx --test tests/ts/radio-agent-service.test.ts
+```
+
+Expected:
+
+- PASS before changes. If it fails before changes, stop and diagnose baseline.
+
+- [ ] **Step 3: Run a known passing JS test file**
+
+Run:
+
+```bash
+node --test tests/js/radio-websocket.test.mjs
+```
+
+Expected:
+
+- PASS before changes. If it fails before changes, stop and diagnose baseline.
+
+## Task 1: Add Non-Fallback RadioAgentActionRunner
 
 **Files:**
 
 - Create: `src/radio-agent/actionRunner.ts`
 - Create: `tests/ts/radio-agent-action-runner.test.ts`
 - Read: `src/radio-agent/agentActions.ts`
-- Read: `src/radio/playbackQueue.ts`
-- Read: `src/server.ts` action execution call sites around `queue.addReady`, `sendTrack`, `synthesizeAndSendDjMessage`, `send({ type: "request_status" })`
+- Read: `src/radio-agent/hostDelivery.ts`
 
 - [ ] **Step 1: Write failing test for `play_now` execution**
 
-Add `tests/ts/radio-agent-action-runner.test.ts` with a minimal dependency harness:
+Create `tests/ts/radio-agent-action-runner.test.ts`:
 
 ```ts
 import assert from "node:assert/strict";
@@ -107,6 +170,21 @@ import test from "node:test";
 
 import { runRadioAgentActions } from "../../src/radio-agent/actionRunner.js";
 import type { RadioAgentAction } from "../../src/radio-agent/agentActions.js";
+
+function deps(calls: string[] = []) {
+  return {
+    queuePlayNow: async ({ track, url, reason, hostText }: any) => {
+      calls.push(`queue:${track.id}:${url}:${reason.type}:${hostText}`);
+    },
+    queuePrepared: async ({ prepared }: any) => {
+      calls.push(`prepared:${prepared.track.id}`);
+    },
+    speak: async ({ text }: any) => calls.push(`speak:${text}`),
+    staySilent: async ({ reason }: any) => calls.push(`silent:${reason}`),
+    reportNotFound: async ({ reason }: any) => calls.push(`not-found:${reason}`),
+    reportFallback: async ({ level, reason }: any) => calls.push(`fallback:${level}:${reason}`),
+  };
+}
 
 test("action runner queues a play_now action without choosing music", async () => {
   const calls: string[] = [];
@@ -120,15 +198,7 @@ test("action runner queues a play_now action without choosing music", async () =
     },
   ];
 
-  const result = await runRadioAgentActions(actions, {
-    queuePlayNow: async ({ track, url, reason, hostText }) => {
-      calls.push(`queue:${track.id}:${url}:${reason.type}:${hostText}`);
-    },
-    speak: async () => calls.push("speak"),
-    staySilent: async () => calls.push("silent"),
-    reportNotFound: async () => calls.push("not-found"),
-    runFallback: async () => calls.push("fallback"),
-  });
+  const result = await runRadioAgentActions(actions, deps(calls));
 
   assert.deepEqual(calls, ["queue:track-1:/api/radio/audio/track-1:radio_agent_program:Short handoff."]);
   assert.deepEqual(result.executedTypes, ["play_now"]);
@@ -146,18 +216,19 @@ npx tsx --test tests/ts/radio-agent-action-runner.test.ts
 
 Expected:
 
-- FAIL because `src/radio-agent/actionRunner.ts` does not exist or `runRadioAgentActions` is not exported.
+- FAIL because `src/radio-agent/actionRunner.ts` does not exist.
 
-- [ ] **Step 3: Implement minimal action runner**
+- [ ] **Step 3: Implement minimal non-fallback action runner**
 
 Create `src/radio-agent/actionRunner.ts`:
 
 ```ts
 import type { SelectionReason, Track } from "../types.js";
-import type { FallbackLevel, RadioAgentAction } from "./agentActions.js";
-import type { AgentActionContract } from "./agentActions.js";
+import type { AgentActionContract, FallbackLevel, RadioAgentAction } from "./agentActions.js";
 import type { PlaybackGovernanceTrace } from "./playbackGovernor.js";
-import type { RadioAgentPreparedTrack, RadioAgentProgramWindow } from "./types.js";
+import type { RadioAgentPreparedTrack } from "./types.js";
+
+type SpeechRole = Extract<RadioAgentAction, { type: "speak" }>["speechRole"];
 
 export interface RadioAgentActionRunnerDeps {
   queuePlayNow(args: {
@@ -167,8 +238,8 @@ export interface RadioAgentActionRunnerDeps {
     hostText: string;
     governanceTrace?: PlaybackGovernanceTrace;
   }): Promise<void> | void;
-  queueWindow?(args: { window: RadioAgentProgramWindow; prepared: RadioAgentPreparedTrack[] }): Promise<void> | void;
-  speak(args: { text: string; speechRole: Extract<RadioAgentAction, { type: "speak" }>["speechRole"] }): Promise<void> | void;
+  queuePrepared?(args: { prepared: RadioAgentPreparedTrack; windowId: string }): Promise<void> | void;
+  speak(args: { text: string; speechRole: SpeechRole }): Promise<void> | void;
   staySilent(args: { reason: string }): Promise<void> | void;
   repairContract?(args: { contract: Extract<RadioAgentAction, { type: "repair_contract" }>["contract"]; reason: string }): Promise<void> | void;
   reportNotFound(args: {
@@ -177,12 +248,13 @@ export interface RadioAgentActionRunnerDeps {
     searchedQueries: string[];
     governanceTrace?: PlaybackGovernanceTrace;
   }): Promise<void> | void;
-  runFallback(args: { level: FallbackLevel; reason: string; action?: RadioAgentAction }): Promise<void> | void;
+  reportFallback(args: { level: FallbackLevel; reason: string; action?: RadioAgentAction }): Promise<void> | void;
 }
 
 export interface RadioAgentActionRunnerResult {
   executedTypes: RadioAgentAction["type"][];
   playbackQueued: boolean;
+  preparedQueued: number;
   spoke: boolean;
   notFound: boolean;
   fallbackLevels: FallbackLevel[];
@@ -195,6 +267,7 @@ export async function runRadioAgentActions(
   const result: RadioAgentActionRunnerResult = {
     executedTypes: [],
     playbackQueued: false,
+    preparedQueued: 0,
     spoke: false,
     notFound: false,
     fallbackLevels: [],
@@ -202,6 +275,7 @@ export async function runRadioAgentActions(
 
   for (const action of actions) {
     result.executedTypes.push(action.type);
+
     if (action.type === "play_now") {
       await deps.queuePlayNow({
         track: action.track,
@@ -213,23 +287,31 @@ export async function runRadioAgentActions(
       result.playbackQueued = true;
       continue;
     }
+
     if (action.type === "queue_window") {
-      await deps.queueWindow?.({ window: action.window, prepared: action.prepared });
+      for (const prepared of action.prepared) {
+        await deps.queuePrepared?.({ prepared, windowId: action.window.id });
+        result.preparedQueued += 1;
+      }
       continue;
     }
+
     if (action.type === "speak") {
       await deps.speak({ text: action.text, speechRole: action.speechRole });
       result.spoke = true;
       continue;
     }
+
     if (action.type === "stay_silent") {
       await deps.staySilent({ reason: action.reason });
       continue;
     }
+
     if (action.type === "repair_contract") {
       await deps.repairContract?.({ contract: action.contract, reason: action.reason });
       continue;
     }
+
     if (action.type === "honest_not_found") {
       await deps.reportNotFound({
         contract: action.contract,
@@ -240,13 +322,19 @@ export async function runRadioAgentActions(
       result.notFound = true;
       continue;
     }
-    await deps.runFallback({ level: action.level, reason: action.reason, action: action.action });
+
+    await deps.reportFallback({ level: action.level, reason: action.reason, action: action.action });
     result.fallbackLevels.push(action.level);
   }
 
   return result;
 }
 ```
+
+Important:
+
+- `fallback` is reported only. The runner must not call legacy systems.
+- `queue_window` queues only `prepared` tracks supplied by the action. It must not call a planner, verifier, resolver, or window executor.
 
 - [ ] **Step 4: Run test to verify it passes**
 
@@ -258,11 +346,11 @@ npx tsx --test tests/ts/radio-agent-action-runner.test.ts
 
 Expected:
 
-- PASS.
+- PASS for the first test.
 
-- [ ] **Step 5: Add tests for speak, honest_not_found, fallback, and action order**
+- [ ] **Step 5: Add behavior tests for action order, prepared queue, not-found, and fallback refusal**
 
-Extend `tests/ts/radio-agent-action-runner.test.ts`:
+Append tests:
 
 ```ts
 test("action runner preserves speak before play order", async () => {
@@ -277,51 +365,73 @@ test("action runner preserves speak before play order", async () => {
         reason: { type: "radio_agent_program", text: "Approved." },
       },
     ],
-    {
-      queuePlayNow: ({ track }) => calls.push(`queue:${track.id}`),
-      speak: ({ text }) => calls.push(`speak:${text}`),
-      staySilent: ({ reason }) => calls.push(`silent:${reason}`),
-      reportNotFound: ({ reason }) => calls.push(`not-found:${reason}`),
-      runFallback: ({ level }) => calls.push(`fallback:${level}`),
-    },
+    deps(calls),
   );
 
-  assert.deepEqual(calls, ["speak:Got it.", "queue:track-2"]);
+  assert.deepEqual(calls, ["speak:Got it.", "queue:track-2:/api/radio/audio/track-2:radio_agent_program:"]);
 });
 
-test("action runner reports honest not found without fallback mutation", async () => {
+test("action runner queues only prepared tracks from queue_window", async () => {
+  const calls: string[] = [];
+  await runRadioAgentActions(
+    [
+      {
+        type: "queue_window",
+        window: {
+          id: "window-1",
+          uid: "42",
+          sessionId: 7,
+          stationBrief: "Brief.",
+          mainDirection: "quiet",
+          allowedAdjacent: [],
+          bridgeBudget: 0,
+          disallowed: [],
+          returnRequirement: "Stay quiet.",
+          candidateTasks: [{ query: "should not execute", reason: "data only", style: "quiet", negativeConstraints: [] }],
+          hostIntent: { shouldSpeak: false, event: "silent", reason: "test", text: "" },
+          traceBasis: { profile: "", now: "", contract: "", eventType: "queue_low" },
+          source: "deterministic_fallback",
+          createdAt: "2026-06-17T00:00:00.000Z",
+        },
+        prepared: [
+          {
+            track: { id: "prepared-1", name: "Prepared", artist: "Artist" },
+            url: "/api/radio/audio/prepared-1",
+            selectionReason: { type: "radio_agent_program", text: "Already prepared." },
+            segueText: "",
+            decisionTrace: { id: "trace-1", trackId: "prepared-1", source: "radio_agent", reason: "Already prepared.", createdAt: "2026-06-17T00:00:00.000Z" },
+          },
+        ],
+      },
+    ],
+    deps(calls),
+  );
+
+  assert.deepEqual(calls, ["prepared:prepared-1"]);
+});
+
+test("action runner reports honest_not_found without queue mutation", async () => {
   const calls: string[] = [];
   const result = await runRadioAgentActions(
     [{ type: "honest_not_found", contract: null, reason: "reject_off_contract", searchedQueries: ["bad query"] }],
-    {
-      queuePlayNow: () => calls.push("queue"),
-      speak: () => calls.push("speak"),
-      staySilent: () => calls.push("silent"),
-      reportNotFound: ({ reason, searchedQueries }) => calls.push(`not-found:${reason}:${searchedQueries.join("|")}`),
-      runFallback: () => calls.push("fallback"),
-    },
+    deps(calls),
   );
 
-  assert.deepEqual(calls, ["not-found:reject_off_contract:bad query"]);
+  assert.deepEqual(calls, ["not-found:reject_off_contract"]);
   assert.equal(result.notFound, true);
   assert.equal(result.playbackQueued, false);
 });
 
-test("action runner delegates fallback explicitly", async () => {
+test("action runner reports fallback but does not execute legacy playback", async () => {
   const calls: string[] = [];
   const result = await runRadioAgentActions(
     [{ type: "fallback", level: "legacy_with_label", reason: "agent_timeout" }],
-    {
-      queuePlayNow: () => calls.push("queue"),
-      speak: () => calls.push("speak"),
-      staySilent: () => calls.push("silent"),
-      reportNotFound: () => calls.push("not-found"),
-      runFallback: ({ level, reason }) => calls.push(`fallback:${level}:${reason}`),
-    },
+    deps(calls),
   );
 
   assert.deepEqual(calls, ["fallback:legacy_with_label:agent_timeout"]);
   assert.deepEqual(result.fallbackLevels, ["legacy_with_label"]);
+  assert.equal(result.playbackQueued, false);
 });
 ```
 
@@ -331,596 +441,6 @@ Run:
 
 ```bash
 npx tsx --test tests/ts/radio-agent-action-runner.test.ts
-```
-
-Expected:
-
-- PASS, all action runner tests.
-
-- [ ] **Step 7: Run focused typecheck**
-
-Run:
-
-```bash
-npm run typecheck
-```
-
-Expected:
-
-- PASS.
-
-- [ ] **Step 8: Commit**
-
-Run:
-
-```bash
-git add src/radio-agent/actionRunner.ts tests/ts/radio-agent-action-runner.test.ts
-git commit -m "Add radio agent action runner boundary"
-```
-
-## Task 2: Route Session Start And User Direction Through ActionRunner
-
-**Files:**
-
-- Modify: `src/server.ts`
-- Modify: `tests/ts/radio-agent-server-wiring.test.ts`
-- Modify: `tests/ts/radio-agent-service.test.ts` only if service action shape needs a small adjustment.
-- Test: `tests/ts/radio-agent-action-runner.test.ts`
-
-- [ ] **Step 1: Write failing server wiring test for ActionRunner import and usage**
-
-Add to `tests/ts/radio-agent-server-wiring.test.ts`:
-
-```ts
-test("server executes radio agent actions through the action runner boundary", () => {
-  const source = fs.readFileSync("src/server.ts", "utf8");
-  const importIndex = source.indexOf("runRadioAgentActions");
-  const socketStart = source.indexOf("async function handleRadioSocket");
-  const serviceConstruction = source.indexOf("const radioAgentService = new RadioAgentService", socketStart);
-  const firstRunnerUse = source.indexOf("runRadioAgentActions", serviceConstruction + 1);
-
-  assert.ok(importIndex >= 0);
-  assert.ok(socketStart >= 0);
-  assert.ok(serviceConstruction > socketStart);
-  assert.ok(firstRunnerUse > serviceConstruction);
-});
-```
-
-- [ ] **Step 2: Run test to verify it fails**
-
-Run:
-
-```bash
-npx tsx --test tests/ts/radio-agent-server-wiring.test.ts
-```
-
-Expected:
-
-- FAIL because `server.ts` does not import or use `runRadioAgentActions`.
-
-- [ ] **Step 3: Add server helper that executes agent actions**
-
-In `src/server.ts`, import:
-
-```ts
-import { runRadioAgentActions } from "./radio-agent/actionRunner.js";
-```
-
-Inside `handleRadioSocket`, after `radioAgentService` construction or near queue helpers, add a narrow helper:
-
-```ts
-  const executeRadioAgentActions = async (actions: RadioAgentAction[]): Promise<void> => {
-    await runRadioAgentActions(actions, {
-      queuePlayNow: ({ track, url, reason, hostText }) => {
-        queue.addReady(track, url, reason, { segueText: hostText });
-      },
-      queueWindow: async ({ window }) => {
-        await queueRadioAgentWindow(window);
-      },
-      speak: ({ text }) => {
-        synthesizeAndSendDjMessage(text);
-      },
-      staySilent: () => undefined,
-      repairContract: ({ contract }) => {
-        activeAgentStationContract = stationContractFromAgentSessionContract(contract);
-      },
-      reportNotFound: ({ reason, governanceTrace }) => {
-        mirrorSocketRadioAgent({
-          type: "playback_recovery_needed",
-          uid,
-          sessionId,
-          reason,
-          governanceTrace,
-          currentTrack: currentTrack ? trackInfo(currentTrack) : null,
-          recentTracks: recentPlaybackTrackInfos(),
-          readyQueue: queue.readyItems().map((readyItem) => trackInfo(readyItem.track)),
-        });
-        send({ type: "request_status", status: "not_found", text: "I could not find a safe playable match for that direction yet." });
-      },
-      runFallback: async ({ level, reason }) => {
-        await runExplicitLegacyFallback(level, reason);
-      },
-    });
-  };
-```
-
-The exact Chinese listener text can use the existing safe recovery copy already present in `server.ts`, but do not introduce mojibake.
-
-If `stationContractFromAgentSessionContract` does not exist, add a small converter next to existing station-contract conversion helpers:
-
-```ts
-function stationContractFromAgentSessionContract(contract: import("./radio-agent/contractController.js").AgentSessionContract): StationContract {
-  return {
-    id: contract.id,
-    mainDirection: contract.stationBrief,
-    rawUserText: contract.rawUserText,
-    allowedAdjacent: contract.allowedAdjacent,
-    softBridge: contract.allowedAdjacent,
-    disallowed: contract.disallowed,
-    positiveSeeds: contract.positiveAnchors,
-    negativeConstraints: contract.disallowed,
-    driftBudget: contract.bridgeBudget,
-    bridgeCount: 0,
-    mustReturnToContract: Boolean(contract.returnRequirement),
-    createdAt: contract.createdAt,
-    updatedAt: contract.updatedAt,
-  };
-}
-```
-
-- [ ] **Step 4: Run server wiring test**
-
-Run:
-
-```bash
-npx tsx --test tests/ts/radio-agent-server-wiring.test.ts
-```
-
-Expected:
-
-- The new test passes.
-- Existing tests may fail because old string-order expectations still reflect direct queue mutation. Keep failures and address them in the next steps.
-
-- [ ] **Step 5: Replace session-start direct action execution**
-
-Find `tryQueueRadioAgentOpeningTrack` in `src/server.ts`.
-
-Change it so after:
-
-```ts
-const result = await radioAgentService.startSession(...)
-```
-
-it calls:
-
-```ts
-await executeRadioAgentActions(result.actions);
-```
-
-Then keep only result-specific bookkeeping that cannot live in the action runner. Remove duplicate `queue.addReady(result.opening.track, ...)` if the `play_now` action already queued it.
-
-- [ ] **Step 6: Add or update test proving session start uses action runner**
-
-In `tests/ts/radio-agent-server-wiring.test.ts`, update the existing "server delegates the first playback attempt..." test so it asserts:
-
-```ts
-assert.match(source.slice(openingHelper, openingAttempt), /executeRadioAgentActions\(result\.actions\)/);
-assert.doesNotMatch(source.slice(openingHelper, openingAttempt), /queue\.addReady\(result\.opening\.track/);
-```
-
-- [ ] **Step 7: Run server wiring test**
-
-Run:
-
-```bash
-npx tsx --test tests/ts/radio-agent-server-wiring.test.ts
-```
-
-Expected:
-
-- PASS or only failures related to the next request path.
-
-- [ ] **Step 8: Replace user-direction direct action execution**
-
-In the `song_request` handler, after `agentTextResult` is returned and stale-token checks pass:
-
-- use `executeRadioAgentActions(agentTextResult.actions)` for `repair_contract`, `speak`, `queue_window`, `play_now`, `honest_not_found`, and `fallback`;
-- remove duplicate `queue.clearReady()` and `queue.addReady(agentTextResult.preparedTrack.track...)` where equivalent action execution now handles it;
-- preserve `sendPreparedNext("played", { allowContinuation: false, skipPrewarmWait: true, requestToken })` only after action runner queued a `play_now` item;
-- keep existing `request_status` delivery behavior if it is still needed for frontend, but do not use it to mutate queue independently.
-
-Expected pattern:
-
-```ts
-const actionSummary = await executeRadioAgentActions(agentTextResult.actions);
-if (actionSummary.playbackQueued) {
-  send({ type: "request_status", status: "ready", text: ..., next_track: ... });
-  await sendPreparedNext("played", { allowContinuation: false, skipPrewarmWait: true, requestToken });
-  ...
-}
-if (actionSummary.notFound) {
-  ...
-}
-```
-
-If `executeRadioAgentActions` currently returns void, update it to return the `RadioAgentActionRunnerResult`.
-
-- [ ] **Step 9: Update tests away from old direct queue assumptions**
-
-In `tests/ts/radio-agent-server-wiring.test.ts`, replace brittle assertions that require `queue.addReady(agentTextResult.preparedTrack.track...)` with action-runner assertions:
-
-```ts
-assert.match(source.slice(agentProgramQueue, legacyBrainRequest), /executeRadioAgentActions\(agentTextResult\.actions\)/);
-assert.doesNotMatch(source.slice(agentProgramQueue, legacyBrainRequest), /queue\.addReady\(agentTextResult\.preparedTrack\.track/);
-```
-
-Keep assertions that the agent service is called before legacy fallback.
-
-- [ ] **Step 10: Run focused tests**
-
-Run:
-
-```bash
-npx tsx --test tests/ts/radio-agent-action-runner.test.ts tests/ts/radio-agent-server-wiring.test.ts tests/ts/radio-agent-service.test.ts
-```
-
-Expected:
-
-- PASS.
-
-- [ ] **Step 11: Run typecheck**
-
-Run:
-
-```bash
-npm run typecheck
-```
-
-Expected:
-
-- PASS.
-
-- [ ] **Step 12: Commit**
-
-Run:
-
-```bash
-git add src/server.ts tests/ts/radio-agent-server-wiring.test.ts tests/ts/radio-agent-service.test.ts src/radio-agent/actionRunner.ts
-git commit -m "Route radio agent gateway actions through runner"
-```
-
-## Task 3: Toolize Legacy Request And Continuation Fallback
-
-**Files:**
-
-- Create: `src/radio-agent/legacyFallbackTools.ts`
-- Create: `tests/ts/radio-agent-legacy-fallback-tools.test.ts`
-- Modify: `src/server.ts`
-- Modify: `src/radio-agent/radioAgentService.ts`
-- Modify: `tests/ts/radio-agent-server-wiring.test.ts`
-- Modify: `tests/ts/radio-agent-service.test.ts`
-
-- [ ] **Step 1: Write failing tests for fallback adapter**
-
-Create `tests/ts/radio-agent-legacy-fallback-tools.test.ts`:
-
-```ts
-import assert from "node:assert/strict";
-import test from "node:test";
-
-import { createLegacyFallbackTools } from "../../src/radio-agent/legacyFallbackTools.js";
-
-test("legacy fallback tool reports explicit level and reason", async () => {
-  const calls: string[] = [];
-  const tools = createLegacyFallbackTools({
-    requestFallback: async ({ text, reason }) => {
-      calls.push(`request:${text}:${reason}`);
-      return { status: "queued", level: "legacy_with_label", reason };
-    },
-    continuationFallback: async ({ reason }) => {
-      calls.push(`continuation:${reason}`);
-      return { status: "queued", level: "legacy_with_label", reason };
-    },
-  });
-
-  const result = await tools.request({ text: "play something safe", reason: "agent_timeout" });
-
-  assert.deepEqual(calls, ["request:play something safe:agent_timeout"]);
-  assert.equal(result.status, "queued");
-  assert.equal(result.level, "legacy_with_label");
-});
-
-test("legacy fallback tool does not hide failed fallback", async () => {
-  const tools = createLegacyFallbackTools({
-    requestFallback: async ({ reason }) => ({ status: "failed", level: "legacy_with_label", reason }),
-    continuationFallback: async ({ reason }) => ({ status: "failed", level: "legacy_with_label", reason }),
-  });
-
-  const result = await tools.continuation({ reason: "queue_empty" });
-
-  assert.equal(result.status, "failed");
-  assert.equal(result.reason, "queue_empty");
-});
-```
-
-- [ ] **Step 2: Run test to verify it fails**
-
-Run:
-
-```bash
-npx tsx --test tests/ts/radio-agent-legacy-fallback-tools.test.ts
-```
-
-Expected:
-
-- FAIL because `legacyFallbackTools.ts` does not exist.
-
-- [ ] **Step 3: Implement minimal fallback tools module**
-
-Create `src/radio-agent/legacyFallbackTools.ts`:
-
-```ts
-import type { FallbackLevel } from "./agentActions.js";
-
-export type LegacyFallbackStatus = "queued" | "played" | "failed" | "skipped";
-
-export interface LegacyFallbackOutcome {
-  status: LegacyFallbackStatus;
-  level: FallbackLevel;
-  reason: string;
-}
-
-export interface LegacyRequestFallbackArgs {
-  text: string;
-  reason: string;
-}
-
-export interface LegacyContinuationFallbackArgs {
-  reason: string;
-}
-
-export interface LegacyFallbackToolDeps {
-  requestFallback(args: LegacyRequestFallbackArgs): Promise<LegacyFallbackOutcome>;
-  continuationFallback(args: LegacyContinuationFallbackArgs): Promise<LegacyFallbackOutcome>;
-}
-
-export interface LegacyFallbackTools {
-  request(args: LegacyRequestFallbackArgs): Promise<LegacyFallbackOutcome>;
-  continuation(args: LegacyContinuationFallbackArgs): Promise<LegacyFallbackOutcome>;
-}
-
-export function createLegacyFallbackTools(deps: LegacyFallbackToolDeps): LegacyFallbackTools {
-  return {
-    request: (args) => deps.requestFallback(args),
-    continuation: (args) => deps.continuationFallback(args),
-  };
-}
-```
-
-- [ ] **Step 4: Run fallback tool tests**
-
-Run:
-
-```bash
-npx tsx --test tests/ts/radio-agent-legacy-fallback-tools.test.ts
-```
-
-Expected:
-
-- PASS.
-
-- [ ] **Step 5: Wire fallback tools into `server.ts`**
-
-Import:
-
-```ts
-import { createLegacyFallbackTools } from "./radio-agent/legacyFallbackTools.js";
-```
-
-Inside `handleRadioSocket`, create:
-
-```ts
-  const legacyFallbackTools = createLegacyFallbackTools({
-    requestFallback: async ({ text, reason }) => {
-      const queued = await runStationDirectorRequestFallback(text, snapshotReadyItems(queue), reason, activeRequestToken ?? undefined);
-      return { status: queued ? "queued" : "failed", level: "legacy_with_label", reason };
-    },
-    continuationFallback: async ({ reason }) => {
-      await fillQueue(1, false);
-      return { status: queue.readyItems().length ? "queued" : "failed", level: "legacy_with_label", reason };
-    },
-  });
-```
-
-If order makes this awkward because helpers are declared later, either:
-
-- move creation below helper declarations; or
-- keep `runFallback` callback lazy and call helper functions that are declared before use.
-
-Do not change playback behavior yet except making fallback explicit.
-
-- [ ] **Step 6: Update action runner fallback callback**
-
-In `executeRadioAgentActions`, change `runFallback` to call `legacyFallbackTools` based on reason/source:
-
-```ts
-runFallback: async ({ level, reason }) => {
-  if (level !== "legacy_with_label") {
-    store.logPlaybackEvent("radio_agent_fallback_action", { uid, reason, payload: { level, sessionId } });
-    return;
-  }
-  await legacyFallbackTools.continuation({ reason });
-},
-```
-
-For user-request fallback, pass text explicitly from the request branch when needed. Do not guess text inside generic action runner if it is not available.
-
-- [ ] **Step 7: Add server wiring test for explicit legacy tools**
-
-Add:
-
-```ts
-test("server wraps legacy request and continuation fallback as explicit radio agent tools", () => {
-  const source = fs.readFileSync("src/server.ts", "utf8");
-  assert.match(source, /createLegacyFallbackTools/);
-  assert.match(source, /legacyFallbackTools\.request/);
-  assert.match(source, /legacyFallbackTools\.continuation/);
-  assert.doesNotMatch(source, /runFallback:\s*async\s*\(\{ level, reason \}\)\s*=>\s*\{\s*await fillQueue\(1,\s*false\)/);
-});
-```
-
-- [ ] **Step 8: Run focused tests**
-
-Run:
-
-```bash
-npx tsx --test tests/ts/radio-agent-legacy-fallback-tools.test.ts tests/ts/radio-agent-action-runner.test.ts tests/ts/radio-agent-server-wiring.test.ts
-```
-
-Expected:
-
-- PASS.
-
-- [ ] **Step 9: Update service tests for fallback semantics**
-
-In `tests/ts/radio-agent-service.test.ts`, add:
-
-```ts
-test("service exposes legacy fallback as an explicit action instead of hidden playback", async () => {
-  const service = new RadioAgentService({
-    chooseOpeningTrack: () => null,
-    prepareTrack: async () => null,
-    handleRadioAgentEvent: async () => null,
-  });
-
-  const result = await service.handleTrackEnded({
-    uid: "42",
-    sessionId: 7,
-    previousEvent: "played",
-    currentTrack: null,
-    readyQueue: [],
-  });
-
-  assert.ok(result.actions.some((action) => action.type === "fallback"));
-  assert.equal(result.action, "legacy_fallback");
-});
-```
-
-Adjust expected reason to current implementation if needed, but do not allow queue mutation inside service.
-
-- [ ] **Step 10: Run service tests**
-
-Run:
-
-```bash
-npx tsx --test tests/ts/radio-agent-service.test.ts tests/ts/radio-agent-legacy-fallback-tools.test.ts
-```
-
-Expected:
-
-- PASS.
-
-- [ ] **Step 11: Run typecheck**
-
-Run:
-
-```bash
-npm run typecheck
-```
-
-Expected:
-
-- PASS.
-
-- [ ] **Step 12: Commit**
-
-Run:
-
-```bash
-git add src/radio-agent/legacyFallbackTools.ts tests/ts/radio-agent-legacy-fallback-tools.test.ts src/server.ts src/radio-agent/radioAgentService.ts tests/ts/radio-agent-server-wiring.test.ts tests/ts/radio-agent-service.test.ts
-git commit -m "Make legacy radio fallback explicit tooling"
-```
-
-## Task 4: Remove Hidden Normal-Path Legacy Brain Calls After Agent Decisions
-
-**Files:**
-
-- Modify: `src/server.ts`
-- Modify: `tests/ts/radio-agent-server-wiring.test.ts`
-- Modify: `tests/js/radio-websocket.test.mjs` only if message timing changes.
-
-- [ ] **Step 1: Write failing server test for no normal hidden legacy request planner after agent action result**
-
-Add to `tests/ts/radio-agent-server-wiring.test.ts`:
-
-```ts
-test("server does not call legacy radioBrain directly after executable agent request actions", () => {
-  const source = fs.readFileSync("src/server.ts", "utf8");
-  const songRequestHandler = source.indexOf('if (type === "song_request")');
-  const agentResult = source.indexOf("const agentTextResult =", songRequestHandler);
-  const executeActions = source.indexOf("executeRadioAgentActions(agentTextResult.actions)", agentResult);
-  const legacyBrainRequest = source.indexOf("radioBrain.handleUserText", executeActions);
-  const explicitFallbackTool = source.indexOf("legacyFallbackTools.request", executeActions);
-
-  assert.ok(songRequestHandler >= 0);
-  assert.ok(agentResult > songRequestHandler);
-  assert.ok(executeActions > agentResult);
-  assert.ok(explicitFallbackTool > executeActions);
-  assert.ok(legacyBrainRequest === -1 || legacyBrainRequest > explicitFallbackTool);
-});
-```
-
-- [ ] **Step 2: Run test to verify it fails**
-
-Run:
-
-```bash
-npx tsx --test tests/ts/radio-agent-server-wiring.test.ts
-```
-
-Expected:
-
-- FAIL if old `radioBrain.handleUserText` is still a normal branch before explicit fallback.
-
-- [ ] **Step 3: Move legacy request planning behind explicit fallback**
-
-In `src/server.ts`, in the `song_request` handler:
-
-- keep `radioAgentService.handleUserText` / `handleCorrection` as first decision path;
-- execute actions;
-- if action runner queued playback, promote via `sendPreparedNext`;
-- if action runner returned not-found, report and stop;
-- if action runner returned fallback or timeout, call `legacyFallbackTools.request({ text: requestText, reason })`;
-- remove direct normal `radioBrain.handleUserText` branch from the request path.
-
-Old `radioBrain.handleUserText` may still exist inside `legacyFallbackTools.request` implementation, but not as a parallel normal decision branch.
-
-- [ ] **Step 4: Update old tests to explicit fallback expectations**
-
-In `tests/ts/radio-agent-server-wiring.test.ts`:
-
-- keep "agent service before legacy fallback" checks;
-- replace "legacyBrainRequest after agentProgramQueue" with "legacyFallbackTools.request after execute actions";
-- remove any assertion that relies on old `radioBrain.handleUserText` in the normal request handler.
-
-- [ ] **Step 5: Run focused tests**
-
-Run:
-
-```bash
-npx tsx --test tests/ts/radio-agent-server-wiring.test.ts tests/ts/radio-agent-action-runner.test.ts tests/ts/radio-agent-legacy-fallback-tools.test.ts
-```
-
-Expected:
-
-- PASS.
-
-- [ ] **Step 6: Run websocket JS tests**
-
-Run:
-
-```bash
-node --test tests/js/radio-websocket.test.mjs
 ```
 
 Expected:
@@ -944,91 +464,290 @@ Expected:
 Run:
 
 ```bash
-git add src/server.ts tests/ts/radio-agent-server-wiring.test.ts tests/js/radio-websocket.test.mjs
-git commit -m "Remove hidden legacy planner from request path"
+git add src/radio-agent/actionRunner.ts tests/ts/radio-agent-action-runner.test.ts
+git commit -m "Add radio agent action runner boundary"
 ```
 
-## Task 5: Track-End Continuation Ownership Cleanup
+## Task 2: Add Governed Legacy Fallback Tools
 
 **Files:**
 
-- Modify: `src/server.ts`
-- Modify: `src/radio/trackEndRecovery.ts` only if necessary.
-- Modify: `tests/ts/track-end-recovery.test.ts`
-- Modify: `tests/ts/radio-agent-server-wiring.test.ts`
-- Modify: `tests/ts/radio-agent-service.test.ts`
+- Create: `src/radio-agent/legacyFallbackTools.ts`
+- Create: `tests/ts/radio-agent-legacy-fallback-tools.test.ts`
+- Read: `src/radio-agent/playbackGovernor.ts`
+- Read: `src/radio-agent/agentActions.ts`
 
-- [ ] **Step 1: Write failing test that track-end recovery uses explicit fallback tool labels**
+- [ ] **Step 1: Write failing tests for governed fallback**
 
-In `tests/ts/radio-agent-server-wiring.test.ts`, add:
+Create `tests/ts/radio-agent-legacy-fallback-tools.test.ts`:
 
 ```ts
-test("server track-end recovery calls explicit continuation fallback tool after agent continuation fails", () => {
-  const source = fs.readFileSync("src/server.ts", "utf8");
-  const sendPreparedNextStart = source.indexOf("const runSendPreparedNext =");
-  const serviceContinuation = source.indexOf("radioAgentService.handleTrackEnded", sendPreparedNextStart);
-  const recoveryCall = source.indexOf("ensureTrackEndReadyItem", serviceContinuation);
-  const fallbackTool = source.indexOf("legacyFallbackTools.continuation", serviceContinuation);
+import assert from "node:assert/strict";
+import test from "node:test";
 
-  assert.ok(sendPreparedNextStart >= 0);
-  assert.ok(serviceContinuation > sendPreparedNextStart);
-  assert.ok(fallbackTool > serviceContinuation);
-  assert.ok(recoveryCall === -1 || recoveryCall > serviceContinuation);
+import { createLegacyFallbackTools } from "../../src/radio-agent/legacyFallbackTools.js";
+import type { Track } from "../../src/types.js";
+
+test("legacy fallback converts an accepted governed candidate into play_now", async () => {
+  const calls: string[] = [];
+  const candidate: Track = { id: "safe-1", name: "Safe Song", artist: "Safe Artist" };
+  const tools = createLegacyFallbackTools({
+    candidateSource: async ({ reason }) => {
+      calls.push(`candidate:${reason}`);
+      return {
+        track: candidate,
+        url: "/api/radio/audio/safe-1",
+        reason: { type: "radio_agent_legacy_fallback", text: "Legacy fallback candidate." },
+      };
+    },
+    governCandidate: async ({ candidate, fallbackLevel }) => {
+      calls.push(`govern:${candidate.id}:${fallbackLevel}`);
+      return {
+        status: "accepted",
+        track: candidate,
+        url: "/api/radio/audio/safe-1",
+        trace: {
+          status: "accepted",
+          contractId: "contract-1",
+          requestToken: 3,
+          candidateKey: "safeartist::safesong",
+          decision: "direct_positive",
+          evidence: ["legacy candidate passed active contract"],
+          fallbackLevel: "legacy_with_label",
+        },
+      };
+    },
+  });
+
+  const result = await tools.fallbackToAction({
+    source: "track_end",
+    level: "legacy_with_label",
+    reason: "queue_empty",
+    activeRequestToken: 3,
+    contract: { id: "contract-1", mainDirection: "quiet", allowedAdjacent: [], disallowed: [] },
+    currentTrack: null,
+    recentTracks: [],
+    readyQueue: [],
+  });
+
+  assert.deepEqual(calls, ["candidate:queue_empty", "govern:safe-1:legacy_with_label"]);
+  assert.equal(result.status, "action");
+  assert.equal(result.action.type, "play_now");
+  if (result.action.type !== "play_now") throw new Error("expected play_now");
+  assert.equal(result.action.track.id, "safe-1");
+  assert.equal(result.action.governanceTrace?.fallbackLevel, "legacy_with_label");
+});
+
+test("legacy fallback rejection returns honest_not_found and does not enqueue", async () => {
+  const calls: string[] = [];
+  const tools = createLegacyFallbackTools({
+    candidateSource: async () => ({
+      track: { id: "bad-1", name: "Off Contract", artist: "Wrong Artist" },
+      url: "/api/radio/audio/bad-1",
+      reason: { type: "radio_agent_legacy_fallback", text: "Legacy fallback candidate." },
+    }),
+    governCandidate: async ({ candidate }) => {
+      calls.push(`govern:${candidate.id}`);
+      return {
+        status: "rejected",
+        reason: "reject_off_contract",
+        trace: {
+          status: "rejected",
+          contractId: "contract-1",
+          requestToken: 3,
+          candidateKey: "wrongartist::offcontract",
+          decision: "reject_off_contract",
+          evidence: ["candidate violates active contract"],
+          fallbackLevel: "legacy_with_label",
+        },
+      };
+    },
+  });
+
+  const result = await tools.fallbackToAction({
+    source: "request",
+    level: "legacy_with_label",
+    reason: "agent_timeout",
+    requestText: "play quiet jazz",
+    activeRequestToken: 3,
+    contract: { id: "contract-1", mainDirection: "quiet jazz", allowedAdjacent: [], disallowed: ["wrong artist"] },
+    currentTrack: null,
+    recentTracks: [],
+    readyQueue: [],
+  });
+
+  assert.deepEqual(calls, ["govern:bad-1"]);
+  assert.equal(result.status, "action");
+  assert.equal(result.action.type, "honest_not_found");
+  if (result.action.type !== "honest_not_found") throw new Error("expected honest_not_found");
+  assert.equal(result.action.reason, "reject_off_contract");
+  assert.equal(result.action.governanceTrace?.decision, "reject_off_contract");
+});
+
+test("legacy fallback ignores stale request token before candidate lookup", async () => {
+  const calls: string[] = [];
+  const tools = createLegacyFallbackTools({
+    candidateSource: async () => {
+      calls.push("candidate");
+      return null;
+    },
+    governCandidate: async () => {
+      calls.push("govern");
+      throw new Error("should not govern stale fallback");
+    },
+  });
+
+  const result = await tools.fallbackToAction({
+    source: "request",
+    level: "legacy_with_label",
+    reason: "agent_timeout",
+    requestText: "play quiet jazz",
+    activeRequestToken: 5,
+    expectedRequestToken: 4,
+    contract: null,
+    currentTrack: null,
+    recentTracks: [],
+    readyQueue: [],
+  });
+
+  assert.deepEqual(calls, []);
+  assert.equal(result.status, "stale");
 });
 ```
 
-- [ ] **Step 2: Run test to verify current ownership gap**
+- [ ] **Step 2: Run tests to verify they fail**
 
 Run:
 
 ```bash
-npx tsx --test tests/ts/radio-agent-server-wiring.test.ts
+npx tsx --test tests/ts/radio-agent-legacy-fallback-tools.test.ts
 ```
 
 Expected:
 
-- FAIL if `ensureTrackEndReadyItem` still calls raw `fillQueue`, `kickBrainContinuation`, or recent fallback directly without explicit tool labeling.
+- FAIL because `legacyFallbackTools.ts` does not exist.
 
-- [ ] **Step 3: Refactor track-end recovery callback names and labels**
+- [ ] **Step 3: Implement candidate-producing fallback tools**
 
-Option A, minimal:
+Create `src/radio-agent/legacyFallbackTools.ts`:
 
-- keep `ensureTrackEndReadyItem`;
-- change its callback wiring so legacy fill and brain continuation are implemented through `legacyFallbackTools.continuation`;
-- preserve existing no-stall behavior.
+```ts
+import type { SelectionReason, Track } from "../types.js";
+import type { AgentActionContract, FallbackLevel, RadioAgentAction } from "./agentActions.js";
+import type { PlaybackGovernorResult } from "./playbackGovernor.js";
 
-Option B, slightly cleaner:
+export type LegacyFallbackSource = "opening" | "request" | "track_end" | "continuation";
 
-- introduce `runTrackEndFallbackRecovery` inside `server.ts` that wraps `ensureTrackEndReadyItem`;
-- all callbacks inside that helper are labeled legacy fallback actions.
+export interface LegacyFallbackCandidate {
+  track: Track;
+  url: string;
+  reason: SelectionReason;
+  hostText?: string;
+}
 
-Do not remove `ensureTrackEndReadyItem` unless tests prove equivalent behavior.
+export interface LegacyFallbackContext {
+  source: LegacyFallbackSource;
+  level: FallbackLevel;
+  reason: string;
+  requestText?: string;
+  activeRequestToken?: number | null;
+  expectedRequestToken?: number | null;
+  contract: AgentActionContract | null;
+  currentTrack: Track | null;
+  recentTracks: Track[];
+  readyQueue: Track[];
+}
 
-- [ ] **Step 4: Update `track-end-recovery` tests if callback names change**
+export type LegacyFallbackResult =
+  | { status: "action"; action: RadioAgentAction }
+  | { status: "empty"; reason: string }
+  | { status: "stale" };
+
+export interface LegacyFallbackToolsDeps {
+  candidateSource(context: LegacyFallbackContext): Promise<LegacyFallbackCandidate | null>;
+  governCandidate(args: {
+    context: LegacyFallbackContext;
+    candidate: Track;
+    url: string;
+    fallbackLevel: FallbackLevel;
+    hostText?: string;
+  }): Promise<PlaybackGovernorResult>;
+}
+
+export interface LegacyFallbackTools {
+  fallbackToAction(context: LegacyFallbackContext): Promise<LegacyFallbackResult>;
+}
+
+export function createLegacyFallbackTools(deps: LegacyFallbackToolsDeps): LegacyFallbackTools {
+  return {
+    async fallbackToAction(context) {
+      if (
+        context.expectedRequestToken != null &&
+        context.activeRequestToken != null &&
+        context.expectedRequestToken !== context.activeRequestToken
+      ) {
+        return { status: "stale" };
+      }
+
+      const candidate = await deps.candidateSource(context);
+      if (!candidate) return { status: "empty", reason: context.reason };
+
+      const governed = await deps.governCandidate({
+        context,
+        candidate: candidate.track,
+        url: candidate.url,
+        fallbackLevel: context.level,
+        hostText: candidate.hostText,
+      });
+
+      if (governed.status === "accepted") {
+        return {
+          status: "action",
+          action: {
+            type: "play_now",
+            track: governed.track,
+            url: governed.url,
+            reason: candidate.reason,
+            ...(candidate.hostText ? { hostText: candidate.hostText } : {}),
+            governanceTrace: governed.trace,
+          },
+        };
+      }
+
+      return {
+        status: "action",
+        action: {
+          type: "honest_not_found",
+          contract: context.contract,
+          reason: governed.reason,
+          searchedQueries: [],
+          governanceTrace: governed.trace,
+        },
+      };
+    },
+  };
+}
+```
+
+Important:
+
+- This module must not accept or import a queue object.
+- This module must not call `fillQueue`, `queue.addReady`, `queue.promoteNext`, websocket `send`, or TTS.
+- Legacy systems may be wrapped only as `candidateSource` providers. Candidate source output is not playable until `governCandidate` accepts it.
+
+- [ ] **Step 4: Run fallback tool tests**
 
 Run:
 
 ```bash
-npx tsx --test tests/ts/track-end-recovery.test.ts
+npx tsx --test tests/ts/radio-agent-legacy-fallback-tools.test.ts
 ```
 
 Expected:
 
 - PASS.
 
-- [ ] **Step 5: Run focused track-end suite**
-
-Run:
-
-```bash
-npx tsx --test tests/ts/radio-agent-service.test.ts tests/ts/radio-agent-server-wiring.test.ts tests/ts/track-end-recovery.test.ts
-```
-
-Expected:
-
-- PASS.
-
-- [ ] **Step 6: Run typecheck**
+- [ ] **Step 5: Run typecheck**
 
 Run:
 
@@ -1040,22 +759,411 @@ Expected:
 
 - PASS.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 6: Commit**
 
 Run:
 
 ```bash
-git add src/server.ts src/radio/trackEndRecovery.ts tests/ts/track-end-recovery.test.ts tests/ts/radio-agent-server-wiring.test.ts tests/ts/radio-agent-service.test.ts
-git commit -m "Label track-end legacy recovery behind agent fallback"
+git add src/radio-agent/legacyFallbackTools.ts tests/ts/radio-agent-legacy-fallback-tools.test.ts
+git commit -m "Add governed legacy fallback tools"
 ```
 
-## Task 6: Replace Brittle Server String Tests With Boundary Tests Where Possible
+## Task 3: Add Boundary Ownership Guard
+
+**Files:**
+
+- Create: `tests/ts/radio-agent-boundary-ownership.test.ts`
+- Read: `src/server.ts`
+- Read: `src/radio-agent/legacyFallbackTools.ts`
+
+- [ ] **Step 1: Write failing boundary guard for forbidden direct legacy calls**
+
+Create `tests/ts/radio-agent-boundary-ownership.test.ts`:
+
+```ts
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
+import test from "node:test";
+
+const forbiddenInServer = [
+  /radioBrain\.handleUserText/g,
+  /radioBrain\.startSession/g,
+  /stationDirector\.pickNext/g,
+  /stationDirector\.handleUserRequest/g,
+  /scheduler\.pickNext/g,
+  /fillQueue\(1,\s*false\)/g,
+];
+
+test("server does not call legacy decision systems outside explicit fallback helpers", () => {
+  const source = fs.readFileSync("src/server.ts", "utf8");
+  const allowedHelpers = [
+    "const buildLegacyFallbackCandidate",
+    "const legacyFallbackCandidateSource",
+    "const runGovernedLegacyFallback",
+  ];
+
+  for (const pattern of forbiddenInServer) {
+    for (const match of source.matchAll(pattern)) {
+      const index = match.index ?? 0;
+      const window = source.slice(Math.max(0, index - 500), index + 500);
+      assert.ok(
+        allowedHelpers.some((helper) => window.includes(helper)),
+        `Forbidden legacy call ${match[0]} outside allowed fallback helper near index ${index}`,
+      );
+    }
+  }
+});
+
+test("legacy fallback tools module cannot mutate playback directly", () => {
+  const source = fs.readFileSync("src/radio-agent/legacyFallbackTools.ts", "utf8");
+  assert.doesNotMatch(source, /queue\.addReady|queue\.promoteNext|fillQueue|send\(|synthesizeAndSendDjMessage|radioBrain|stationDirector|scheduler/);
+});
+```
+
+This test will fail before server cleanup. Keep it failing until Tasks 4-5 remove or isolate the direct calls.
+
+- [ ] **Step 2: Run boundary guard to verify it fails or partially fails**
+
+Run:
+
+```bash
+npx tsx --test tests/ts/radio-agent-boundary-ownership.test.ts
+```
+
+Expected:
+
+- FAIL until `server.ts` legacy calls are isolated behind allowed fallback helper names.
+
+- [ ] **Step 3: Commit the failing guard only when paired with same-task implementation**
+
+Do not commit a permanently failing test. Implement the server helper in Task 5 before committing this test.
+
+## Task 4: Wire ActionRunner For Agent-Approved Actions Only
+
+**Files:**
+
+- Modify: `src/server.ts`
+- Modify: `tests/ts/radio-agent-server-wiring.test.ts`
+- Test: `tests/ts/radio-agent-action-runner.test.ts`
+
+- [ ] **Step 1: Add coarse wiring test for ActionRunner usage**
+
+In `tests/ts/radio-agent-server-wiring.test.ts`, add:
+
+```ts
+test("server executes approved radio agent actions through the action runner boundary", () => {
+  const source = fs.readFileSync("src/server.ts", "utf8");
+  assert.match(source, /runRadioAgentActions/);
+  assert.match(source, /const executeRadioAgentActions\s*=/);
+  assert.match(source, /executeRadioAgentActions\(result\.actions\)/);
+  assert.match(source, /executeRadioAgentActions\(agentTextResult\.actions\)/);
+});
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run:
+
+```bash
+npx tsx --test tests/ts/radio-agent-server-wiring.test.ts
+```
+
+Expected:
+
+- FAIL because `server.ts` does not use `runRadioAgentActions`.
+
+- [ ] **Step 3: Add `executeRadioAgentActions` helper in `server.ts`**
+
+Import:
+
+```ts
+import { runRadioAgentActions } from "./radio-agent/actionRunner.js";
+```
+
+Inside `handleRadioSocket`, after queue/speech helpers exist, add:
+
+```ts
+  const executeRadioAgentActions = async (actions: RadioAgentAction[]) =>
+    await runRadioAgentActions(actions, {
+      queuePlayNow: ({ track, url, reason, hostText, governanceTrace }) => {
+        const safeHostText = hostTextForRadioAgentDelivery({
+          eventType: "program_track_queued",
+          decision: hostText ? { shouldSpeak: true, event: "service_delivery", reason: "approved action host text", text: hostText } : undefined,
+        });
+        queue.addReady(track, url, reason, { segueText: safeHostText });
+        if (governanceTrace) {
+          mirrorSocketRadioAgent({
+            type: "program_track_queued",
+            uid,
+            sessionId,
+            track: trackInfo(track),
+            governanceTrace,
+            selectionReason: reason.text || "",
+            hostText: safeHostText,
+            currentTrack: currentTrack ? trackInfo(currentTrack) : null,
+            recentTracks: recentPlaybackTrackInfos(),
+            readyQueue: queue.readyItems().map((readyItem) => trackInfo(readyItem.track)),
+          });
+        }
+      },
+      queuePrepared: ({ prepared }) => {
+        const safeHostText = hostTextForRadioAgentDelivery({
+          eventType: "program_track_queued",
+          decision: prepared.segueText ? { shouldSpeak: true, event: "service_delivery", reason: "approved prepared host text", text: prepared.segueText } : undefined,
+        });
+        queue.addReady(prepared.track, prepared.url, prepared.selectionReason, { segueText: safeHostText });
+      },
+      speak: ({ text }) => synthesizeAndSendDjMessage(text),
+      staySilent: () => undefined,
+      repairContract: ({ contract }) => {
+        activeAgentStationContract = stationContractFromAgentContract(contract);
+      },
+      reportNotFound: ({ reason, governanceTrace }) => {
+        mirrorSocketRadioAgent({
+          type: "playback_recovery_needed",
+          uid,
+          sessionId,
+          reason,
+          governanceTrace,
+          currentTrack: currentTrack ? trackInfo(currentTrack) : null,
+          recentTracks: recentPlaybackTrackInfos(),
+          readyQueue: queue.readyItems().map((readyItem) => trackInfo(readyItem.track)),
+        });
+        send({ type: "request_status", status: "not_found", text: "I could not find a safe playable match for that direction yet." });
+      },
+      reportFallback: ({ level, reason }) => {
+        store.logPlaybackEvent("radio_agent_fallback_intent", { uid, reason, payload: { level, sessionId } });
+      },
+    });
+```
+
+Use an existing contract conversion helper if present. If not present, do not invent a lossy converter silently:
+
+- first inspect existing helpers near `stationContractFromAgentProgramWindow`;
+- reuse one when possible;
+- if a new converter is required, add tests for positive anchors, disallowed moves, bridge budget, and return requirement before using it.
+
+- [ ] **Step 4: Replace session-start direct queueing**
+
+In `tryQueueRadioAgentOpeningTrack`, replace direct `queue.addReady(result.opening...)` with:
+
+```ts
+const actionSummary = await executeRadioAgentActions(result.actions);
+return actionSummary.playbackQueued;
+```
+
+Preserve existing fallback behavior only through explicit fallback handling in Task 5.
+
+- [ ] **Step 5: Replace user-direction direct queueing for already-approved actions**
+
+In `song_request`, after `agentTextResult` and token checks:
+
+```ts
+const actionSummary = await executeRadioAgentActions(agentTextResult.actions);
+```
+
+Then:
+
+- if `actionSummary.playbackQueued`, send ready status and call `sendPreparedNext` with request token;
+- if `actionSummary.notFound`, do not run legacy fallback unless the service also returned an explicit fallback action and Task 5's governed fallback path accepts a candidate;
+- remove duplicate direct `queue.addReady(agentTextResult.preparedTrack.track...)` for the same action.
+
+- [ ] **Step 6: Run focused tests**
+
+Run:
+
+```bash
+npx tsx --test tests/ts/radio-agent-action-runner.test.ts tests/ts/radio-agent-server-wiring.test.ts tests/ts/radio-agent-service.test.ts
+```
+
+Expected:
+
+- PASS, except the boundary ownership guard is not committed yet.
+
+- [ ] **Step 7: Run typecheck**
+
+Run:
+
+```bash
+npm run typecheck
+```
+
+Expected:
+
+- PASS.
+
+- [ ] **Step 8: Commit**
+
+Run:
+
+```bash
+git add src/server.ts tests/ts/radio-agent-server-wiring.test.ts
+git commit -m "Route approved radio agent actions through runner"
+```
+
+## Task 5: Wire Governed Fallback Candidate Flow
+
+**Files:**
+
+- Modify: `src/server.ts`
+- Modify: `tests/ts/radio-agent-server-wiring.test.ts`
+- Add/commit: `tests/ts/radio-agent-boundary-ownership.test.ts`
+- Test: `tests/ts/radio-agent-legacy-fallback-tools.test.ts`
+
+- [ ] **Step 1: Add server behavior seam for fallback candidate source**
+
+Inside `handleRadioSocket`, create a helper that returns a candidate only:
+
+```ts
+  const legacyFallbackCandidateSource = async (context: LegacyFallbackContext): Promise<LegacyFallbackCandidate | null> => {
+    if (context.source === "request" && context.requestText) {
+      return await buildLegacyRequestFallbackCandidate(context.requestText, context.reason);
+    }
+    return await buildLegacyContinuationFallbackCandidate(context.reason);
+  };
+```
+
+The `buildLegacy*Candidate` helpers may call old systems, but must return a candidate object. They must not enqueue or promote. If existing old helpers mutate queue today, first split them so candidate selection and queue mutation are separate. Do not wrap a mutating helper and call it "candidate source".
+
+- [ ] **Step 2: Add governed fallback tool instance**
+
+Import:
+
+```ts
+import { createLegacyFallbackTools, type LegacyFallbackCandidate, type LegacyFallbackContext } from "./radio-agent/legacyFallbackTools.js";
+```
+
+Create:
+
+```ts
+  const legacyFallbackTools = createLegacyFallbackTools({
+    candidateSource: legacyFallbackCandidateSource,
+    governCandidate: async ({ context, candidate, url, fallbackLevel, hostText }) =>
+      await radioAgentPlaybackGovernor.evaluate({
+        contract: agentContractForGovernor(context.contract),
+        requestToken: context.expectedRequestToken ?? context.activeRequestToken ?? 1,
+        activeRequestToken: context.activeRequestToken ?? context.expectedRequestToken ?? 1,
+        candidate,
+        url,
+        currentTrack: context.currentTrack,
+        recentTracks: context.recentTracks,
+        readyQueue: context.readyQueue.map((track) => ({ track })),
+        seedState: {},
+        hostText: hostText || "",
+        fallbackLevel,
+      }),
+  });
+```
+
+Use existing contract conversion helpers where possible. If `agentContractForGovernor` is needed, test it before use.
+
+- [ ] **Step 3: Add request fallback handling through governed action**
+
+In the request path, when fallback is needed:
+
+```ts
+const fallbackResult = await legacyFallbackTools.fallbackToAction({
+  source: "request",
+  level: "legacy_with_label",
+  reason: agentTextResult.fallbackReason || "agent_request_fallback",
+  requestText,
+  activeRequestToken,
+  expectedRequestToken: requestToken,
+  contract: currentAgentActionContract(),
+  currentTrack: currentTrack ? trackInfo(currentTrack) : null,
+  recentTracks: recentPlaybackTracks(),
+  readyQueue: queue.readyItems().map((readyItem) => readyItem.track),
+});
+if (fallbackResult.status === "action") {
+  const fallbackSummary = await executeRadioAgentActions([fallbackResult.action]);
+  if (fallbackSummary.playbackQueued) {
+    await sendPreparedNext("played", { allowContinuation: false, skipPrewarmWait: true, requestToken });
+  }
+}
+```
+
+Do not call `runStationDirectorRequestFallback` directly from the normal request path. If its current implementation mutates queue, split it before use.
+
+- [ ] **Step 4: Add track-end fallback handling through governed action**
+
+When `radioAgentService.handleTrackEnded` returns fallback intent and no approved ready item exists, call `legacyFallbackTools.fallbackToAction` with `source: "track_end"` and execute returned action through `executeRadioAgentActions`.
+
+Do not wire `ensureTrackEndReadyItem` callbacks to raw `fillQueue`, `kickBrainContinuation`, or recent fallback queue mutation unless those callbacks are themselves candidate sources that return through the governed fallback path.
+
+- [ ] **Step 5: Update boundary ownership guard**
+
+Commit `tests/ts/radio-agent-boundary-ownership.test.ts` from Task 3 after adjusting allowed helper names to match actual implementation.
+
+Allowed legacy calls in `src/server.ts` should be inside helpers with names like:
+
+- `legacyFallbackCandidateSource`
+- `buildLegacyRequestFallbackCandidate`
+- `buildLegacyContinuationFallbackCandidate`
+- `runGovernedLegacyFallback`
+
+Forbidden normal-path direct calls remain:
+
+- `radioBrain.handleUserText`
+- `radioBrain.startSession`
+- `stationDirector.pickNext`
+- `stationDirector.handleUserRequest`
+- `scheduler.pickNext`
+- raw `fillQueue(1, false)` after agent decisions
+
+- [ ] **Step 6: Run focused tests**
+
+Run:
+
+```bash
+npx tsx --test tests/ts/radio-agent-legacy-fallback-tools.test.ts tests/ts/radio-agent-action-runner.test.ts tests/ts/radio-agent-boundary-ownership.test.ts tests/ts/radio-agent-server-wiring.test.ts tests/ts/radio-agent-service.test.ts
+```
+
+Expected:
+
+- PASS.
+
+- [ ] **Step 7: Run websocket tests**
+
+Run:
+
+```bash
+node --test tests/js/radio-websocket.test.mjs
+```
+
+Expected:
+
+- PASS.
+
+- [ ] **Step 8: Run typecheck**
+
+Run:
+
+```bash
+npm run typecheck
+```
+
+Expected:
+
+- PASS.
+
+- [ ] **Step 9: Commit**
+
+Run:
+
+```bash
+git add src/server.ts tests/ts/radio-agent-boundary-ownership.test.ts tests/ts/radio-agent-server-wiring.test.ts
+git commit -m "Route legacy fallback through governed agent actions"
+```
+
+## Task 6: Reduce Brittle Server String Tests
 
 **Files:**
 
 - Modify: `tests/ts/radio-agent-server-wiring.test.ts`
-- Create: `tests/ts/radio-agent-gateway-boundary.test.ts` if useful.
-- Modify: `src/radio-agent/actionRunner.ts` only if test seams need exported helpers.
+- Read: `tests/ts/radio-agent-action-runner.test.ts`
+- Read: `tests/ts/radio-agent-legacy-fallback-tools.test.ts`
+- Read: `tests/ts/radio-agent-boundary-ownership.test.ts`
 
 - [ ] **Step 1: Inventory brittle tests**
 
@@ -1067,63 +1175,59 @@ rg -n "source\\.indexOf|assert\\.match\\(source|assert\\.doesNotMatch\\(source" 
 
 Expected:
 
-- List current string-based assertions.
+- List string assertions.
 
-- [ ] **Step 2: Decide which tests can become behavior tests now**
+- [ ] **Step 2: Remove duplicate string checks now covered by behavior tests**
 
-Convert only tests made obsolete by Tasks 1-5:
+Remove or simplify assertions that duplicate:
 
-- action execution order -> `radio-agent-action-runner.test.ts`;
-- explicit legacy fallback -> `radio-agent-legacy-fallback-tools.test.ts`;
-- service action shape -> `radio-agent-service.test.ts`.
+- action execution order covered by `radio-agent-action-runner.test.ts`;
+- fallback governance covered by `radio-agent-legacy-fallback-tools.test.ts`;
+- forbidden legacy ownership covered by `radio-agent-boundary-ownership.test.ts`.
 
-Keep string checks only for wiring that cannot yet be tested without larger server extraction.
+Keep coarse checks for:
 
-- [ ] **Step 3: Remove duplicated brittle assertions**
+- `RadioAgentRuntime` wiring;
+- `/api/radio/agent/status`;
+- `RadioAgentService` construction;
+- mode config;
+- action runner import;
+- fallback tool import.
 
-Edit `tests/ts/radio-agent-server-wiring.test.ts` to remove assertions that now duplicate behavior tests and block harmless refactors.
-
-Do not lower coverage for:
-
-- agent service first chance;
-- no direct normal legacy planner after agent result;
-- status endpoint;
-- radio agent mode wiring.
-
-- [ ] **Step 4: Run tests**
+- [ ] **Step 3: Run focused tests**
 
 Run:
 
 ```bash
-npx tsx --test tests/ts/radio-agent-server-wiring.test.ts tests/ts/radio-agent-action-runner.test.ts tests/ts/radio-agent-legacy-fallback-tools.test.ts tests/ts/radio-agent-service.test.ts
+npx tsx --test tests/ts/radio-agent-server-wiring.test.ts tests/ts/radio-agent-action-runner.test.ts tests/ts/radio-agent-legacy-fallback-tools.test.ts tests/ts/radio-agent-boundary-ownership.test.ts
 ```
 
 Expected:
 
 - PASS.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 4: Commit**
 
 Run:
 
 ```bash
-git add tests/ts/radio-agent-server-wiring.test.ts tests/ts/radio-agent-action-runner.test.ts tests/ts/radio-agent-legacy-fallback-tools.test.ts
+git add tests/ts/radio-agent-server-wiring.test.ts
 git commit -m "Reduce brittle radio agent server wiring assertions"
 ```
 
-## Task 7: Full Verification For Boundary Slice
+## Task 7: Boundary Slice Verification
 
 **Files:**
 
 - No production changes unless verification exposes a bug.
-- Possibly update docs/checklist if exact acceptance status changed.
+- Optionally modify `docs/superpowers/checklists/2026-06-11-hermes-ai-dj-v1-live-acceptance.md` to reflect proven boundary progress.
 
-- [ ] **Step 1: Run focused TypeScript agent suite**
+- [ ] **Step 1: Run focused agent boundary suite**
 
 Run:
 
 ```bash
-npx tsx --test tests/ts/radio-agent-action-runner.test.ts tests/ts/radio-agent-legacy-fallback-tools.test.ts tests/ts/radio-agent-service.test.ts tests/ts/radio-agent-server-wiring.test.ts tests/ts/track-end-recovery.test.ts tests/ts/request-ready-selector.test.ts tests/ts/boundary-guard.test.ts
+npx tsx --test tests/ts/radio-agent-action-runner.test.ts tests/ts/radio-agent-legacy-fallback-tools.test.ts tests/ts/radio-agent-boundary-ownership.test.ts tests/ts/radio-agent-service.test.ts tests/ts/radio-agent-server-wiring.test.ts tests/ts/track-end-recovery.test.ts tests/ts/request-ready-selector.test.ts tests/ts/boundary-guard.test.ts
 ```
 
 Expected:
@@ -1154,7 +1258,7 @@ Expected:
 
 - PASS.
 
-- [ ] **Step 4: Run full test suite if focused suite passes**
+- [ ] **Step 4: Run full test suite**
 
 Run:
 
@@ -1164,9 +1268,9 @@ npm test
 
 Expected:
 
-- PASS.
+- PASS. If this fails because of unrelated pre-existing tests, document exact failing tests and do not claim full regression.
 
-- [ ] **Step 5: Check git status and logs**
+- [ ] **Step 5: Check git status and untracked files**
 
 Run:
 
@@ -1177,22 +1281,29 @@ git ls-files --others --exclude-standard
 
 Expected:
 
-- Only intentional source/test/doc changes.
+- Only intentional files, ideally clean after commits.
 - No logs or temp files.
 
-- [ ] **Step 6: Update closure checklist**
+- [ ] **Step 6: Update acceptance checklist only for proven progress**
 
-If the implementation proves ownership gate progress, update:
+If focused and full verification pass, update:
 
 - `docs/superpowers/checklists/2026-06-11-hermes-ai-dj-v1-live-acceptance.md`
 
-Mark only what the tests prove:
+Allowed claims:
 
-- gateway/action-runner boundary improved;
-- legacy fallback is explicit;
-- live/browser gates still require later evidence.
+- action runner boundary exists;
+- legacy fallback is explicit and governed in unit tests;
+- hidden normal-path legacy planner calls are guarded.
 
-- [ ] **Step 7: Commit final docs if changed**
+Forbidden claims:
+
+- live/browser closure proven;
+- cross-style retention proven;
+- memory persistence proven;
+- full Hermes Radio Agent Closure Candidate.
+
+- [ ] **Step 7: Commit docs if changed**
 
 Run:
 
@@ -1203,14 +1314,14 @@ git commit -m "Update radio agent boundary acceptance status"
 
 ## Final Handoff
 
-After all tasks:
+After execution:
 
 - Report commit hashes.
-- State exactly which acceptance gates improved.
+- State which acceptance gates improved.
 - State which gates remain unproven.
-- Do not claim Hermes Radio Agent Closure Candidate unless live/browser acceptance gates have passed.
+- Do not claim project closure without live/browser acceptance evidence.
 
-Expected remaining work after this plan:
+Expected remaining plans:
 
 - style intent registry and contract matcher cleanup;
 - memory curator extraction;
