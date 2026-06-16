@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import fs from "node:fs";
 
 import { SearchVerifyAgent } from "../../src/radio/searchVerifyAgent.js";
 import type { MemoryPack, MusicTask, Track } from "../../src/types.js";
@@ -47,6 +48,27 @@ class FakeAudioResolver {
       songId: track.id,
       proxyUrl: `/api/radio/audio/${track.id}`,
     };
+  }
+}
+
+class FakeStyleRegistry {
+  calls: string[] = [];
+
+  match(text: string): any {
+    return this.matches(text)[0] || null;
+  }
+
+  matches(text: string): any[] {
+    this.calls.push(text);
+    return text.includes("registry marker") ? [{ id: "registry_style", markers: ["registry marker"] }] : [];
+  }
+
+  queriesFor(): string[] {
+    return ["Registry Artist Registry Song"];
+  }
+
+  queriesForDefinition(): string[] {
+    return ["Registry Artist Registry Song"];
   }
 }
 
@@ -376,7 +398,7 @@ test("Chinese command sentence with adjacent latin artist is never accepted as a
   assert.equal(llm.calls.length, 0);
 });
 
-test("generic R&B goals are expanded by the search planner instead of searched directly", async () => {
+test("generic anonymous R&B goals use concrete fast seeds instead of broad searches", async () => {
   const task: MusicTask = {
     type: "scene_genre_direction",
     primaryEntities: [{ role: "genre", name: "R&B" }],
@@ -392,10 +414,100 @@ test("generic R&B goals are expanded by the search planner instead of searched d
 
   const queries = await agent.queries(task, "我要听rnb");
 
-  assert.deepEqual(queries, ["Linkin Park Numb", "Linkin Park In the End"]);
-  assert.equal(llm.calls[0].options["timeoutMs"], 12000);
+  assert.deepEqual(queries, [
+    "frank ocean pinkpuss",
+    "Daniel Caesar Japanese Denim",
+    "Frank Ocean Pink + White",
+    "SZA Broken Clocks",
+    "Summer Walker Session 32",
+    "Jhené Aiko While We're Young",
+  ]);
+  assert.equal(llm.calls.length, 0);
   await agent.verify(task, "42", "我要听rnb");
   assert.ok(netease.queries.every((query) => !["R&B", "R&B artists", "R&B songs", "我要听rnb"].includes(query)));
+});
+
+test("R&B fallback prioritizes a proven playable seed before slower canonical searches", async () => {
+  class NoLlm {
+    calls = 0;
+
+    async chat(): Promise<string> {
+      this.calls += 1;
+      throw new Error("LLM should not be needed for deterministic R&B execution");
+    }
+  }
+  const task: MusicTask = {
+    type: "scene_genre_direction",
+    primaryEntities: [{ role: "genre", name: "R&B" }],
+    workHint: "",
+    styleHint: "late-night R&B",
+    negativeConstraints: ["jazz"],
+    searchGoals: ["R&B"],
+    mustNotSearchLiteralUserSentence: true,
+  };
+  const netease = {
+    queries: [] as string[],
+    async search(query: string): Promise<Track[]> {
+      this.queries.push(query);
+      if (query === "frank ocean pinkpuss") {
+        return [{ id: "playable-rnb", name: "frank ocean - pinkpuss（pink + white remix）", artist: "LegoG", source: query }];
+      }
+      return [{ id: `blocked-${this.queries.length}`, name: "Japanese Denim", artist: "Daniel Caesar", source: query }];
+    },
+  };
+  const audioResolver = {
+    attempted: [] as string[],
+    async resolveWithCandidates(track: Track): Promise<any> {
+      this.attempted.push(track.id);
+      return track.id === "playable-rnb"
+        ? { ok: true, songId: track.id, proxyUrl: `/api/radio/audio/${track.id}` }
+        : { ok: false, songId: track.id, reason: "empty_url", proxyUrl: "" };
+    },
+  };
+  const llm = new NoLlm();
+  const agent = new SearchVerifyAgent(llm as any, netease as any, audioResolver as any);
+
+  const result = await agent.verify(task, null, "不要爵士了，换成晚上听的R&B");
+
+  assert.equal(llm.calls, 0);
+  assert.equal(result.status, "verified");
+  assert.equal(result.selectedSong?.id, "playable-rnb");
+  assert.equal(netease.queries[0], "frank ocean pinkpuss");
+  assert.deepEqual(audioResolver.attempted, ["playable-rnb"]);
+});
+
+test("style fallback queries come from registry instead of local ad hoc branches", async () => {
+  const task: MusicTask = {
+    type: "scene_genre_direction",
+    primaryEntities: [{ role: "genre", name: "registry marker" }],
+    workHint: "",
+    styleHint: "registry marker",
+    negativeConstraints: [],
+    searchGoals: [],
+    mustNotSearchLiteralUserSentence: true,
+  };
+  const registry = new FakeStyleRegistry();
+  const agent = new SearchVerifyAgent(
+    new FakeLlm() as any,
+    new FakeNetease() as any,
+    new FakeAudioResolver() as any,
+    12000,
+    registry as any,
+  );
+
+  const queries = await agent.queries(task, "play registry marker");
+
+  assert.deepEqual(queries, ["Registry Artist Registry Song"]);
+  assert.ok(registry.calls.some((text) => text.includes("registry marker")));
+});
+
+test("search verifier delegates concrete style seed lists to registry", () => {
+  const source = fs.readFileSync("src/radio/searchVerifyAgent.ts", "utf8");
+  const styleSeedStart = source.indexOf("private styleSeedQueries");
+  const styleSeedEnd = source.indexOf("\n  private", styleSeedStart + 1);
+  const styleSeedSource = source.slice(styleSeedStart, styleSeedEnd);
+
+  assert.doesNotMatch(styleSeedSource, /Daniel Caesar|jazz piano bar academy|Seven Lions|Nora En Pure/);
 });
 
 test("abstract scene planning uses listener profile and memory instead of genre keywords alone", async () => {
@@ -617,7 +729,7 @@ test("descriptive R&B search goals are not treated as concrete NetEase queries",
 
   assert.equal(result.status, "verified");
   assert.equal(result.selectedSong?.id, "frank");
-  assert.ok(netease.queries.includes("Frank Ocean Pink + White"));
+  assert.ok(netease.queries.includes("frank ocean pinkpuss") || netease.queries.includes("Frank Ocean Pink + White"));
   assert.ok(netease.queries.every((query) => !query.includes("taste summary")));
 });
 
@@ -888,8 +1000,8 @@ test("late night R&B fallback avoids defaulting to a recently played Snooze cand
   const result = await agent.verify(task, "42", "我要听晚上的rnb", localContext);
 
   assert.equal(result.status, "verified");
-  assert.equal(result.selectedSong?.id, "daniel");
-  assert.ok(netease.queries.includes("Daniel Caesar Japanese Denim"));
+  assert.notEqual(result.selectedSong?.id, "snooze");
+  assert.ok(netease.queries.includes("Daniel Caesar Japanese Denim") || netease.queries.includes("frank ocean pinkpuss"));
   assert.ok(!audioResolver.attempted.includes("snooze"));
 });
 
@@ -946,9 +1058,741 @@ test("abstract R&B requests expand and demote a single default Snooze query", as
   const result = await agent.verify(task, "42", "I want evening rnb", personalContext);
 
   assert.equal(result.status, "verified");
-  assert.equal(result.selectedSong?.id, "daniel");
-  assert.ok(netease.queries.includes("Daniel Caesar Japanese Denim"));
+  assert.notEqual(result.selectedSong?.id, "snooze");
+  assert.ok(netease.queries.includes("Daniel Caesar Japanese Denim") || netease.queries.includes("frank ocean pinkpuss"));
   assert.ok(!audioResolver.attempted.includes("snooze"));
+});
+
+test("quiet jazz fallback keeps searching playable adjacent seeds when classic versions are unavailable", async () => {
+  class QuietJazzLlm {
+    async chat(prompt: string): Promise<string> {
+      if (prompt.includes("Rewrite this DJ music task")) {
+        return JSON.stringify({
+          search_queries: ["Bill Evans Waltz for Debby"],
+          picks: [{ artist: "Bill Evans", title: "Waltz for Debby", query: "Bill Evans Waltz for Debby" }],
+        });
+      }
+      return JSON.stringify({
+        chosen_id: "bill",
+        confidence: 0.93,
+        matched_entities: ["quiet jazz"],
+        version_note: "semantic fit",
+        risk: "",
+      });
+    }
+  }
+  const task: MusicTask = {
+    type: "scene_genre_direction",
+    primaryEntities: [
+      { role: "genre", name: "quiet jazz" },
+      { role: "scene", name: "reading" },
+    ],
+    workHint: "",
+    styleHint: "quiet jazz for reading",
+    negativeConstraints: [],
+    searchGoals: ["quiet jazz for reading"],
+    mustNotSearchLiteralUserSentence: true,
+  };
+  const netease = {
+    queries: [] as string[],
+    async search(query: string): Promise<Track[]> {
+      this.queries.push(query);
+      if (query === "jazz piano bar academy quiet") {
+        return [{ id: "playable", name: "Italian Dinner Background Music", artist: "Jazz Piano Bar Academy", source: query }];
+      }
+      return [{ id: "bill", name: "Waltz for Debby", artist: "Bill Evans", source: query }];
+    },
+  };
+  const audioResolver = {
+    attempted: [] as string[],
+    async resolveWithCandidates(track: Track): Promise<any> {
+      this.attempted.push(track.id);
+      return track.id === "playable"
+        ? { ok: true, songId: track.id, proxyUrl: `/api/radio/audio/${track.id}` }
+        : { ok: false, songId: track.id, reason: "empty_url", proxyUrl: "" };
+    },
+  };
+  const agent = new SearchVerifyAgent(new QuietJazzLlm() as any, netease as any, audioResolver as any);
+
+  const result = await agent.verify(task, null, "play quiet jazz for reading", personalContext);
+
+  assert.equal(result.status, "verified");
+  assert.equal(result.selectedSong?.id, "playable");
+  assert.equal(result.url, "/api/radio/audio/playable");
+  assert.equal(netease.queries[0], "jazz piano bar academy quiet");
+  assert.deepEqual(audioResolver.attempted, ["playable"]);
+});
+
+test("quiet jazz playable local fallback verifies before waiting for the LLM judge", async () => {
+  class PlanningOnlyLlm {
+    judgeCalls = 0;
+
+    async chat(prompt: string): Promise<string> {
+      if (prompt.includes("Rewrite this DJ music task")) {
+        return JSON.stringify({
+          search_queries: ["Bill Evans Waltz for Debby"],
+          picks: [{ artist: "Bill Evans", title: "Waltz for Debby", query: "Bill Evans Waltz for Debby" }],
+        });
+      }
+      this.judgeCalls += 1;
+      throw new Error("judge should not be needed for a locally playable quiet jazz fallback");
+    }
+  }
+  const task: MusicTask = {
+    type: "scene_genre_direction",
+    primaryEntities: [
+      { role: "genre", name: "quiet jazz" },
+      { role: "scene", name: "reading" },
+    ],
+    workHint: "",
+    styleHint: "quiet jazz for reading",
+    negativeConstraints: [],
+    searchGoals: ["quiet jazz for reading"],
+    mustNotSearchLiteralUserSentence: true,
+  };
+  const netease = {
+    queries: [] as string[],
+    async search(query: string): Promise<Track[]> {
+      this.queries.push(query);
+      if (query === "jazz piano bar academy quiet") {
+        return [{ id: "playable", name: "Italian Dinner Background Music", artist: "Jazz Piano Bar Academy", source: query }];
+      }
+      return [{ id: "blocked", name: "Waltz for Debby", artist: "Bill Evans", source: query }];
+    },
+  };
+  const audioResolver = {
+    attempted: [] as string[],
+    async resolveWithCandidates(track: Track): Promise<any> {
+      this.attempted.push(track.id);
+      return track.id === "playable"
+        ? { ok: true, songId: track.id, proxyUrl: `/api/radio/audio/${track.id}` }
+        : { ok: false, songId: track.id, reason: "empty_url", proxyUrl: "" };
+    },
+  };
+  const llm = new PlanningOnlyLlm();
+  const agent = new SearchVerifyAgent(llm as any, netease as any, audioResolver as any);
+
+  const result = await agent.verify(task, null, "play quiet jazz for reading", personalContext);
+
+  assert.equal(result.status, "verified");
+  assert.equal(result.selectedSong?.id, "playable");
+  assert.equal(llm.judgeCalls, 0);
+  assert.ok(netease.queries.includes("jazz piano bar academy quiet"));
+  assert.deepEqual(audioResolver.attempted, ["playable"]);
+});
+
+test("quiet jazz style requests can verify from deterministic seeds without the LLM planner", async () => {
+  class NoLlm {
+    calls = 0;
+
+    async chat(): Promise<string> {
+      this.calls += 1;
+      throw new Error("LLM should not be needed for deterministic quiet jazz execution");
+    }
+  }
+  const task: MusicTask = {
+    type: "scene_genre_direction",
+    primaryEntities: [
+      { role: "genre", name: "quiet jazz" },
+      { role: "scene", name: "reading" },
+    ],
+    workHint: "",
+    styleHint: "quiet jazz for reading",
+    negativeConstraints: [],
+    searchGoals: ["quiet jazz for reading"],
+    mustNotSearchLiteralUserSentence: true,
+  };
+  const netease = {
+    queries: [] as string[],
+    async search(query: string): Promise<Track[]> {
+      this.queries.push(query);
+      if (query === "jazz piano bar academy quiet") {
+        return [{ id: "playable", name: "Italian Dinner Background Music", artist: "Jazz Piano Bar Academy", source: query }];
+      }
+      return [{ id: "blocked", name: "Waltz for Debby", artist: "Bill Evans", source: query }];
+    },
+  };
+  const audioResolver = {
+    attempted: [] as string[],
+    async resolveWithCandidates(track: Track): Promise<any> {
+      this.attempted.push(track.id);
+      return track.id === "playable"
+        ? { ok: true, songId: track.id, proxyUrl: `/api/radio/audio/${track.id}` }
+        : { ok: false, songId: track.id, reason: "empty_url", proxyUrl: "" };
+    },
+  };
+  const llm = new NoLlm();
+  const agent = new SearchVerifyAgent(llm as any, netease as any, audioResolver as any);
+
+  const result = await agent.verify(task, null, "play quiet jazz for reading", personalContext);
+
+  assert.equal(result.status, "verified");
+  assert.equal(result.selectedSong?.id, "playable");
+  assert.equal(llm.calls, 0);
+  assert.ok(netease.queries.includes("jazz piano bar academy quiet"));
+  assert.deepEqual(audioResolver.attempted, ["playable"]);
+});
+
+test("quiet jazz local fallback stops searching after the first playable deterministic style match", async () => {
+  class NoLlm {
+    async chat(): Promise<string> {
+      throw new Error("LLM should not be needed for deterministic quiet jazz execution");
+    }
+  }
+  const task: MusicTask = {
+    type: "scene_genre_direction",
+    primaryEntities: [
+      { role: "genre", name: "quiet jazz" },
+      { role: "scene", name: "reading" },
+    ],
+    workHint: "",
+    styleHint: "quiet jazz for reading",
+    negativeConstraints: [],
+    searchGoals: ["quiet jazz for reading"],
+    mustNotSearchLiteralUserSentence: true,
+  };
+  const netease = {
+    queries: [] as string[],
+    async search(query: string): Promise<Track[]> {
+      this.queries.push(query);
+      if (query === "jazz piano bar academy quiet") {
+        return [{ id: "playable", name: "Italian Dinner Background Music", artist: "Jazz Piano Bar Academy", source: query }];
+      }
+      return [{ id: `blocked-${this.queries.length}`, name: "Waltz for Debby", artist: "Bill Evans", source: query }];
+    },
+  };
+  const audioResolver = {
+    attempted: [] as string[],
+    async resolveWithCandidates(track: Track): Promise<any> {
+      this.attempted.push(track.id);
+      return track.id === "playable"
+        ? { ok: true, songId: track.id, proxyUrl: `/api/radio/audio/${track.id}` }
+        : { ok: false, songId: track.id, reason: "empty_url", proxyUrl: "" };
+    },
+  };
+  const agent = new SearchVerifyAgent(new NoLlm() as any, netease as any, audioResolver as any);
+
+  const result = await agent.verify(task, null, "play quiet jazz for reading", personalContext);
+
+  assert.equal(result.status, "verified");
+  assert.equal(result.selectedSong?.id, "playable");
+  assert.ok(netease.queries.includes("jazz piano bar academy quiet"));
+  assert.ok(!netease.queries.includes("jazz piano bar academy reading"));
+  assert.deepEqual(audioResolver.attempted, ["playable"]);
+});
+
+test("quiet jazz deterministic style fallback prioritizes proven playable seeds before slow classic searches", async () => {
+  class NoLlm {
+    async chat(): Promise<string> {
+      throw new Error("LLM should not be needed for deterministic quiet jazz execution");
+    }
+  }
+  const task: MusicTask = {
+    type: "scene_genre_direction",
+    primaryEntities: [
+      { role: "genre", name: "quiet jazz" },
+      { role: "scene", name: "reading" },
+    ],
+    workHint: "",
+    styleHint: "quiet jazz for reading",
+    negativeConstraints: [],
+    searchGoals: ["quiet jazz for reading"],
+    mustNotSearchLiteralUserSentence: true,
+  };
+  const agent = new SearchVerifyAgent(new NoLlm() as any, { search: async () => [] } as any, {} as any);
+
+  const queries = await agent.queries(task, "play quiet jazz for reading", personalContext);
+
+  assert.equal(queries[0], "jazz piano bar academy quiet");
+  assert.ok(queries.indexOf("jazz piano bar academy quiet") < queries.indexOf("Bill Evans Waltz for Debby"));
+  assert.ok(queries.indexOf("jazz piano bar academy quiet") < queries.indexOf("Miles Davis Blue in Green"));
+});
+
+test("quiet jazz deterministic fallback still runs when guardrails block classical and electronic drift", async () => {
+  class NoLlm {
+    calls = 0;
+
+    async chat(): Promise<string> {
+      this.calls += 1;
+      throw new Error("LLM should not be needed for bounded quiet jazz execution");
+    }
+  }
+  const task: MusicTask = {
+    type: "scene_genre_direction",
+    primaryEntities: [
+      { role: "genre", name: "quiet jazz" },
+      { role: "scene", name: "reading" },
+    ],
+    workHint: "",
+    styleHint: "quiet jazz / quiet jazz for reading",
+    negativeConstraints: ["classical chamber music", "electronic ambient"],
+    searchGoals: ["quiet jazz for reading"],
+    mustNotSearchLiteralUserSentence: true,
+  };
+  const llm = new NoLlm();
+  const agent = new SearchVerifyAgent(llm as any, { search: async () => [] } as any, {} as any);
+
+  const queries = await agent.queries(task, "Station brief: Quiet jazz for reading.", personalContext);
+
+  assert.equal(llm.calls, 0);
+  assert.equal(queries[0], "jazz piano bar academy quiet");
+  assert.ok(!queries.some((query) => /classical|electronic/i.test(query)));
+});
+
+test("quiet jazz fallback skips the recently played local seed and keeps searching inside the style", async () => {
+  class NoLlm {
+    calls = 0;
+
+    async chat(): Promise<string> {
+      this.calls += 1;
+      throw new Error("LLM should not be needed for deterministic quiet jazz recovery");
+    }
+  }
+  const task: MusicTask = {
+    type: "scene_genre_direction",
+    primaryEntities: [
+      { role: "genre", name: "quiet jazz" },
+      { role: "scene", name: "reading" },
+    ],
+    workHint: "",
+    styleHint: "quiet jazz for reading",
+    negativeConstraints: [],
+    searchGoals: ["quiet jazz for reading"],
+    mustNotSearchLiteralUserSentence: true,
+  };
+  const netease = {
+    queries: [] as string[],
+    async search(query: string): Promise<Track[]> {
+      this.queries.push(query);
+      if (query === "jazz piano bar academy reading") {
+        return [{ id: "fresh-jazz", name: "Piano Instrumental Music", artist: "Jazz Piano Bar Academy", source: query }];
+      }
+      if (query === "Bill Evans Waltz for Debby") {
+        return [{ id: "bill", name: "Waltz for Debby", artist: "Bill Evans", source: query }];
+      }
+      return [{ id: `miss-${this.queries.length}`, name: "No usable result", artist: "Unknown", source: query }];
+    },
+  };
+  const audioResolver = {
+    attempted: [] as string[],
+    async resolveWithCandidates(track: Track): Promise<any> {
+      this.attempted.push(track.id);
+      return track.id === "fresh-jazz"
+        ? { ok: true, songId: track.id, proxyUrl: `/api/radio/audio/${track.id}` }
+        : { ok: false, songId: track.id, proxyUrl: "", reason: "empty_url" };
+    },
+  };
+  const context: MemoryPack = {
+    ...personalContext,
+    playbackContext: {
+      currentTrack: { id: "played-jazz", name: "Italian Dinner Background Music", artist: "Jazz Piano Bar Academy" },
+      recentTracks: [{ id: "played-jazz", name: "Italian Dinner Background Music", artist: "Jazz Piano Bar Academy" }],
+      readyQueue: [],
+      scene: "reading",
+    },
+  };
+  const llm = new NoLlm();
+  const agent = new SearchVerifyAgent(llm as any, netease as any, audioResolver as any);
+
+  const result = await agent.verify(task, null, "play quiet jazz for reading", context);
+
+  assert.equal(llm.calls, 0);
+  assert.equal(result.status, "verified");
+  assert.equal(result.selectedSong?.id, "fresh-jazz");
+  assert.equal(netease.queries[0], "jazz piano bar academy reading");
+  assert.ok(!netease.queries.includes("jazz piano bar academy quiet"));
+  assert.deepEqual(audioResolver.attempted, ["fresh-jazz"]);
+});
+
+test("quiet jazz fallback can use an unplayed local seed when the opening track was another local seed", async () => {
+  class NoLlm {
+    calls = 0;
+
+    async chat(): Promise<string> {
+      this.calls += 1;
+      throw new Error("LLM should not be needed for deterministic quiet jazz recovery");
+    }
+  }
+  const task: MusicTask = {
+    type: "scene_genre_direction",
+    primaryEntities: [
+      { role: "genre", name: "quiet jazz" },
+      { role: "scene", name: "reading" },
+    ],
+    workHint: "",
+    styleHint: "quiet jazz for reading",
+    negativeConstraints: [],
+    searchGoals: ["quiet jazz for reading"],
+    mustNotSearchLiteralUserSentence: true,
+  };
+  const netease = {
+    queries: [] as string[],
+    async search(query: string): Promise<Track[]> {
+      this.queries.push(query);
+      if (query === "jazz piano bar academy quiet") {
+        return [{ id: "italian", name: "Italian Dinner Background Music", artist: "Jazz Piano Bar Academy", source: query }];
+      }
+      return [{ id: `unplayable-${this.queries.length}`, name: "No usable result", artist: "Unknown", source: query }];
+    },
+  };
+  const audioResolver = {
+    attempted: [] as string[],
+    async resolveWithCandidates(track: Track): Promise<any> {
+      this.attempted.push(track.id);
+      return track.id === "italian"
+        ? { ok: true, songId: track.id, proxyUrl: `/api/radio/audio/${track.id}` }
+        : { ok: false, songId: track.id, proxyUrl: "", reason: "empty_url" };
+    },
+  };
+  const context: MemoryPack = {
+    ...personalContext,
+    playbackContext: {
+      currentTrack: { id: "magical", name: "Magical Piano", artist: "Jazz Piano Bar Academy" },
+      recentTracks: [{ id: "magical", name: "Magical Piano", artist: "Jazz Piano Bar Academy" }],
+      readyQueue: [],
+      scene: "reading",
+    },
+  };
+  const llm = new NoLlm();
+  const agent = new SearchVerifyAgent(llm as any, netease as any, audioResolver as any);
+
+  const result = await agent.verify(task, null, "play quiet jazz for reading", context);
+
+  assert.equal(llm.calls, 0);
+  assert.equal(result.status, "verified");
+  assert.equal(result.selectedSong?.id, "italian");
+  assert.equal(netease.queries[0], "jazz piano bar academy quiet");
+  assert.ok(!netease.queries.includes("jazz piano bar academy reading"));
+  assert.deepEqual(audioResolver.attempted, ["italian"]);
+});
+
+test("quiet jazz fallback avoids looping both recently played local seeds", async () => {
+  class NoLlm {
+    calls = 0;
+
+    async chat(): Promise<string> {
+      this.calls += 1;
+      throw new Error("LLM should not be needed for deterministic quiet jazz recovery");
+    }
+  }
+  const task: MusicTask = {
+    type: "scene_genre_direction",
+    primaryEntities: [
+      { role: "genre", name: "quiet jazz" },
+      { role: "scene", name: "reading" },
+    ],
+    workHint: "",
+    styleHint: "quiet jazz for reading",
+    negativeConstraints: [],
+    searchGoals: ["quiet jazz for reading"],
+    mustNotSearchLiteralUserSentence: true,
+  };
+  const netease = {
+    queries: [] as string[],
+    async search(query: string): Promise<Track[]> {
+      this.queries.push(query);
+      if (query === "Bill Evans Waltz for Debby") {
+        return [{ id: "bill-evans", name: "Waltz for Debby", artist: "Bill Evans", source: query }];
+      }
+      return [{ id: `recent-${this.queries.length}`, name: query.includes("reading") ? "Magical Piano" : "Italian Dinner Background Music", artist: "Jazz Piano Bar Academy", source: query }];
+    },
+  };
+  const audioResolver = {
+    attempted: [] as string[],
+    async resolveWithCandidates(track: Track): Promise<any> {
+      this.attempted.push(track.id);
+      return track.id === "bill-evans"
+        ? { ok: true, songId: track.id, proxyUrl: `/api/radio/audio/${track.id}` }
+        : { ok: false, songId: track.id, proxyUrl: "", reason: "recent_seed_blocked" };
+    },
+  };
+  const context: MemoryPack = {
+    ...personalContext,
+    playbackContext: {
+      currentTrack: { id: "magical", name: "Magical Piano", artist: "Jazz Piano Bar Academy" },
+      recentTracks: [
+        { id: "italian", name: "Italian Dinner Background Music", artist: "Jazz Piano Bar Academy" },
+        { id: "magical", name: "Magical Piano", artist: "Jazz Piano Bar Academy" },
+      ],
+      readyQueue: [],
+      scene: "reading",
+    },
+  };
+  const llm = new NoLlm();
+  const agent = new SearchVerifyAgent(llm as any, netease as any, audioResolver as any);
+
+  const result = await agent.verify(task, null, "play quiet jazz for reading", context);
+
+  assert.equal(llm.calls, 0);
+  assert.equal(result.status, "verified");
+  assert.equal(result.selectedSong?.id, "bill-evans");
+  assert.equal(netease.queries[0], "Bill Evans Waltz for Debby");
+  assert.ok(!netease.queries.includes("jazz piano bar academy quiet"));
+  assert.ok(!netease.queries.includes("jazz piano bar academy reading"));
+});
+
+test("quiet jazz local verification rejects recently played local seed candidates from broad queries", async () => {
+  class NoLlm {
+    calls = 0;
+
+    async chat(): Promise<string> {
+      this.calls += 1;
+      throw new Error("LLM should not be needed for deterministic quiet jazz recovery");
+    }
+  }
+  const task: MusicTask = {
+    type: "scene_genre_direction",
+    primaryEntities: [
+      { role: "genre", name: "quiet jazz" },
+      { role: "scene", name: "reading" },
+    ],
+    workHint: "",
+    styleHint: "quiet jazz for reading",
+    negativeConstraints: [],
+    searchGoals: ["quiet jazz for reading"],
+    mustNotSearchLiteralUserSentence: true,
+  };
+  const netease = {
+    queries: [] as string[],
+    async search(query: string): Promise<Track[]> {
+      this.queries.push(query);
+      if (query === "Bill Evans Waltz for Debby") {
+        return [{ id: "bill", name: "Waltz for Debby", artist: "Bill Evans", source: query }];
+      }
+      return [
+        { id: "italian", name: "Italian Dinner Background Music", artist: "Jazz Piano Bar Academy", source: query },
+        { id: "bar-cafe", name: "Bar Music Chillout Cafe", artist: "Jazz Piano Bar Academy", source: query },
+      ];
+    },
+  };
+  const audioResolver = {
+    attempted: [] as string[],
+    async resolveWithCandidates(track: Track): Promise<any> {
+      this.attempted.push(track.id);
+      return { ok: true, songId: track.id, proxyUrl: `/api/radio/audio/${track.id}` };
+    },
+  };
+  const context: MemoryPack = {
+    ...personalContext,
+    playbackContext: {
+      currentTrack: { id: "bar-cafe", name: "Bar Music Chillout Cafe", artist: "Jazz Piano Bar Academy" },
+      recentTracks: [
+        { id: "italian", name: "Italian Dinner Background Music", artist: "Jazz Piano Bar Academy" },
+        { id: "magical", name: "Magical Piano", artist: "Jazz Piano Bar Academy" },
+        { id: "bar-cafe", name: "Bar Music Chillout Cafe", artist: "Jazz Piano Bar Academy" },
+      ],
+      readyQueue: [],
+      scene: "reading",
+    },
+  };
+  const llm = new NoLlm();
+  const agent = new SearchVerifyAgent(llm as any, netease as any, audioResolver as any);
+
+  const result = await agent.verify(task, null, "play quiet jazz for reading", context);
+
+  assert.equal(llm.calls, 0);
+  assert.equal(result.status, "verified");
+  assert.equal(result.selectedSong?.id, "bill");
+  assert.deepEqual(audioResolver.attempted, ["bill"]);
+  assert.ok(!audioResolver.attempted.includes("italian"));
+  assert.ok(!audioResolver.attempted.includes("bar-cafe"));
+});
+
+test("quiet jazz early local fallback skips a recently played local seed before resolving audio", async () => {
+  class NoLlm {
+    calls = 0;
+
+    async chat(): Promise<string> {
+      this.calls += 1;
+      throw new Error("LLM should not be needed for deterministic quiet jazz recovery");
+    }
+  }
+  const task: MusicTask = {
+    type: "scene_genre_direction",
+    primaryEntities: [
+      { role: "genre", name: "quiet jazz" },
+      { role: "scene", name: "reading" },
+    ],
+    workHint: "",
+    styleHint: "quiet jazz for reading",
+    negativeConstraints: [],
+    searchGoals: ["quiet jazz for reading"],
+    mustNotSearchLiteralUserSentence: true,
+  };
+  const netease = {
+    queries: [] as string[],
+    async search(query: string): Promise<Track[]> {
+      this.queries.push(query);
+      if (query === "jazz piano bar academy quiet") {
+        return [{ id: "bar-cafe", name: "Bar Music Chillout Cafe", artist: "Jazz Piano Bar Academy", source: query }];
+      }
+      if (query === "Bill Evans Waltz for Debby") {
+        return [{ id: "bill", name: "Waltz for Debby", artist: "Bill Evans", source: query }];
+      }
+      return [];
+    },
+  };
+  const audioResolver = {
+    attempted: [] as string[],
+    async resolveWithCandidates(track: Track): Promise<any> {
+      this.attempted.push(track.id);
+      return { ok: true, songId: track.id, proxyUrl: `/api/radio/audio/${track.id}` };
+    },
+  };
+  const context: MemoryPack = {
+    ...personalContext,
+    playbackContext: {
+      currentTrack: { id: "bar-cafe", name: "Bar Music Chillout Cafe", artist: "Jazz Piano Bar Academy" },
+      recentTracks: [{ id: "bar-cafe", name: "Bar Music Chillout Cafe", artist: "Jazz Piano Bar Academy" }],
+      readyQueue: [],
+      scene: "reading",
+    },
+  };
+  const llm = new NoLlm();
+  const agent = new SearchVerifyAgent(llm as any, netease as any, audioResolver as any);
+
+  const result = await agent.verify(task, null, "play quiet jazz for reading", context);
+
+  assert.equal(llm.calls, 0);
+  assert.equal(result.status, "verified");
+  assert.equal(result.selectedSong?.id, "bill");
+  assert.deepEqual(audioResolver.attempted, ["bill"]);
+  assert.ok(!audioResolver.attempted.includes("bar-cafe"));
+});
+
+test("quiet jazz fallback can rotate from a recently played bar cafe seed to another local quiet jazz seed", async () => {
+  class NoLlm {
+    calls = 0;
+
+    async chat(): Promise<string> {
+      this.calls += 1;
+      throw new Error("LLM should not be needed for deterministic quiet jazz recovery");
+    }
+  }
+  const task: MusicTask = {
+    type: "scene_genre_direction",
+    primaryEntities: [
+      { role: "genre", name: "quiet jazz" },
+      { role: "scene", name: "reading" },
+    ],
+    workHint: "",
+    styleHint: "quiet jazz for reading",
+    negativeConstraints: [],
+    searchGoals: ["quiet jazz for reading"],
+    mustNotSearchLiteralUserSentence: true,
+  };
+  const netease = {
+    queries: [] as string[],
+    async search(query: string): Promise<Track[]> {
+      this.queries.push(query);
+      if (query === "jazz piano bar academy quiet") {
+        return [{ id: "bar-cafe", name: "Bar Music Chillout Cafe", artist: "Jazz Piano Bar Academy", source: query }];
+      }
+      if (query === "jazz piano bar academy reading") {
+        return [{ id: "magical", name: "Magical Piano", artist: "Jazz Piano Bar Academy", source: query }];
+      }
+      if (query === "Bill Evans Waltz for Debby" || query === "Chet Baker I Fall In Love Too Easily" || query === "Miles Davis Blue in Green") {
+        return [{ id: `classic-${this.queries.length}`, name: "Unavailable Classic", artist: "Classic Artist", source: query }];
+      }
+      return [];
+    },
+  };
+  const audioResolver = {
+    attempted: [] as string[],
+    async resolveWithCandidates(track: Track): Promise<any> {
+      this.attempted.push(track.id);
+      return track.id === "magical"
+        ? { ok: true, songId: track.id, proxyUrl: `/api/radio/audio/${track.id}` }
+        : { ok: false, songId: track.id, proxyUrl: "", reason: "empty_url" };
+    },
+  };
+  const context: MemoryPack = {
+    ...personalContext,
+    playbackContext: {
+      currentTrack: { id: "bar-cafe", name: "Bar Music Chillout Cafe", artist: "Jazz Piano Bar Academy" },
+      recentTracks: [{ id: "bar-cafe", name: "Bar Music Chillout Cafe", artist: "Jazz Piano Bar Academy" }],
+      readyQueue: [],
+      scene: "reading",
+    },
+  };
+  const llm = new NoLlm();
+  const agent = new SearchVerifyAgent(llm as any, netease as any, audioResolver as any);
+
+  const result = await agent.verify(task, null, "play quiet jazz for reading", context);
+
+  assert.equal(llm.calls, 0);
+  assert.equal(result.status, "verified");
+  assert.equal(result.selectedSong?.id, "magical");
+  assert.ok(!netease.queries.includes("jazz piano bar academy quiet"));
+  assert.equal(netease.queries[0], "jazz piano bar academy reading");
+  assert.deepEqual(audioResolver.attempted, ["magical"]);
+});
+
+test("quiet jazz fallback refuses to loop when only recently played local seeds are playable", async () => {
+  class NoLlm {
+    calls = 0;
+
+    async chat(): Promise<string> {
+      this.calls += 1;
+      throw new Error("LLM should not be needed for deterministic quiet jazz recovery");
+    }
+  }
+  const task: MusicTask = {
+    type: "scene_genre_direction",
+    primaryEntities: [
+      { role: "genre", name: "quiet jazz" },
+      { role: "scene", name: "reading" },
+    ],
+    workHint: "",
+    styleHint: "quiet jazz for reading",
+    negativeConstraints: [],
+    searchGoals: ["quiet jazz for reading"],
+    mustNotSearchLiteralUserSentence: true,
+  };
+  const netease = {
+    queries: [] as string[],
+    async search(query: string): Promise<Track[]> {
+      this.queries.push(query);
+      if (query === "jazz piano bar academy quiet") {
+        return [{ id: "italian", name: "Italian Dinner Background Music", artist: "Jazz Piano Bar Academy", source: query }];
+      }
+      if (query === "jazz piano bar academy reading") {
+        return [{ id: "magical", name: "Magical Piano", artist: "Jazz Piano Bar Academy", source: query }];
+      }
+      if (query === "Jazz Piano Bar Academy Piano Instrumental Music") {
+        return [{ id: "piano", name: "Piano Instrumental Music", artist: "Jazz Piano Bar Academy", source: query }];
+      }
+      return [];
+    },
+  };
+  const audioResolver = {
+    attempted: [] as string[],
+    async resolveWithCandidates(track: Track): Promise<any> {
+      this.attempted.push(track.id);
+      return { ok: true, songId: track.id, proxyUrl: `/api/radio/audio/${track.id}` };
+    },
+  };
+  const context: MemoryPack = {
+    ...personalContext,
+    playbackContext: {
+      currentTrack: { id: "magical", name: "Magical Piano", artist: "Jazz Piano Bar Academy" },
+      recentTracks: [
+        { id: "italian", name: "Italian Dinner Background Music", artist: "Jazz Piano Bar Academy" },
+        { id: "magical", name: "Magical Piano", artist: "Jazz Piano Bar Academy" },
+        { id: "piano", name: "Piano Instrumental Music", artist: "Jazz Piano Bar Academy" },
+      ],
+      readyQueue: [],
+      scene: "reading",
+    },
+  };
+  const llm = new NoLlm();
+  const agent = new SearchVerifyAgent(llm as any, netease as any, audioResolver as any);
+
+  const result = await agent.verify(task, null, "play quiet jazz for reading", context);
+
+  assert.equal(llm.calls, 0);
+  assert.equal(result.status, "not_found");
+  assert.deepEqual(audioResolver.attempted, []);
 });
 
 test("not-found verification returns searched queries and candidate diagnostics", async () => {

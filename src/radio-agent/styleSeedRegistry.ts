@@ -1,6 +1,5 @@
 import type { Track } from "../types.js";
 import { dedupe, normalizeMatchText } from "../utils/text.js";
-import { trackKey } from "./playbackGovernor.js";
 
 export interface StyleSeedDefinition {
   id: string;
@@ -20,16 +19,34 @@ export class StyleSeedRegistry {
   }
 
   match(text: string): StyleSeedDefinition | null {
+    return this.matches(text)[0] || null;
+  }
+
+  matches(text: string): StyleSeedDefinition[] {
     const normalized = normalizeMatchText(text);
-    return this.styleDefinitions.find((definition) =>
-      definition.markers.some((marker) => markerMatches(marker, text, normalized)),
-    ) || null;
+    return this.styleDefinitions
+      .map((definition) => ({
+        definition,
+        score: Math.max(
+          0,
+          ...definition.markers
+            .filter((marker) => markerMatches(marker, text, normalized))
+            .map((marker) => markerScore(marker)),
+        ),
+      }))
+      .filter((item) => item.score > 0)
+      .sort((left, right) => right.score - left.score)
+      .map((item) => item.definition);
   }
 
   queriesFor(text: string, recentTracks: Track[] = []): string[] {
     const definition = this.match(text);
     if (!definition) return [];
-    const recentKeys = recentTracks.map((track) => trackKey(track));
+    return this.queriesForDefinition(definition, recentTracks);
+  }
+
+  queriesForDefinition(definition: StyleSeedDefinition, recentTracks: Track[] = []): string[] {
+    const recentKeys = recentTracks.map((track) => styleTrackKey(track));
     const recentKeySet = new Set(recentKeys.map((key) => normalizeMatchText(key)));
     const exhaustedGroups = new Set(
       definition.seedGroups
@@ -102,7 +119,7 @@ const DEFAULT_STYLE_DEFINITIONS: StyleSeedDefinition[] = [
       "Frank Ocean Pink + White",
       "SZA Broken Clocks",
       "Summer Walker Session 32",
-      "Jhene Aiko While We're Young",
+      "Jhené Aiko While We're Young",
       "H.E.R. Focus",
       "Kelela LMK",
       "Brent Faiyaz Clouded",
@@ -118,6 +135,11 @@ const DEFAULT_STYLE_DEFINITIONS: StyleSeedDefinition[] = [
           queryKey("Frank Ocean Pink + White"),
           queryKey("SZA Broken Clocks"),
           queryKey("Summer Walker Session 32"),
+          queryKey("Jhené Aiko While We're Young"),
+          queryKey("H.E.R. Focus"),
+          queryKey("Kelela LMK"),
+          queryKey("Brent Faiyaz Clouded"),
+          queryKey("SZA Snooze"),
         ],
         cooldownTracks: 8,
       },
@@ -180,9 +202,6 @@ const DEFAULT_STYLE_DEFINITIONS: StyleSeedDefinition[] = [
   {
     id: "chinese_quiet_mood",
     markers: [
-      "\u665a\u4e0a\u5b89\u9759",
-      "\u5b89\u9759\u4e00\u70b9",
-      "\u653e\u70b9\u665a\u4e0a",
       "\u665a\u4e0a.*\u5b89\u9759",
       "\u5b89\u9759.*\u6b4c",
     ],
@@ -209,13 +228,138 @@ const DEFAULT_STYLE_DEFINITIONS: StyleSeedDefinition[] = [
     ],
     exhaustion: "widen_with_contract",
   },
+  {
+    id: "emo",
+    markers: ["emo", "sad alt", "sad indie", "melancholy", "heartbreak", "\u5fe7\u90c1", "\u6df1\u6c89"],
+    concreteQueries: [
+      "Phoebe Bridgers Funeral",
+      "Mitski I Bet on Losing Dogs",
+      "Lord Huron The Night We Met",
+      "Cigarettes After Sex Apocalypse",
+      "Bon Iver Skinny Love",
+      "Billie Eilish when the party's over",
+      "Daughter Youth",
+      "The 1975 About You",
+    ],
+    blockedTerms: ["EDM", "Dubstep", "high energy EDM"],
+    allowedAdjacent: ["sad indie", "low-key vocal", "melancholy folk"],
+    seedGroups: [
+      {
+        id: "emo-core",
+        queryKeys: [
+          queryKey("Phoebe Bridgers Funeral"),
+          queryKey("Mitski I Bet on Losing Dogs"),
+          queryKey("Lord Huron The Night We Met"),
+        ],
+        cooldownTracks: 8,
+      },
+    ],
+    exhaustion: "widen_with_contract",
+  },
+  {
+    id: "future_bass",
+    markers: ["future bass", "futurebass", "melodic future bass", "melodicfuturebass"],
+    concreteQueries: [
+      "Seven Lions Rush Over Me",
+      "ILLENIUM Good Things Fall Apart",
+      "San Holo Light",
+      "Flume Never Be Like You",
+      "Porter Robinson Shelter",
+      "Said The Sky All I Got",
+    ],
+    blockedTerms: ["utility audio", "playlist"],
+    allowedAdjacent: ["melodic bass", "cinematic electronic"],
+    seedGroups: [
+      {
+        id: "future-bass-core",
+        queryKeys: [
+          queryKey("Seven Lions Rush Over Me"),
+          queryKey("ILLENIUM Good Things Fall Apart"),
+          queryKey("San Holo Light"),
+        ],
+        cooldownTracks: 8,
+      },
+    ],
+    exhaustion: "widen_with_contract",
+  },
+  {
+    id: "organic_house",
+    markers: ["organic house", "organichouse", "chillout", "ambient", "\u8212\u7f13", "\u8212\u670d", "\u653e\u677e"],
+    concreteQueries: [
+      "Ben Bohmer Beyond Beliefs",
+      "Nora En Pure Come With Me",
+      "Lane 8 Atlas",
+      "Bonobo Kerala",
+      "Tycho Awake",
+      "Kiasmos Looped",
+    ],
+    blockedTerms: ["high energy EDM", "dubstep"],
+    allowedAdjacent: ["downtempo", "chillout", "soft electronic"],
+    seedGroups: [
+      {
+        id: "organic-house-core",
+        queryKeys: [
+          queryKey("Ben Bohmer Beyond Beliefs"),
+          queryKey("Nora En Pure Come With Me"),
+          queryKey("Lane 8 Atlas"),
+        ],
+        cooldownTracks: 8,
+      },
+    ],
+    exhaustion: "widen_with_contract",
+  },
+  {
+    id: "citypop",
+    markers: ["city pop", "citypop"],
+    concreteQueries: ["Mariya Takeuchi Plastic Love", "Anri Last Summer Whisper", "Taeko Ohnuki 4:00 AM"],
+    blockedTerms: ["playlist"],
+    allowedAdjacent: ["japanese pop", "retro pop"],
+    seedGroups: [
+      {
+        id: "citypop-core",
+        queryKeys: [
+          queryKey("Mariya Takeuchi Plastic Love"),
+          queryKey("Anri Last Summer Whisper"),
+          queryKey("Taeko Ohnuki 4:00 AM"),
+        ],
+        cooldownTracks: 8,
+      },
+    ],
+    exhaustion: "widen_with_contract",
+  },
+  {
+    id: "shoegaze",
+    markers: ["shoegaze"],
+    concreteQueries: ["Slowdive Sugar for the Pill", "my bloody valentine When You Sleep", "Ride Vapour Trail"],
+    blockedTerms: ["playlist"],
+    allowedAdjacent: ["dream pop", "soft noise pop"],
+    seedGroups: [
+      {
+        id: "shoegaze-core",
+        queryKeys: [
+          queryKey("Slowdive Sugar for the Pill"),
+          queryKey("my bloody valentine When You Sleep"),
+          queryKey("Ride Vapour Trail"),
+        ],
+        cooldownTracks: 8,
+      },
+    ],
+    exhaustion: "widen_with_contract",
+  },
 ];
 
 function markerMatches(marker: string, original: string, normalized: string): boolean {
   if (marker.includes(".*")) return new RegExp(marker, "u").test(original);
+  if (original.includes(marker)) return true;
   const normalizedMarker = normalizeMatchText(marker);
   if (!normalizedMarker) return false;
   return normalized.includes(normalizedMarker);
+}
+
+function markerScore(marker: string): number {
+  const normalized = normalizeMatchText(marker);
+  if (normalized) return normalized.length;
+  return marker.replace(/\.\*/g, "").replace(/\s+/g, "").length;
 }
 
 function cloneDefinition(definition: StyleSeedDefinition): StyleSeedDefinition {
@@ -231,4 +375,10 @@ function cloneDefinition(definition: StyleSeedDefinition): StyleSeedDefinition {
       cooldownTracks: group.cooldownTracks,
     })),
   };
+}
+
+function styleTrackKey(track: Track): string {
+  const artist = normalizeMatchText(track.artist);
+  const title = normalizeMatchText(track.name);
+  return `${artist || "unknown"}::${title || normalizeMatchText(track.id) || "unknown"}`;
 }
